@@ -1,0 +1,9 @@
+{
+  "mcp": {
+    "opencode-memory": {
+      "type": "local",
+      "command": ["bun", "run", "/path/to/opencode-memory/src/index.ts", "mcp"],
+      "description": "Memory system with hybrid search (BM25 + vector + LLM reranking)"
+    }
+  }
+}

@@ -1,0 +1,445 @@
+import Database from 'better-sqlite3';
+import * as sqliteVec from 'sqlite-vec';
+import type { Store, Document, SearchResult, IndexHealth } from './types.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as crypto from 'crypto';
+import { chunkMarkdown } from './chunker.js';
+
+export function createStore(dbPath: string): Store {
+  const dir = path.dirname(dbPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const db = new Database(dbPath);
+  
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  
+  let vecAvailable = false;
+  
+  try {
+    sqliteVec.load(db);
+    vecAvailable = true;
+  } catch {
+    console.warn('sqlite-vec extension not available, vector search disabled');
+  }
+  
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS content (
+      hash TEXT PRIMARY KEY,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS documents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      collection TEXT NOT NULL,
+      path TEXT NOT NULL,
+      title TEXT NOT NULL,
+      hash TEXT NOT NULL,
+      agent TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      modified_at TEXT NOT NULL DEFAULT (datetime('now')),
+      active INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY (hash) REFERENCES content(hash),
+      UNIQUE(collection, path)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection, active);
+    CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(hash);
+    CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path, active);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+      filepath,
+      title,
+      body,
+      tokenize='porter unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+      INSERT INTO documents_fts(filepath, title, body)
+      SELECT NEW.collection || '/' || NEW.path, NEW.title, c.body
+      FROM content c WHERE c.hash = NEW.hash;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+      DELETE FROM documents_fts WHERE filepath = OLD.collection || '/' || OLD.path;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE OF hash ON documents BEGIN
+      DELETE FROM documents_fts WHERE filepath = OLD.collection || '/' || OLD.path;
+      INSERT INTO documents_fts(filepath, title, body)
+      SELECT NEW.collection || '/' || NEW.path, NEW.title, c.body
+      FROM content c WHERE c.hash = NEW.hash;
+    END;
+
+    CREATE TABLE IF NOT EXISTS content_vectors (
+      hash TEXT NOT NULL,
+      seq INTEGER NOT NULL DEFAULT 0,
+      pos INTEGER NOT NULL DEFAULT 0,
+      model TEXT NOT NULL,
+      embedded_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (hash, seq)
+    );
+
+    CREATE TABLE IF NOT EXISTS llm_cache (
+      hash TEXT PRIMARY KEY,
+      result TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+  
+  if (vecAvailable) {
+    try {
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS vectors_vec USING vec0(
+          hash_seq TEXT PRIMARY KEY,
+          embedding float[384] distance_metric=cosine
+        );
+      `);
+    } catch (err) {
+      console.warn('Failed to create vector table:', err);
+      vecAvailable = false;
+    }
+  }
+  
+  const insertContentStmt = db.prepare(`
+    INSERT OR IGNORE INTO content (hash, body) VALUES (?, ?)
+  `);
+  
+  const insertDocumentStmt = db.prepare(`
+    INSERT INTO documents (collection, path, title, hash, agent, created_at, modified_at, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(collection, path) DO UPDATE SET
+      title = excluded.title,
+      hash = excluded.hash,
+      agent = excluded.agent,
+      modified_at = excluded.modified_at,
+      active = excluded.active
+  `);
+  
+  const findDocumentByPathStmt = db.prepare(`
+    SELECT id, collection, path, title, hash, agent, created_at as createdAt, modified_at as modifiedAt, active
+    FROM documents WHERE path = ? AND active = 1
+  `);
+  
+  const findDocumentByDocidStmt = db.prepare(`
+    SELECT id, collection, path, title, hash, agent, created_at as createdAt, modified_at as modifiedAt, active
+    FROM documents WHERE substr(hash, 1, 6) = ? AND active = 1
+  `);
+  
+  const getContentStmt = db.prepare(`
+    SELECT body FROM content WHERE hash = ?
+  `);
+  
+  const deactivateDocumentStmt = db.prepare(`
+    UPDATE documents SET active = 0 WHERE collection = ? AND path = ?
+  `);
+  
+  const bulkDeactivateExceptStmt = db.prepare(`
+    UPDATE documents SET active = 0 
+    WHERE collection = ? AND path NOT IN (SELECT value FROM json_each(?))
+  `);
+  
+  const searchFTSStmt = db.prepare(`
+    SELECT 
+      d.id, d.path, d.collection, d.title, d.hash, d.agent,
+      snippet(documents_fts, 2, '<mark>', '</mark>', '...', 64) as snippet,
+      bm25(documents_fts) as score
+    FROM documents_fts f
+    JOIN documents d ON f.filepath = d.collection || '/' || d.path
+    WHERE documents_fts MATCH ? AND d.active = 1
+    ORDER BY bm25(documents_fts)
+    LIMIT ?
+  `);
+  
+  const searchFTSWithCollectionStmt = db.prepare(`
+    SELECT 
+      d.id, d.path, d.collection, d.title, d.hash, d.agent,
+      snippet(documents_fts, 2, '<mark>', '</mark>', '...', 64) as snippet,
+      bm25(documents_fts) as score
+    FROM documents_fts f
+    JOIN documents d ON f.filepath = d.collection || '/' || d.path
+    WHERE documents_fts MATCH ? AND d.active = 1 AND d.collection = ?
+    ORDER BY bm25(documents_fts)
+    LIMIT ?
+  `);
+  
+  const insertEmbeddingStmt = db.prepare(`
+    INSERT OR REPLACE INTO content_vectors (hash, seq, pos, model)
+    VALUES (?, ?, ?, ?)
+  `);
+  
+  const getCachedResultStmt = db.prepare(`
+    SELECT result FROM llm_cache WHERE hash = ?
+  `);
+  
+  const setCachedResultStmt = db.prepare(`
+    INSERT OR REPLACE INTO llm_cache (hash, result) VALUES (?, ?)
+  `);
+  
+  const getDocumentCountStmt = db.prepare(`
+    SELECT COUNT(*) as count FROM documents WHERE active = 1
+  `);
+  
+  const getChunkCountStmt = db.prepare(`
+    SELECT COUNT(*) as count FROM content_vectors
+  `);
+  
+  const getCollectionStatsStmt = db.prepare(`
+    SELECT collection as name, COUNT(*) as documentCount, MIN(path) as path
+    FROM documents WHERE active = 1
+    GROUP BY collection
+  `);
+  
+  const getHashesNeedingEmbeddingStmt = db.prepare(`
+    SELECT c.hash, c.body, d.path
+    FROM content c
+    JOIN documents d ON d.hash = c.hash AND d.active = 1
+    LEFT JOIN content_vectors cv ON cv.hash = c.hash
+    WHERE cv.hash IS NULL
+  `);
+  
+  return {
+    close() {
+      db.close();
+    },
+    
+    insertContent(hash: string, body: string) {
+      insertContentStmt.run(hash, body);
+    },
+    
+    insertDocument(doc: Omit<Document, 'id'>): number {
+      const result = insertDocumentStmt.run(
+        doc.collection,
+        doc.path,
+        doc.title,
+        doc.hash,
+        doc.agent ?? null,
+        doc.createdAt,
+        doc.modifiedAt,
+        doc.active ? 1 : 0
+      );
+      return Number(result.lastInsertRowid);
+    },
+    
+    findDocument(pathOrDocid: string): Document | null {
+      let row: Record<string, unknown> | undefined;
+      
+      if (pathOrDocid.length === 6 && /^[a-f0-9]+$/i.test(pathOrDocid)) {
+        row = findDocumentByDocidStmt.get(pathOrDocid.toLowerCase()) as Record<string, unknown> | undefined;
+      }
+      
+      if (!row) {
+        row = findDocumentByPathStmt.get(pathOrDocid) as Record<string, unknown> | undefined;
+      }
+      
+      if (!row) return null;
+      
+      return {
+        id: row.id as number,
+        collection: row.collection as string,
+        path: row.path as string,
+        title: row.title as string,
+        hash: row.hash as string,
+        agent: row.agent as string | undefined,
+        createdAt: row.createdAt as string,
+        modifiedAt: row.modifiedAt as string,
+        active: Boolean(row.active),
+      };
+    },
+    
+    getDocumentBody(hash: string, fromLine?: number, maxLines?: number): string | null {
+      const row = getContentStmt.get(hash) as { body: string } | undefined;
+      if (!row) return null;
+      
+      if (fromLine === undefined && maxLines === undefined) {
+        return row.body;
+      }
+      
+      const lines = row.body.split('\n');
+      const start = fromLine ?? 0;
+      const end = maxLines !== undefined ? start + maxLines : lines.length;
+      return lines.slice(start, end).join('\n');
+    },
+    
+    deactivateDocument(collection: string, path: string) {
+      deactivateDocumentStmt.run(collection, path);
+    },
+    
+    bulkDeactivateExcept(collection: string, activePaths: string[]): number {
+      const result = bulkDeactivateExceptStmt.run(collection, JSON.stringify(activePaths));
+      return result.changes;
+    },
+    
+    insertEmbedding(hash: string, seq: number, pos: number, embedding: number[], model: string) {
+      insertEmbeddingStmt.run(hash, seq, pos, model);
+      
+      if (vecAvailable) {
+        try {
+          const hashSeq = `${hash}:${seq}`;
+          const insertVecStmt = db.prepare(`
+            INSERT OR REPLACE INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)
+          `);
+          insertVecStmt.run(hashSeq, new Float32Array(embedding));
+        } catch (err) {
+          console.warn('Failed to insert vector:', err);
+        }
+      }
+    },
+    
+    ensureVecTable(dimensions: number) {
+      if (!vecAvailable) return;
+      
+      try {
+        db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+        db.exec(`
+          CREATE VIRTUAL TABLE vectors_vec USING vec0(
+            hash_seq TEXT PRIMARY KEY,
+            embedding float[${dimensions}] distance_metric=cosine
+          );
+        `);
+      } catch (err) {
+        console.warn('Failed to recreate vector table:', err);
+      }
+    },
+    
+    searchFTS(query: string, limit = 10, collection?: string): SearchResult[] {
+      const rows = collection
+        ? searchFTSWithCollectionStmt.all(query, collection, limit)
+        : searchFTSStmt.all(query, limit);
+      
+      return (rows as Array<Record<string, unknown>>).map(row => ({
+        id: String(row.id),
+        path: row.path as string,
+        collection: row.collection as string,
+        title: row.title as string,
+        snippet: row.snippet as string,
+        score: Math.abs(row.score as number),
+        startLine: 0,
+        endLine: 0,
+        docid: (row.hash as string).substring(0, 6),
+        agent: row.agent as string | undefined,
+      }));
+    },
+    
+    searchVec(query: string, embedding: number[], limit = 10, collection?: string): SearchResult[] {
+      if (!vecAvailable) {
+        return [];
+      }
+      
+      try {
+        let sql = `
+          SELECT v.hash_seq, v.distance, d.id, d.path, d.collection, d.title, d.hash, d.agent
+          FROM vectors_vec v
+          JOIN documents d ON substr(v.hash_seq, 1, instr(v.hash_seq, ':') - 1) = d.hash
+          WHERE d.active = 1
+        `;
+        
+        if (collection) {
+          sql += ` AND d.collection = ?`;
+        }
+        
+        sql += ` ORDER BY v.distance LIMIT ?`;
+        
+        const stmt = db.prepare(sql);
+        const params = collection ? [new Float32Array(embedding), collection, limit] : [new Float32Array(embedding), limit];
+        const rows = stmt.all(...params) as Array<Record<string, unknown>>;
+        
+        return rows.map(row => ({
+          id: String(row.id),
+          path: row.path as string,
+          collection: row.collection as string,
+          title: row.title as string,
+          snippet: '',
+          score: 1 - (row.distance as number),
+          startLine: 0,
+          endLine: 0,
+          docid: (row.hash as string).substring(0, 6),
+          agent: row.agent as string | undefined,
+        }));
+      } catch (err) {
+        console.warn('Vector search failed:', err);
+        return [];
+      }
+    },
+    
+    getCachedResult(hash: string): string | null {
+      const row = getCachedResultStmt.get(hash) as { result: string } | undefined;
+      return row?.result ?? null;
+    },
+    
+    setCachedResult(hash: string, result: string) {
+      setCachedResultStmt.run(hash, result);
+    },
+    
+    getIndexHealth(): IndexHealth {
+      const docCount = (getDocumentCountStmt.get() as { count: number }).count;
+      const chunkCount = (getChunkCountStmt.get() as { count: number }).count;
+      const collections = getCollectionStatsStmt.all() as Array<{ name: string; documentCount: number; path: string }>;
+      const pending = (getHashesNeedingEmbeddingStmt.all() as unknown[]).length;
+      
+      let dbSize = 0;
+      try {
+        const stats = fs.statSync(dbPath);
+        dbSize = stats.size;
+      } catch {
+        // ignore
+      }
+      
+      return {
+        documentCount: docCount,
+        chunkCount: chunkCount,
+        pendingEmbeddings: pending,
+        collections: collections,
+        databaseSize: dbSize,
+        modelStatus: {
+          embedding: 'missing',
+          reranker: 'missing',
+          expander: 'missing',
+        },
+      };
+    },
+    
+    getHashesNeedingEmbedding(): Array<{ hash: string; body: string; path: string }> {
+      return getHashesNeedingEmbeddingStmt.all() as Array<{ hash: string; body: string; path: string }>;
+    },
+  };
+}
+
+export function computeHash(content: string): string {
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+export function indexDocument(
+  store: Store,
+  collection: string,
+  filePath: string,
+  content: string,
+  title: string
+): { hash: string; chunks: number; skipped: boolean } {
+  const hash = computeHash(content);
+  
+  const existingDoc = store.findDocument(filePath);
+  if (existingDoc && existingDoc.hash === hash) {
+    return { hash, chunks: 0, skipped: true };
+  }
+  
+  store.insertContent(hash, content);
+  
+  const chunks = chunkMarkdown(content, hash);
+  
+  const now = new Date().toISOString();
+  store.insertDocument({
+    collection,
+    path: filePath,
+    title,
+    hash,
+    createdAt: existingDoc?.createdAt ?? now,
+    modifiedAt: now,
+    active: true,
+  });
+  
+  return { hash, chunks: chunks.length, skipped: false };
+}

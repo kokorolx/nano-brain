@@ -1,0 +1,192 @@
+import type { Collection, CollectionConfig } from './types.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { parse, stringify } from 'yaml';
+import fg from 'fast-glob';
+
+export function loadCollectionConfig(configPath: string): CollectionConfig | null {
+  if (!fs.existsSync(configPath)) {
+    return null;
+  }
+  
+  const content = fs.readFileSync(configPath, 'utf-8');
+  const config = parse(content) as CollectionConfig;
+  return config;
+}
+
+export function saveCollectionConfig(configPath: string, config: CollectionConfig): void {
+  const dir = path.dirname(configPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  
+  const yaml = stringify(config);
+  fs.writeFileSync(configPath, yaml, 'utf-8');
+}
+
+export function getCollections(config: CollectionConfig): Collection[] {
+  const collections: Collection[] = [];
+  
+  for (const [name, collectionData] of Object.entries(config.collections)) {
+    collections.push({
+      name,
+      path: collectionData.path,
+      pattern: collectionData.pattern || '**/*.md',
+      context: collectionData.context,
+    });
+  }
+  
+  return collections;
+}
+
+export function addCollection(
+  configPath: string,
+  name: string,
+  collectionPath: string,
+  pattern?: string
+): CollectionConfig {
+  let config = loadCollectionConfig(configPath);
+  
+  if (!config) {
+    config = {
+      collections: {},
+    };
+  }
+  
+  config.collections[name] = {
+    path: collectionPath,
+    pattern: pattern || '**/*.md',
+    update: 'auto',
+  };
+  
+  saveCollectionConfig(configPath, config);
+  return config;
+}
+
+export function removeCollection(configPath: string, name: string): CollectionConfig {
+  const config = loadCollectionConfig(configPath);
+  
+  if (!config) {
+    throw new Error('Config file not found');
+  }
+  
+  delete config.collections[name];
+  
+  saveCollectionConfig(configPath, config);
+  return config;
+}
+
+export function listCollections(config: CollectionConfig): string[] {
+  return Object.keys(config.collections);
+}
+
+export function renameCollection(
+  configPath: string,
+  oldName: string,
+  newName: string
+): CollectionConfig {
+  const config = loadCollectionConfig(configPath);
+  
+  if (!config) {
+    throw new Error('Config file not found');
+  }
+  
+  if (!config.collections[oldName]) {
+    throw new Error(`Collection "${oldName}" not found`);
+  }
+  
+  config.collections[newName] = config.collections[oldName];
+  delete config.collections[oldName];
+  
+  saveCollectionConfig(configPath, config);
+  return config;
+}
+
+export function addContext(
+  configPath: string,
+  collectionName: string,
+  pathPrefix: string,
+  description: string
+): CollectionConfig {
+  const config = loadCollectionConfig(configPath);
+  
+  if (!config) {
+    throw new Error('Config file not found');
+  }
+  
+  if (!config.collections[collectionName]) {
+    throw new Error(`Collection "${collectionName}" not found`);
+  }
+  
+  if (!config.collections[collectionName].context) {
+    config.collections[collectionName].context = {};
+  }
+  
+  config.collections[collectionName].context![pathPrefix] = description;
+  
+  saveCollectionConfig(configPath, config);
+  return config;
+}
+
+export function findContextForPath(config: CollectionConfig, filePath: string): string | null {
+  let longestMatch: { prefix: string; description: string } | null = null;
+  
+  for (const collectionData of Object.values(config.collections)) {
+    if (!collectionData.context) {
+      continue;
+    }
+    
+    for (const [prefix, description] of Object.entries(collectionData.context)) {
+      if (filePath.includes(prefix)) {
+        if (!longestMatch || prefix.length > longestMatch.prefix.length) {
+          longestMatch = { prefix, description };
+        }
+      }
+    }
+  }
+  
+  return longestMatch ? longestMatch.description : null;
+}
+
+export function listAllContexts(
+  config: CollectionConfig
+): Array<{ collection: string; prefix: string; description: string }> {
+  const contexts: Array<{ collection: string; prefix: string; description: string }> = [];
+  
+  for (const [collectionName, collectionData] of Object.entries(config.collections)) {
+    if (!collectionData.context) {
+      continue;
+    }
+    
+    for (const [prefix, description] of Object.entries(collectionData.context)) {
+      contexts.push({
+        collection: collectionName,
+        prefix,
+        description,
+      });
+    }
+  }
+  
+  return contexts;
+}
+
+export async function scanCollectionFiles(collection: Collection): Promise<string[]> {
+  const expandedPath = collection.path.replace(/^~/, os.homedir());
+  
+  if (!fs.existsSync(expandedPath)) {
+    return [];
+  }
+  
+  const files = await fg(collection.pattern, {
+    cwd: expandedPath,
+    absolute: true,
+    onlyFiles: true,
+  });
+  
+  return files;
+}
+
+export function resolveCollectionPath(collection: Collection, basePath: string): string {
+  return collection.path;
+}
