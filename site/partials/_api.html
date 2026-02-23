@@ -1,0 +1,83 @@
+      <section id="api" class="fade-in">
+        <h2 class="section-title">API Reference</h2>
+        <p class="section-subtitle">MCP tools for hybrid search, retrieval, and maintenance.</p>
+        <div class="grid api-grid">
+          <div class="api-card">
+            <h4><span class="chip">memory_search</span></h4>
+            <p>BM25 keyword search.</p>
+            <div class="params">
+              <span class="chip">query (required)</span>
+              <span class="chip">limit (default 10)</span>
+              <span class="chip">collection</span>
+              <span class="chip">workspace</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_vsearch</span></h4>
+            <p>Semantic vector search using embeddings.</p>
+            <div class="params">
+              <span class="chip">query (required)</span>
+              <span class="chip">limit (default 10)</span>
+              <span class="chip">collection</span>
+              <span class="chip">workspace</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_query</span></h4>
+            <p>Full hybrid search with query expansion, RRF fusion, and LLM reranking.</p>
+            <div class="params">
+              <span class="chip">query (required)</span>
+              <span class="chip">limit (default 10)</span>
+              <span class="chip">collection</span>
+              <span class="chip">minScore</span>
+              <span class="chip">workspace</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_get</span></h4>
+            <p>Retrieve document by path or docid (#abc123).</p>
+            <div class="params">
+              <span class="chip">id (required)</span>
+              <span class="chip">fromLine</span>
+              <span class="chip">maxLines</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_multi_get</span></h4>
+            <p>Batch retrieve by glob pattern.</p>
+            <div class="params">
+              <span class="chip">pattern (required)</span>
+              <span class="chip">maxBytes (default 50000)</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_write</span></h4>
+            <p>Write to daily log or MEMORY.md.</p>
+            <div class="params">
+              <span class="chip">content (required)</span>
+              <span class="chip">target ("daily" or "memory")</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_status</span></h4>
+            <p>Show index health, collections, model status.</p>
+            <div class="params">
+              <span class="chip">no params</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_update</span></h4>
+            <p>Trigger immediate reindex of all collections.</p>
+            <div class="params">
+              <span class="chip">no params</span>
+            </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_index_codebase</span></h4>
+            <p>Index source files in the current workspace.</p>
+            <div class="params">
+              <span class="chip">root (optional)</span>
+            </div>
+          </div>
+          </div>
+        </div>
+      </section>

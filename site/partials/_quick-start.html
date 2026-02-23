@@ -1,0 +1,15 @@
+      <section id="quick-start" class="fade-in">
+        <h2 class="section-title">Quick Start</h2>
+        <p class="section-subtitle">CLI workflows for MCP, search, and indexing.</p>
+        <pre class="codeblock"><code><span class="token-comment"># MCP server</span>
+opencode-memory mcp              <span class="token-comment"># Start MCP server (stdio)</span>
+opencode-memory mcp --http       <span class="token-comment"># Start MCP server (HTTP)</span>
+
+<span class="token-comment"># Search</span>
+opencode-memory search "query"   <span class="token-comment"># BM25 search</span>
+opencode-memory query "query"    <span class="token-comment"># Hybrid search</span>
+
+<span class="token-comment"># Index management</span>
+opencode-memory status           <span class="token-comment"># Show index health</span>
+opencode-memory update           <span class="token-comment"># Reindex all collections</span></code></pre>
+      </section>

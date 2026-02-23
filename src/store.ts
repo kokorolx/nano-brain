@@ -117,7 +117,7 @@ export function createStore(dbPath: string): Store {
       db.exec(`
         CREATE VIRTUAL TABLE IF NOT EXISTS vectors_vec USING vec0(
           hash_seq TEXT PRIMARY KEY,
-          embedding float[384] distance_metric=cosine
+          embedding float[768] distance_metric=cosine
         );
       `);
     } catch (err) {
@@ -253,6 +253,31 @@ export function createStore(dbPath: string): Store {
     LEFT JOIN content_vectors cv ON cv.hash = c.hash
     WHERE cv.hash IS NULL
   `);
+
+  const getHashesNeedingEmbeddingByWorkspaceStmt = db.prepare(`
+    SELECT c.hash, c.body, d.path
+    FROM content c
+    JOIN documents d ON d.hash = c.hash AND d.active = 1
+    LEFT JOIN content_vectors cv ON cv.hash = c.hash
+    WHERE cv.hash IS NULL AND d.project_hash IN (?, 'global')
+  `);
+  const getNextHashNeedingEmbeddingStmt = db.prepare(`
+    SELECT c.hash, c.body, d.path
+    FROM content c
+    JOIN documents d ON d.hash = c.hash AND d.active = 1
+    LEFT JOIN content_vectors cv ON cv.hash = c.hash
+    WHERE cv.hash IS NULL
+    LIMIT 1
+  `);
+
+  const getNextHashNeedingEmbeddingByWorkspaceStmt = db.prepare(`
+    SELECT c.hash, c.body, d.path
+    FROM content c
+    JOIN documents d ON d.hash = c.hash AND d.active = 1
+    LEFT JOIN content_vectors cv ON cv.hash = c.hash
+    WHERE cv.hash IS NULL AND d.project_hash IN (?, 'global')
+    LIMIT 1
+  `);
   
   return {
     modelStatus: {
@@ -352,15 +377,35 @@ export function createStore(dbPath: string): Store {
     
     ensureVecTable(dimensions: number) {
       if (!vecAvailable) return;
-      
       try {
-        db.exec(`DROP TABLE IF EXISTS vectors_vec`);
-        db.exec(`
-          CREATE VIRTUAL TABLE vectors_vec USING vec0(
-            hash_seq TEXT PRIMARY KEY,
-            embedding float[${dimensions}] distance_metric=cosine
-          );
-        `);
+        let needsRebuild = false;
+        // Check if existing table has correct dimensions by trying a dummy query
+        try {
+          const testVec = new Float32Array(dimensions);
+          db.prepare('SELECT hash_seq FROM vectors_vec WHERE embedding MATCH ? LIMIT 1').get(testVec);
+          // Table exists with correct dimensions — check consistency
+          const vecCount = (db.prepare('SELECT COUNT(*) as count FROM vectors_vec').get() as { count: number }).count;
+          const cvCount = (db.prepare('SELECT COUNT(*) as count FROM content_vectors').get() as { count: number }).count;
+          if (vecCount === 0 && cvCount > 0) {
+            // vectors_vec was rebuilt but content_vectors has stale tracking rows
+            console.error(`[store] vectors_vec empty but content_vectors has ${cvCount} stale rows, clearing for re-embedding`);
+            db.exec(`DELETE FROM content_vectors`);
+          }
+          return;
+        } catch {
+          needsRebuild = true;
+        }
+        if (needsRebuild) {
+          db.exec(`DROP TABLE IF EXISTS vectors_vec`);
+          db.exec(`DELETE FROM content_vectors`);
+          db.exec(`
+            CREATE VIRTUAL TABLE vectors_vec USING vec0(
+              hash_seq TEXT PRIMARY KEY,
+              embedding float[${dimensions}] distance_metric=cosine
+            );
+          `);
+          console.error(`[store] Recreated vectors_vec with ${dimensions} dimensions, cleared content_vectors for re-embedding`);
+        }
       } catch (err) {
         console.warn('Failed to recreate vector table:', err);
       }
@@ -407,23 +452,21 @@ export function createStore(dbPath: string): Store {
           SELECT v.hash_seq, v.distance, d.id, d.path, d.collection, d.title, d.hash, d.agent
           FROM vectors_vec v
           JOIN documents d ON substr(v.hash_seq, 1, instr(v.hash_seq, ':') - 1) = d.hash
-          WHERE d.active = 1
+          WHERE v.embedding MATCH ?
+            AND k = ?
+            AND d.active = 1
         `;
         
-        const params: (Float32Array | string | number)[] = [new Float32Array(embedding)];
-        
+        const params: (Float32Array | string | number)[] = [new Float32Array(embedding), limit];
         if (collection) {
           sql += ` AND d.collection = ?`;
           params.push(collection);
         }
-        
         if (projectHash && projectHash !== 'all') {
           sql += ` AND d.project_hash IN (?, 'global')`;
           params.push(projectHash);
         }
-        
-        sql += ` ORDER BY v.distance LIMIT ?`;
-        params.push(limit);
+        sql += ` ORDER BY v.distance`;
         
         const stmt = db.prepare(sql);
         const rows = stmt.all(...params) as Array<Record<string, unknown>>;
@@ -481,8 +524,18 @@ export function createStore(dbPath: string): Store {
       };
     },
     
-    getHashesNeedingEmbedding(): Array<{ hash: string; body: string; path: string }> {
+    getHashesNeedingEmbedding(projectHash?: string): Array<{ hash: string; body: string; path: string }> {
+      if (projectHash && projectHash !== 'all') {
+        return getHashesNeedingEmbeddingByWorkspaceStmt.all(projectHash) as Array<{ hash: string; body: string; path: string }>;
+      }
       return getHashesNeedingEmbeddingStmt.all() as Array<{ hash: string; body: string; path: string }>;
+    },
+
+    getNextHashNeedingEmbedding(projectHash?: string): { hash: string; body: string; path: string } | null {
+      if (projectHash && projectHash !== 'all') {
+        return getNextHashNeedingEmbeddingByWorkspaceStmt.get(projectHash) as { hash: string; body: string; path: string } | null;
+      }
+      return getNextHashNeedingEmbeddingStmt.get() as { hash: string; body: string; path: string } | null;
     },
     
     getWorkspaceStats(): Array<{ projectHash: string; count: number }> {
@@ -517,6 +570,17 @@ export function createStore(dbPath: string): Store {
       
       return totalDeleted;
     },
+    
+    getCollectionStorageSize(collection: string): number {
+      const stmt = db.prepare(`
+        SELECT COALESCE(SUM(LENGTH(c.body)), 0) as totalSize
+        FROM documents d
+        JOIN content c ON c.hash = d.hash
+        WHERE d.collection = ? AND d.active = 1
+      `);
+      const row = stmt.get(collection) as { totalSize: number } | undefined;
+      return row?.totalSize ?? 0;
+    },
   };
 }
 
@@ -529,7 +593,8 @@ export function indexDocument(
   collection: string,
   filePath: string,
   content: string,
-  title: string
+  title: string,
+  projectHash?: string
 ): { hash: string; chunks: number; skipped: boolean } {
   const hash = computeHash(content);
   
@@ -551,6 +616,7 @@ export function indexDocument(
     createdAt: existingDoc?.createdAt ?? now,
     modifiedAt: now,
     active: true,
+    projectHash,
   });
   
   return { hash, chunks: chunks.length, skipped: false };

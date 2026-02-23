@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>opencode-memory · MCP Server</title>
+    <style>
+      :root {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --bg-2: #0f172a;
+  --bg-3: #121b2f;
+  --card: rgba(15, 23, 42, 0.7);
+  --glass: rgba(17, 25, 40, 0.6);
+  --border: rgba(148, 163, 184, 0.18);
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #3b82f6;
+  --accent-2: #06b6d4;
+  --shadow: 0 30px 80px rgba(2, 6, 23, 0.6);
+  --radius-lg: 22px;
+  --radius-md: 16px;
+  --radius-sm: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background: radial-gradient(circle at 20% 20%, rgba(59, 130, 246, 0.18), transparent 45%),
+    radial-gradient(circle at 80% 0%, rgba(6, 182, 212, 0.16), transparent 40%),
+    linear-gradient(180deg, #0a1020 0%, #0b1220 45%, #0c1224 100%);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 20px 80px;
+}
+
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  backdrop-filter: blur(14px);
+  background: rgba(10, 16, 32, 0.75);
+  border-bottom: 1px solid var(--border);
+}
+
+.nav-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  gap: 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.brand-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 0 18px rgba(59, 130, 246, 0.8);
+}
+
+.nav-links {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.nav-links a {
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-size: 0.9rem;
+  transition: color 200ms ease, background 200ms ease, border-color 200ms ease;
+}
+
+.nav-links a:hover {
+  color: var(--text);
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.4);
+}
+
+.hero {
+  margin-top: 40px;
+  padding: 52px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(140deg, rgba(17, 24, 39, 0.85), rgba(2, 6, 23, 0.95));
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  position: relative;
+  overflow: hidden;
+}
+
+.hero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 80% 20%, rgba(59, 130, 246, 0.25), transparent 40%);
+  pointer-events: none;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  color: #bfdbfe;
+}
+
+.hero h1 {
+  font-size: clamp(2.6rem, 4.5vw, 3.8rem);
+  margin: 16px 0 12px;
+  letter-spacing: -0.02em;
+}
+
+.hero p {
+  font-size: 1.05rem;
+  color: var(--muted);
+  max-width: 700px;
+  line-height: 1.7;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 26px;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  transition: transform 200ms ease, box-shadow 200ms ease, background 200ms ease;
+}
+
+.button.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #0b1220;
+  box-shadow: 0 18px 36px rgba(59, 130, 246, 0.35);
+}
+
+.button.secondary {
+  background: rgba(15, 23, 42, 0.7);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.button:hover {
+  transform: translateY(-2px);
+}
+
+section {
+  margin-top: 72px;
+  scroll-margin-top: 100px;
+}
+
+.section-title {
+  font-size: clamp(1.6rem, 2.4vw, 2.2rem);
+  margin-bottom: 12px;
+}
+
+.section-subtitle {
+  margin-bottom: 26px;
+  color: var(--muted);
+  max-width: 720px;
+  line-height: 1.7;
+}
+
+.grid {
+  display: grid;
+  gap: 18px;
+}
+
+.features {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.card {
+  background: var(--card);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  padding: 20px;
+  backdrop-filter: blur(12px);
+  transition: border-color 200ms ease, transform 200ms ease, box-shadow 200ms ease;
+  min-height: 160px;
+}
+
+.card:hover {
+  border-color: rgba(59, 130, 246, 0.5);
+  transform: translateY(-3px);
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.6);
+}
+
+.icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: rgba(59, 130, 246, 0.16);
+  color: #93c5fd;
+  margin-bottom: 14px;
+  font-weight: 700;
+}
+
+.card h3 {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+}
+
+.card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.pipeline {
+  background: var(--glass);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  padding: 28px;
+  display: grid;
+  gap: 18px;
+}
+
+.pipeline-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.node {
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  background: rgba(10, 16, 32, 0.9);
+  font-weight: 600;
+  min-width: 150px;
+  text-align: center;
+}
+
+.connector {
+  width: 52px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.7), transparent);
+  position: relative;
+}
+
+.connector::after {
+  content: '';
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid rgba(59, 130, 246, 0.7);
+  border-top: 2px solid rgba(59, 130, 246, 0.7);
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  width: 100%;
+}
+
+.merge {
+  width: 2px;
+  height: 36px;
+  background: rgba(59, 130, 246, 0.7);
+  margin: 0 auto;
+  position: relative;
+}
+
+.merge::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid rgba(59, 130, 246, 0.7);
+  border-bottom: 2px solid rgba(59, 130, 246, 0.7);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.api-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.api-card {
+  padding: 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: rgba(12, 19, 35, 0.8);
+}
+
+.api-card h4 {
+  margin: 0 0 8px;
+}
+
+.api-card p {
+  margin: 0 0 10px;
+  color: var(--muted);
+}
+
+.params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.chip {
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  color: #c7d2fe;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.code-pill {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  color: #cbd5f5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+}
+
+.codeblock {
+  background: #0b1220;
+  border-radius: var(--radius-md);
+  padding: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9rem;
+  line-height: 1.7;
+  color: #e2e8f0;
+}
+
+.token-key {
+  color: #93c5fd;
+}
+
+.token-string {
+  color: #fca5a5;
+}
+
+.token-boolean {
+  color: #facc15;
+}
+
+.token-comment {
+  color: #94a3b8;
+}
+
+.models {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.model-card {
+  padding: 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: rgba(12, 19, 35, 0.75);
+}
+
+.model-card h4 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.model-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.tech-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.tech-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.stats {
+  margin-top: 48px;
+  padding: 16px 20px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: rgba(15, 23, 42, 0.7);
+  text-align: center;
+  color: #cbd5f5;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+footer {
+  margin-top: 72px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.fade-in {
+  opacity: 0;
+  transform: translateY(16px);
+  transition: opacity 600ms ease, transform 600ms ease;
+}
+
+.fade-in.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (max-width: 900px) {
+  .features,
+  .api-grid,
+  .models {
+    grid-template-columns: 1fr;
+  }
+
+  .hero {
+    padding: 36px 24px;
+  }
+
+  .nav-inner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .hero-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pipeline-row {
+    flex-direction: column;
+  }
+
+  .connector {
+    width: 2px;
+    height: 28px;
+  }
+
+  .connector::after {
+    right: 50%;
+    top: auto;
+    bottom: -6px;
+    transform: translateX(50%) rotate(135deg);
+  }
+}
+
+    </style>
+  </head>
+  <body>
+    <header class="nav">
+      <div class="nav-inner">
+        <div class="brand"><span class="brand-dot"></span>opencode-memory</div>
+        <nav class="nav-links">
+          <a href="#features">Features</a>
+          <a href="#how">How It Works</a>
+          <a href="#api">API</a>
+          <a href="#config">Config</a>
+          <a href="#models">Models</a>
+        </nav>
+      </div>
+    </header>
+
+    <div class="page">
+            <section class="hero fade-in" id="hero">
+        <span class="badge">v2026.1.0</span>
+        <h1>opencode-memory</h1>
+        <p>Persistent hybrid search memory for AI coding agents.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="https://github.com/kokorolx/opencode-memory">GitHub</a>
+          <span class="code-pill">npm i opencode-memory</span>
+        </div>
+      </section>
+            <section id="features" class="fade-in">
+        <h2 class="section-title">Features</h2>
+        <p class="section-subtitle">
+          Premium local memory with a QMD-grade hybrid pipeline, SQLite foundations, codebase indexing, and MCP-first ergonomics.
+        </p>
+        <div class="grid features">
+          <div class="card">
+            <div class="icon">🔍</div>
+            <h3>Hybrid Search Pipeline</h3>
+            <p>Query expansion → parallel BM25 + vector search → RRF fusion → LLM reranking</p>
+          </div>
+          <div class="card">
+            <div class="icon">🧠</div>
+            <h3>Local AI Models</h3>
+            <p>nomic-embed-text-v1.5, bge-reranker-v2-m3, qmd-query-expansion-1.7B — all GGUF, fully offline</p>
+          </div>
+          <div class="card">
+            <div class="icon">🗄️</div>
+            <h3>SQLite + sqlite-vec</h3>
+            <p>FTS5 for BM25 keyword search, sqlite-vec for vector similarity — single-file database</p>
+          </div>
+          <div class="card">
+            <div class="icon">🔌</div>
+            <h3>MCP Server</h3>
+            <p>10 tools via stdio transport, integrates with any MCP-compatible AI agent</p>
+          </div>
+          <div class="card">
+            <div class="icon">📚</div>
+            <h3>Multi-Collection</h3>
+            <p>Sessions, daily logs, curated memory — all indexed and searchable</p>
+          </div>
+          <div class="card">
+            <div class="icon">🔒</div>
+            <h3>Privacy First</h3>
+            <p>100% local processing, no cloud dependencies, your data stays on your machine</p>
+          </div>
+          <div class="card">
+            <div class="icon">🧬</div>
+            <h3>Codebase Indexing</h3>
+            <p>Index source files with structural boundary detection. Workspace-scoped search across sessions and code.</p>
+          </div>
+        </div>
+      </section>
+            <section id="how" class="fade-in">
+        <h2 class="section-title">How It Works</h2>
+        <p class="section-subtitle">
+          Query expansion and dual retrieval streams converge through RRF fusion (k=60), then a reranker refines the final ordering.
+        </p>
+        <div class="pipeline">
+          <div class="pipeline-row">
+            <div class="node">Query</div>
+            <div class="connector"></div>
+            <div class="node">Query Expansion</div>
+          </div>
+          <div class="merge"></div>
+          <div class="pipeline-row split">
+            <div class="node">BM25 Search</div>
+            <div class="node">Vector Search</div>
+          </div>
+          <div class="merge"></div>
+          <div class="pipeline-row">
+            <div class="node">RRF Fusion (k=60)</div>
+            <div class="connector"></div>
+            <div class="node">LLM Reranking</div>
+            <div class="connector"></div>
+            <div class="node">Results</div>
+          </div>
+        </div>
+      </section>
+            <section id="api" class="fade-in">
+        <h2 class="section-title">API Reference</h2>
+        <p class="section-subtitle">MCP tools for hybrid search, retrieval, and maintenance.</p>
+        <div class="grid api-grid">
+          <div class="api-card">
+            <h4><span class="chip">memory_search</span></h4>
+            <p>BM25 keyword search.</p>
+            <div class="params">
+              <span class="chip">query (required)</span>
+              <span class="chip">limit (default 10)</span>
+              <span class="chip">collection</span>
+              <span class="chip">workspace</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_vsearch</span></h4>
+            <p>Semantic vector search using embeddings.</p>
+            <div class="params">
+              <span class="chip">query (required)</span>
+              <span class="chip">limit (default 10)</span>
+              <span class="chip">collection</span>
+              <span class="chip">workspace</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_query</span></h4>
+            <p>Full hybrid search with query expansion, RRF fusion, and LLM reranking.</p>
+            <div class="params">
+              <span class="chip">query (required)</span>
+              <span class="chip">limit (default 10)</span>
+              <span class="chip">collection</span>
+              <span class="chip">minScore</span>
+              <span class="chip">workspace</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_get</span></h4>
+            <p>Retrieve document by path or docid (#abc123).</p>
+            <div class="params">
+              <span class="chip">id (required)</span>
+              <span class="chip">fromLine</span>
+              <span class="chip">maxLines</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_multi_get</span></h4>
+            <p>Batch retrieve by glob pattern.</p>
+            <div class="params">
+              <span class="chip">pattern (required)</span>
+              <span class="chip">maxBytes (default 50000)</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_write</span></h4>
+            <p>Write to daily log or MEMORY.md.</p>
+            <div class="params">
+              <span class="chip">content (required)</span>
+              <span class="chip">target ("daily" or "memory")</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_status</span></h4>
+            <p>Show index health, collections, model status.</p>
+            <div class="params">
+              <span class="chip">no params</span>
+            </div>
+          </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_update</span></h4>
+            <p>Trigger immediate reindex of all collections.</p>
+            <div class="params">
+              <span class="chip">no params</span>
+            </div>
+          <div class="api-card">
+            <h4><span class="chip">memory_index_codebase</span></h4>
+            <p>Index source files in the current workspace.</p>
+            <div class="params">
+              <span class="chip">root (optional)</span>
+            </div>
+          </div>
+          </div>
+        </div>
+      </section>
+            <section id="config" class="fade-in">
+        <h2 class="section-title">Configuration</h2>
+        <p class="section-subtitle">Drop this MCP config into your OpenCode settings.</p>
+        <pre class="codeblock"><code>{
+  <span class="token-string">"mcp"</span>: {
+    <span class="token-string">"opencode-memory"</span>: {
+      <span class="token-string">"type"</span>: <span class="token-string">"local"</span>,
+      <span class="token-string">"command"</span>: [<span class="token-string">"node"</span>, <span class="token-string">"path/to/opencode-memory/bin/cli.js"</span>, <span class="token-string">"mcp"</span>],
+      <span class="token-string">"enabled"</span>: <span class="token-boolean">true</span>
+    }
+  }
+}</code></pre>
+        <pre class="codeblock"><code><span class="token-comment"># ~/.config/opencode-memory/config.yml</span>
+<span class="token-key">collections</span>:
+  <span class="token-key">memory</span>:
+    <span class="token-key">path</span>: <span class="token-string">~/.opencode-memory</span>
+    <span class="token-key">pattern</span>: <span class="token-string">"**/*.md"</span>
+    <span class="token-key">update</span>: <span class="token-string">auto</span>
+  <span class="token-key">sessions</span>:
+    <span class="token-key">path</span>: <span class="token-string">~/.local/share/opencode/sessions</span>
+    <span class="token-key">pattern</span>: <span class="token-string">"**/*.json"</span>
+    <span class="token-key">update</span>: <span class="token-string">auto</span></code></pre>
+      </section>
+            <section id="quick-start" class="fade-in">
+        <h2 class="section-title">Quick Start</h2>
+        <p class="section-subtitle">CLI workflows for MCP, search, and indexing.</p>
+        <pre class="codeblock"><code><span class="token-comment"># MCP server</span>
+opencode-memory mcp              <span class="token-comment"># Start MCP server (stdio)</span>
+opencode-memory mcp --http       <span class="token-comment"># Start MCP server (HTTP)</span>
+
+<span class="token-comment"># Search</span>
+opencode-memory search "query"   <span class="token-comment"># BM25 search</span>
+opencode-memory query "query"    <span class="token-comment"># Hybrid search</span>
+
+<span class="token-comment"># Index management</span>
+opencode-memory status           <span class="token-comment"># Show index health</span>
+opencode-memory update           <span class="token-comment"># Reindex all collections</span></code></pre>
+      </section>
+            <section id="models" class="fade-in">
+        <h2 class="section-title">Models</h2>
+        <p class="section-subtitle">Local GGUF models sized for efficient offline retrieval.</p>
+        <div class="grid models">
+          <div class="model-card">
+            <h4>nomic-embed-text-v1.5 (~270MB)</h4>
+            <p>Embeddings</p>
+          </div>
+          <div class="model-card">
+            <h4>bge-reranker-v2-m3 (~1.1GB)</h4>
+            <p>Reranking</p>
+          </div>
+          <div class="model-card">
+            <h4>qmd-query-expansion-1.7B (~1GB)</h4>
+            <p>Query Expansion</p>
+          </div>
+        </div>
+      </section>
+            <section id="tech" class="fade-in">
+        <h2 class="section-title">Tech Stack</h2>
+        <div class="tech-stack">
+          <span class="tech-pill">TypeScript</span>
+          <span class="tech-pill">Bun</span>
+          <span class="tech-pill">SQLite</span>
+          <span class="tech-pill">sqlite-vec</span>
+          <span class="tech-pill">FTS5</span>
+          <span class="tech-pill">node-llama-cpp</span>
+          <span class="tech-pill">MCP SDK</span>
+          <span class="tech-pill">chokidar</span>
+        </div>
+      </section>
+            <div class="stats fade-in">2700+ documents indexed | 15 workspaces | 3 AI models | 10 MCP tools | 428 tests passing</div>
+            <footer>
+        <div>MIT License · Built for OpenCode <span aria-hidden="true">♥</span> · Inspired by QMD</div>
+        <div>
+          <a href="https://github.com/kokorolx/opencode-memory">GitHub</a>
+        </div>
+      </footer>
+    </div>
+
+    <script>
+      const observer = new IntersectionObserver(
+  (entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible')
+      }
+    })
+  },
+  { threshold: 0.15 }
+)
+
+document.querySelectorAll('.fade-in').forEach((el) => observer.observe(el))
+
+    </script>
+  </body>
+</html>

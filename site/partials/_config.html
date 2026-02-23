@@ -1,0 +1,23 @@
+      <section id="config" class="fade-in">
+        <h2 class="section-title">Configuration</h2>
+        <p class="section-subtitle">Drop this MCP config into your OpenCode settings.</p>
+        <pre class="codeblock"><code>{
+  <span class="token-string">"mcp"</span>: {
+    <span class="token-string">"opencode-memory"</span>: {
+      <span class="token-string">"type"</span>: <span class="token-string">"local"</span>,
+      <span class="token-string">"command"</span>: [<span class="token-string">"node"</span>, <span class="token-string">"path/to/opencode-memory/bin/cli.js"</span>, <span class="token-string">"mcp"</span>],
+      <span class="token-string">"enabled"</span>: <span class="token-boolean">true</span>
+    }
+  }
+}</code></pre>
+        <pre class="codeblock"><code><span class="token-comment"># ~/.config/opencode-memory/config.yml</span>
+<span class="token-key">collections</span>:
+  <span class="token-key">memory</span>:
+    <span class="token-key">path</span>: <span class="token-string">~/.opencode-memory</span>
+    <span class="token-key">pattern</span>: <span class="token-string">"**/*.md"</span>
+    <span class="token-key">update</span>: <span class="token-string">auto</span>
+  <span class="token-key">sessions</span>:
+    <span class="token-key">path</span>: <span class="token-string">~/.local/share/opencode/sessions</span>
+    <span class="token-key">pattern</span>: <span class="token-string">"**/*.json"</span>
+    <span class="token-key">update</span>: <span class="token-string">auto</span></code></pre>
+      </section>

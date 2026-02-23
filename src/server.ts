@@ -6,7 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as http from 'http';
-import type { Store, SearchResult, IndexHealth, Collection, StorageConfig } from './types.js';
+import type { Store, SearchResult, IndexHealth, Collection, StorageConfig, CodebaseConfig } from './types.js'
 import type { SearchProviders } from './search.js';
 import { hybridSearch } from './search.js';
 import { createStore } from './store.js';
@@ -15,6 +15,7 @@ import { createEmbeddingProvider } from './embeddings.js';
 import { createReranker } from './reranker.js';
 import { startWatcher } from './watcher.js';
 import { parseStorageConfig } from './storage.js';
+import { indexCodebase, getCodebaseStats, embedPendingCodebase } from './codebase.js'
 
 export interface ServerOptions {
   dbPath: string;
@@ -24,13 +25,15 @@ export interface ServerOptions {
 }
 
 export interface ServerDeps {
-  store: Store;
-  providers: SearchProviders;
-  collections: Collection[];
-  configPath: string;
-  outputDir: string;
-  storageConfig?: StorageConfig;
-  currentProjectHash: string;
+  store: Store
+  providers: SearchProviders
+  collections: Collection[]
+  configPath: string
+  outputDir: string
+  storageConfig?: StorageConfig
+  currentProjectHash: string
+  codebaseConfig?: CodebaseConfig
+  workspaceRoot: string
 }
 
 export function formatSearchResults(results: SearchResult[]): string {
@@ -45,7 +48,7 @@ export function formatSearchResults(results: SearchResult[]): string {
   ).join('\n---\n\n');
 }
 
-export function formatStatus(health: IndexHealth): string {
+export function formatStatus(health: IndexHealth, codebaseStats?: { enabled: boolean; documents: number; chunks: number; extensions: string[]; excludeCount: number; storageUsed: number; maxSize: number }): string {
   const lines = [
     `📊 **Memory Index Status**`,
     `Documents: ${health.documentCount} | Chunks: ${health.chunkCount} | Pending embeddings: ${health.pendingEmbeddings}`,
@@ -58,17 +61,27 @@ export function formatStatus(health: IndexHealth): string {
     `  - Embedding: ${health.modelStatus.embedding}`,
     `  - Reranker: ${health.modelStatus.reranker}`,
     `  - Expander: ${health.modelStatus.expander}`,
-  ];
-  
+  ]
+  if (codebaseStats) {
+    const usedMB = (codebaseStats.storageUsed / 1024 / 1024).toFixed(1)
+    const maxMB = (codebaseStats.maxSize / 1024 / 1024).toFixed(0)
+    lines.push(``)
+    lines.push(`**Codebase:**`)
+    lines.push(`  - Enabled: ${codebaseStats.enabled}`)
+    lines.push(`  - Documents: ${codebaseStats.documents}`)
+    lines.push(`  - Storage: ${usedMB}MB / ${maxMB}MB`)
+    lines.push(`  - Extensions: ${codebaseStats.extensions.join(', ')}`)
+    lines.push(`  - Exclude patterns: ${codebaseStats.excludeCount}`)
+  }
   if (health.workspaceStats && health.workspaceStats.length > 0) {
-    lines.push(``);
-    lines.push(`**Workspaces:**`);
+    lines.push(``)
+    lines.push(`**Workspaces:**`)
     for (const ws of health.workspaceStats) {
-      lines.push(`  - ${ws.projectHash}: ${ws.count} docs`);
+      lines.push(`  - ${ws.projectHash}: ${ws.count} docs`)
     }
   }
   
-  return lines.join('\n');
+  return lines.join('\n')
 }
 
 export function createMcpServer(deps: ServerDeps): McpServer {
@@ -320,19 +333,73 @@ export function createMcpServer(deps: ServerDeps): McpServer {
   server.tool(
     'memory_status',
     'Show index health, collection info, and model status',
-    {},
-    async () => {
-      const health = store.getIndexHealth();
+    {
+      root: z.string().optional().describe('Workspace root path for codebase stats'),
+    },
+    async ({ root }) => {
+      const health = store.getIndexHealth()
+      const effectiveRoot = root || deps.workspaceRoot
+      const codebaseStats = getCodebaseStats(store, deps.codebaseConfig, effectiveRoot)
       return {
         content: [
           {
             type: 'text',
-            text: formatStatus(health),
+            text: formatStatus(health, codebaseStats),
           },
         ],
-      };
+      }
     }
-  );
+  )
+  server.tool(
+    'memory_index_codebase',
+    'Index codebase files in the current workspace',
+    {
+      root: z.string().optional().describe('Workspace root path to index. Defaults to configured root or server cwd.'),
+    },
+    async ({ root }) => {
+      if (!deps.codebaseConfig?.enabled) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: '❌ Codebase indexing is not enabled. Add `codebase: { enabled: true }` to your collections.yaml',
+            },
+          ],
+          isError: true,
+        }
+      }
+      
+      ;(async () => {
+        try {
+          const effectiveRoot = root || deps.workspaceRoot
+          const effectiveProjectHash = crypto.createHash('sha256').update(effectiveRoot).digest('hex').substring(0, 12)
+          const result = await indexCodebase(
+            store,
+            effectiveRoot,
+            deps.codebaseConfig!,
+            effectiveProjectHash,
+            providers.embedder
+          )
+          console.error(`[codebase] Indexing complete: ${result.filesScanned} scanned, ${result.filesIndexed} indexed, ${result.filesSkippedUnchanged} unchanged`)
+          if (providers.embedder) {
+            const embedded = await embedPendingCodebase(store, providers.embedder, 10, effectiveProjectHash)
+            console.error(`[codebase] Embedding complete: ${embedded} chunks embedded`)
+          }
+        } catch (err) {
+          console.error(`[codebase] Indexing failed:`, err)
+        }
+      })()
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `🔄 Codebase indexing started in background for ${root || deps.workspaceRoot}`,
+          },
+        ],
+      }
+    }
+  )
   
   server.tool(
     'memory_update',
@@ -436,20 +503,22 @@ export async function startServer(options: ServerOptions): Promise<void> {
   const outputDir = path.join(homeDir, '.opencode-memory');
   const cacheDir = path.join(homeDir, '.cache', 'opencode-memory');
   const pidPath = path.join(cacheDir, 'mcp.pid');
-  
-  const currentProjectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12);
-  
-  const store = createStore(dbPath);
-  
   const finalConfigPath = configPath || path.join(outputDir, 'collections.yaml');
   const config = loadCollectionConfig(finalConfigPath);
   const collections = config ? getCollections(config) : [];
   const storageConfig = parseStorageConfig(config?.storage);
+  const resolvedWorkspaceRoot = config?.codebase?.root || process.cwd();
+  const currentProjectHash = crypto.createHash('sha256').update(resolvedWorkspaceRoot).digest('hex').substring(0, 12);
+  // Use per-workspace database: {dirName}-{hash}.sqlite instead of default.sqlite
+  const isDefaultDb = dbPath.endsWith('/default.sqlite') || dbPath.endsWith('\\default.sqlite');
+  const workspaceDirName = path.basename(resolvedWorkspaceRoot).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const effectiveDbPath = isDefaultDb ? path.join(path.dirname(dbPath), `${workspaceDirName}-${currentProjectHash}.sqlite`) : dbPath;
+  console.error(`[memory] Workspace: ${resolvedWorkspaceRoot} (${currentProjectHash})`);
+  console.error(`[memory] Database: ${effectiveDbPath}`);
+  const store = createStore(effectiveDbPath);
   
-  const [embedder, reranker] = await Promise.all([
-    createEmbeddingProvider(),
-    createReranker(),
-  ]);
+  let embedder: SearchProviders['embedder'] = null;
+  let reranker: SearchProviders['reranker'] = null;
   
   const providers: SearchProviders = {
     embedder,
@@ -458,8 +527,8 @@ export async function startServer(options: ServerOptions): Promise<void> {
   };
   
   store.modelStatus = {
-    embedding: embedder ? embedder.getModel() : 'missing',
-    reranker: reranker ? 'bge-reranker-v2-m3' : 'missing',
+    embedding: 'loading...',
+    reranker: 'loading...',
     expander: 'disabled',
   };
   
@@ -471,34 +540,47 @@ export async function startServer(options: ServerOptions): Promise<void> {
     outputDir,
     storageConfig,
     currentProjectHash,
+    codebaseConfig: config?.codebase,
+    workspaceRoot: resolvedWorkspaceRoot,
   };
   
   const server = createMcpServer(deps);
   
-  const watcher = startWatcher({
-    store,
-    collections,
-    embedder: providers.embedder,
-    debounceMs: 2000,
-    pollIntervalMs: 300000,
-    sessionPollMs: 120000,
-    sessionStorageDir: path.join(homeDir, '.local/share/opencode/storage'),
-    outputDir: path.join(outputDir, 'sessions'),
-    storageConfig,
-    dbPath,
-    onUpdate: (filePath) => {
-      if (!daemon) {
-        console.error(`[watcher] File changed: ${filePath}`);
-      }
-    },
-  });
+  let watcher: ReturnType<typeof startWatcher> | null = null;
+  const startFileWatcher = () => {
+    if (watcher) {
+      return;
+    }
+    watcher = startWatcher({
+      store,
+      collections,
+      embedder: providers.embedder,
+      debounceMs: 2000,
+      pollIntervalMs: 300000,
+      sessionPollMs: 120000,
+      sessionStorageDir: path.join(homeDir, '.local/share/opencode/storage'),
+      outputDir: path.join(outputDir, 'sessions'),
+      storageConfig,
+      dbPath,
+      onUpdate: (filePath) => {
+        if (!daemon) {
+          console.error(`[watcher] File changed: ${filePath}`);
+        }
+      },
+      codebaseConfig: config?.codebase,
+      workspaceRoot: resolvedWorkspaceRoot,
+      projectHash: currentProjectHash,
+    });
+  };
   
   if (daemon) {
     checkStalePid(pidPath);
     writePidFile(pidPath);
     
     const cleanup = () => {
-      watcher.stop();
+      if (watcher) {
+        watcher.stop();
+      }
       removePidFile(pidPath);
       store.close();
       process.exit(0);
@@ -546,5 +628,37 @@ export async function startServer(options: ServerOptions): Promise<void> {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error('MCP server started on stdio');
+  }
+  
+  Promise.all([
+    createEmbeddingProvider({ embeddingConfig: config?.embedding })
+      .then((loadedEmbedder) => {
+        providers.embedder = loadedEmbedder;
+        store.modelStatus.embedding = loadedEmbedder ? loadedEmbedder.getModel() : 'missing';
+        if (loadedEmbedder) {
+          store.ensureVecTable(loadedEmbedder.getDimensions());
+        }
+        console.error(`[memory] Embedding model: ${store.modelStatus.embedding}`);
+        startFileWatcher();
+      })
+      .catch((err) => {
+        store.modelStatus.embedding = 'failed';
+        console.error('[memory] Embedding model failed:', err);
+        startFileWatcher();
+      }),
+    createReranker()
+      .then((loadedReranker) => {
+        providers.reranker = loadedReranker;
+        store.modelStatus.reranker = loadedReranker ? 'bge-reranker-v2-m3' : 'missing';
+        console.error(`[memory] Reranker model: ${store.modelStatus.reranker}`);
+      })
+      .catch((err) => {
+        store.modelStatus.reranker = 'failed';
+        console.error('[memory] Reranker model failed:', err);
+      }),
+  ]);
+
+  if (!config?.codebase?.enabled) {
+    startFileWatcher();
   }
 }

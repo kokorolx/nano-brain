@@ -2,7 +2,7 @@ import { getLlama } from 'node-llama-cpp';
 import { promises as fs } from 'fs';
 import { join, dirname } from 'path';
 import { homedir, cpus } from 'os';
-import type { EmbeddingResult } from './types.js';
+import type { EmbeddingResult, EmbeddingConfig } from './types.js';
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<EmbeddingResult>;
@@ -15,6 +15,7 @@ export interface EmbeddingProvider {
 export interface EmbeddingProviderOptions {
   modelPath?: string;
   cacheDir?: string;
+  embeddingConfig?: EmbeddingConfig;
 }
 
 const DEFAULT_MODEL_URI = 'hf:nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf';
@@ -108,6 +109,73 @@ function formatDocumentPrompt(title: string, content: string): string {
   return `search_document: ${content}`;
 }
 
+// Ollama's truncate:true is broken (github.com/ollama/ollama/issues/14186)
+// Client-side truncation: 1800 chars ≈ ~450 tokens, safe for 2048 context
+const OLLAMA_MAX_CHARS = 1800;
+
+function truncateForOllama(text: string): string {
+  if (text.length <= OLLAMA_MAX_CHARS) return text;
+  return text.substring(0, OLLAMA_MAX_CHARS);
+}
+class OllamaEmbeddingProvider implements EmbeddingProvider {
+  private url: string;
+  private model: string;
+  constructor(url: string, model: string) {
+    this.url = url.replace(/\/$/, '');
+    this.model = model;
+  }
+  async embed(text: string): Promise<EmbeddingResult> {
+    const response = await fetch(`${this.url}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.model,
+        input: [truncateForOllama(text)],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama embed failed: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json() as { embeddings: number[][] };
+    return {
+      embedding: data.embeddings[0],
+      model: this.model,
+      dimensions: data.embeddings[0].length,
+    };
+  }
+  async embedBatch(texts: string[]): Promise<EmbeddingResult[]> {
+    const response = await fetch(`${this.url}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: this.model,
+        input: texts.map(truncateForOllama),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama embedBatch failed: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json() as { embeddings: number[][] };
+    return data.embeddings.map(emb => ({
+      embedding: emb,
+      model: this.model,
+      dimensions: emb.length,
+    }));
+  }
+  getDimensions(): number {
+    return DIMENSIONS;
+  }
+  getModel(): string {
+    return this.model;
+  }
+  dispose(): void {
+  }
+}
+
 class EmbeddingProviderImpl implements EmbeddingProvider {
   private contexts: any[] = [];
   private currentContextIndex = 0;
@@ -147,7 +215,7 @@ class EmbeddingProviderImpl implements EmbeddingProvider {
         const result = await context.getEmbeddingFor(text);
         
         return {
-          embedding: Array.from(result.vector),
+          embedding: Array.from(result.vector) as number[],
           model: MODEL_NAME,
           dimensions: DIMENSIONS,
         };
@@ -176,19 +244,45 @@ class EmbeddingProviderImpl implements EmbeddingProvider {
 export async function createEmbeddingProvider(
   options?: EmbeddingProviderOptions
 ): Promise<EmbeddingProvider | null> {
+  const config = options?.embeddingConfig;
+
+  // Try Ollama if configured (or by default)
+  if (!config || config.provider !== 'local') {
+    const url = config?.url || 'http://host.docker.internal:11434';
+    const model = config?.model || 'nomic-embed-text';
+
+    try {
+      // Health check — verify Ollama is reachable
+      const healthResp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      if (healthResp.ok) {
+        const provider = new OllamaEmbeddingProvider(url, model);
+        // Verify the model works with a test embed
+        await provider.embed('test');
+        console.error(`[embedding] Using Ollama provider: ${model} at ${url}`);
+        return provider;
+      }
+    } catch (err) {
+      console.warn(`[embedding] Ollama not reachable at ${url}: ${err instanceof Error ? err.message : String(err)}`);
+      if (config?.provider === 'ollama') {
+        // Explicitly configured Ollama but it's not available
+        console.error('[embedding] Ollama explicitly configured but not reachable, no fallback');
+        return null;
+      }
+      console.warn('[embedding] Falling back to local node-llama-cpp...');
+    }
+  }
+
+  // Fallback to local node-llama-cpp
   try {
     const modelUri = options?.modelPath || DEFAULT_MODEL_URI;
     const modelPath = await resolveModelPath(modelUri, options?.cacheDir);
-    
     const llama = await getLlama();
     const model = await llama.loadModel({ modelPath });
-    
     const cpuCount = cpus().length;
     const parallelism = Math.max(1, Math.min(4, Math.floor(cpuCount / 4)));
-    
     const provider = new EmbeddingProviderImpl(model, parallelism);
     await provider.initialize();
-    
+    console.error(`[embedding] Using local provider: ${MODEL_NAME}`);
     return provider;
   } catch (error) {
     console.warn('Failed to load embedding model:', error instanceof Error ? error.message : String(error));

@@ -1,5 +1,34 @@
 # Changelog
 
+## [2026.1.0] - 2026-02-23
+
+### Added
+
+- **AI agent routing instructions (SKILL.md)**: Enhanced SKILL.md with trigger phrases, when-to-use rules, tool selection guide, collection filtering, and integration patterns for orchestrator and subagent workflows. Agents now auto-route to memory for recall, past decisions, cross-session context, and repeated patterns.
+- **AGENTS_SNIPPET.md**: Optional managed block for project-level AGENTS.md installation. Provides quick reference table, session workflow (start/end), and memory vs codebase search guidance. Designed for `npx opencode-memory init` injection.
+- **`memory_index_codebase` documented**: Added to SKILL.md, README, and site API reference.
+- **`workspace` parameter documented**: Added to search tool docs showing workspace scoping.
+
+## [0.3.0] - 2026-02-23
+
+### Added
+
+- **Codebase indexing**: Opt-in source code indexing via `codebase: { enabled: true }` in config.yml. Indexes source files from the current workspace into the search pipeline for semantic code search.
+- **Source code chunker**: Line-based chunking with structural boundary detection (function/class/type definitions, import blocks). Same 900-token target and 15% overlap as markdown chunker. Metadata headers (`File:`, `Language:`, `Lines:`) prepended to each chunk.
+- **Project type auto-detection**: Detects project type from marker files (package.json, pyproject.toml, go.mod, Cargo.toml, etc.) and selects appropriate file extensions to index. Falls back to all common extensions.
+- **Exclude pattern merging**: Combines exclude patterns from three sources: config `codebase.exclude`, `.gitignore`, and built-in defaults (node_modules, .git, dist, build, etc.).
+- **Codebase storage budget**: Independent `codebase.maxSize` (default 2GB) limits codebase storage separately from session storage. Indexing stops when budget is exceeded. Storage usage reported in `memory_status`.
+- **Max file size guard**: Skips files larger than `codebase.maxFileSize` (default 5MB) to avoid indexing generated/minified files.
+- **`memory_index_codebase` MCP tool**: On-demand full codebase scan and index with summary stats (files scanned, indexed, skipped, storage usage).
+- **Codebase stats in `memory_status`**: Shows enabled state, document count, storage used/limit, resolved extensions, and exclude pattern count.
+- **Watcher integration**: File watcher monitors workspace directory for source code changes with exclude patterns, triggering incremental reindex.
+- **`getCollectionStorageSize()`**: New Store method to query per-collection storage usage.
+- **118 new tests**: `codebase.test.ts` (68 tests), `codebase-chunker.test.ts` (50 tests). Total: 428 tests.
+
+### Changed
+
+- Increased vitest worker heap size to 8GB to prevent OOM during test runs with large test suites.
+
 ## [0.2.0] - 2026-02-23
 
 ### Added

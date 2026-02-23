@@ -1,10 +1,10 @@
 # opencode-memory
 
-Memory system for OpenCode with hybrid search (BM25 + vector + LLM reranking)
+Persistent memory system for OpenCode. Hybrid search (BM25 + vector + LLM reranking) across past sessions, codebase, curated notes, and daily logs.
 
 ## What It Does
 
-An MCP server that gives OpenCode persistent memory across sessions. Indexes markdown documents, past sessions, and daily logs into a searchable SQLite database with FTS5 and vector embeddings. Provides 8 MCP tools for search, retrieval, and memory management using a sophisticated hybrid search pipeline with query expansion, RRF fusion, and neural reranking.
+An MCP server that gives OpenCode persistent memory across sessions. Indexes markdown documents, past sessions, and daily logs into a searchable SQLite database with FTS5 and vector embeddings. Provides 10 MCP tools for search, retrieval, and memory management using a sophisticated hybrid search pipeline with query expansion, RRF fusion, and neural reranking.
 
 Inspired by [QMD](https://github.com/tobi/qmd).
 
@@ -35,7 +35,7 @@ User Query
          │
          ▼
 ┌─────────────────┐
-│  LLM Reranking  │ ← Qwen3-Reranker-0.6B (GGUF)
+│  LLM Reranking  │ ← bge-reranker-v2-m3 (GGUF)
 │  (optional)     │
 └────────┬────────┘
          │
@@ -77,7 +77,7 @@ Heading-aware markdown chunking that respects document structure:
 1. Query expansion generates 2-3 variants (optional)
 2. Parallel BM25 + vector search
 3. RRF fusion (k=60, original query weighted 2×)
-4. LLM reranking with Qwen3-Reranker-0.6B (optional)
+4. LLM reranking with bge-reranker-v2-m3 (optional)
 5. Position-aware blending:
    - Top 3 results: 75% RRF / 25% rerank
    - Ranks 4-10: 60% RRF / 40% rerank
@@ -101,6 +101,7 @@ Heading-aware markdown chunking that respects document structure:
 | `memory_multi_get` | Batch retrieve by glob pattern |
 | `memory_write` | Write to daily log or MEMORY.md |
 | `memory_status` | Index health, collections, model status |
+| `memory_index_codebase` | Index codebase files in current workspace |
 | `memory_update` | Trigger reindex of all collections |
 
 ## Installation
@@ -180,23 +181,24 @@ opencode-memory collection list                  # List collections
 ```
 src/
 ├── index.ts          # CLI entry point
-├── server.ts         # MCP server (8 tools, stdio/HTTP)
+├── server.ts         # MCP server (10 tools, stdio/HTTP)
 ├── store.ts          # SQLite storage (FTS5 + sqlite-vec)
 ├── search.ts         # Hybrid search pipeline (RRF, reranking, blending)
 ├── chunker.ts        # Heading-aware markdown chunking
 ├── collections.ts    # YAML config, collection scanning
-├── embeddings.ts     # GGUF embedding model (EmbeddingGemma-300M)
-├── reranker.ts       # GGUF reranker model (Qwen3-Reranker-0.6B)
+├── embeddings.ts     # GGUF embedding model (nomic-embed-text-v1.5)
+├── reranker.ts       # GGUF reranker model (bge-reranker-v2-m3)
 ├── expansion.ts      # GGUF query expansion (qmd-query-expansion-1.7B)
 ├── harvester.ts      # OpenCode session → markdown converter
 ├── watcher.ts        # File watcher (chokidar, dirty flags)
 └── types.ts          # TypeScript interfaces
-
 bin/
 └── cli.js            # CLI wrapper
 
 test/
-└── *.test.ts         # 261 tests (vitest)
+└── *.test.ts         # 428 tests (vitest)
+SKILL.md              # AI agent routing instructions (auto-loaded by OpenCode)
+AGENTS_SNIPPET.md     # Optional project-level AGENTS.md managed block
 ```
 
 ## Tech Stack
@@ -206,17 +208,40 @@ test/
 - **@modelcontextprotocol/sdk** for MCP server
 - **node-llama-cpp** for GGUF model inference
 - **chokidar** for file watching
-- **vitest** for testing (261 tests)
+- **vitest** for testing (428 tests)
 
 ## Models
 
 All models are GGUF format, loaded on-demand:
 
-- **Embeddings:** EmbeddingGemma-300M (~150MB)
-- **Reranker:** Qwen3-Reranker-0.6B (~400MB)
+- **Embeddings:** nomic-embed-text-v1.5 (~270MB)
+- **Reranker:** bge-reranker-v2-m3 (~1.1GB)
 - **Query Expansion:** qmd-query-expansion-1.7B (~1GB)
 
 Models are downloaded automatically on first use to `~/.cache/opencode-memory/models/`.
+
+## AI Agent Integration
+
+opencode-memory ships with a SKILL.md that teaches AI agents when and how to use memory tools. When loaded as an OpenCode skill, agents automatically:
+
+- **Check memory before starting work** — recall past decisions, patterns, and context
+- **Save context after completing work** — persist key decisions and debugging insights
+- **Route queries to the right search tool** — BM25 for exact terms, vector for concepts, hybrid for best quality
+
+### SKILL.md (Auto-loaded)
+
+The skill file at `SKILL.md` provides routing rules, trigger phrases, tool selection guides, and integration patterns. It's automatically loaded when any agent references the `opencode-memory` skill.
+
+### AGENTS_SNIPPET.md (Optional, project-level)
+
+For project-level integration, `AGENTS_SNIPPET.md` provides a managed block that can be injected into a project's `AGENTS.md`:
+
+```bash
+# Future: npx opencode-memory init
+# For now: copy the managed block from AGENTS_SNIPPET.md into your project's AGENTS.md
+```
+
+See [SKILL.md](./SKILL.md) for full routing rules and [AGENTS_SNIPPET.md](./AGENTS_SNIPPET.md) for the project-level snippet.
 
 ## License
 

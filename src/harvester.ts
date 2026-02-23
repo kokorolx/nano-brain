@@ -184,6 +184,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
   }
   
   const projectDirs = readdirSync(sessionRoot);
+  let stateChanged = false;
   
   for (const projectHash of projectDirs) {
     const projectSessionDir = join(sessionRoot, projectHash);
@@ -199,8 +200,23 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       
       const stat = statSync(sessionPath);
       const lastMtime = stat.mtimeMs;
+      
+      // Check if already harvested AND output file still exists
       if (state[sessionFile] && state[sessionFile] >= lastMtime) {
-        continue;
+        // Verify the output file actually exists — if not, re-harvest
+        const session = parseSession(sessionPath);
+        if (session) {
+          const date = new Date(session.created);
+          const dateStr = date.toISOString().split('T')[0];
+          const outputPath = getOutputPath(outputDir, session.directory, dateStr, session.slug);
+          if (existsSync(outputPath)) {
+            continue;
+          }
+          // Output file missing — fall through to re-harvest
+          console.log(`[harvester] Re-harvesting ${sessionFile}: output file missing`);
+        } else {
+          continue;
+        }
       }
       
       const session = parseSession(sessionPath);
@@ -210,11 +226,27 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       }
       
       const messages = parseMessages(session.id, sessionDir);
+      
+      // Skip sessions with no messages (nothing useful to index)
+      if (messages.length === 0) {
+        state[sessionFile] = lastMtime;
+        stateChanged = true;
+        continue;
+      }
+      
       const parsedMessages = messages.map(msg => ({
         role: msg.role,
         agent: msg.agent,
         text: parseParts(msg.id, sessionDir)
       }));
+      
+      // Skip sessions where all messages have empty text
+      const hasContent = parsedMessages.some(m => m.text.trim().length > 0);
+      if (!hasContent) {
+        state[sessionFile] = lastMtime;
+        stateChanged = true;
+        continue;
+      }
       
       const date = new Date(session.created);
       const dateStr = date.toISOString().split('T')[0];
@@ -233,8 +265,6 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
         messages: parsedMessages
       };
       
-      harvested.push(harvestedSession);
-      
       const outputPath = getOutputPath(outputDir, session.directory, dateStr, session.slug);
       const outputDirPath = dirname(outputPath);
       
@@ -243,13 +273,34 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       }
       
       const markdown = sessionToMarkdown(harvestedSession);
-      writeFileSync(outputPath, markdown, 'utf-8');
       
-      state[sessionFile] = Date.now();
+      try {
+        writeFileSync(outputPath, markdown, 'utf-8');
+        
+        // Verify the file was actually written before updating state
+        if (!existsSync(outputPath)) {
+          console.warn(`[harvester] Write succeeded but file not found: ${outputPath}`);
+          continue;
+        }
+        
+        harvested.push(harvestedSession);
+        state[sessionFile] = lastMtime;
+        stateChanged = true;
+      } catch (err) {
+        console.warn(`[harvester] Failed to write ${outputPath}:`, err);
+        // Do NOT update state — will retry on next cycle
+        continue;
+      }
     }
   }
   
-  saveHarvestState(stateFile, state);
+  if (stateChanged) {
+    saveHarvestState(stateFile, state);
+  }
+  
+  if (harvested.length > 0) {
+    console.log(`[harvester] Harvested ${harvested.length} session(s)`);
+  }
   
   return harvested;
 }

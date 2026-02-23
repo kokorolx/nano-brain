@@ -1,0 +1,26 @@
+      <section id="how" class="fade-in">
+        <h2 class="section-title">How It Works</h2>
+        <p class="section-subtitle">
+          Query expansion and dual retrieval streams converge through RRF fusion (k=60), then a reranker refines the final ordering.
+        </p>
+        <div class="pipeline">
+          <div class="pipeline-row">
+            <div class="node">Query</div>
+            <div class="connector"></div>
+            <div class="node">Query Expansion</div>
+          </div>
+          <div class="merge"></div>
+          <div class="pipeline-row split">
+            <div class="node">BM25 Search</div>
+            <div class="node">Vector Search</div>
+          </div>
+          <div class="merge"></div>
+          <div class="pipeline-row">
+            <div class="node">RRF Fusion (k=60)</div>
+            <div class="connector"></div>
+            <div class="node">LLM Reranking</div>
+            <div class="connector"></div>
+            <div class="node">Results</div>
+          </div>
+        </div>
+      </section>
