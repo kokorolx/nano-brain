@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { createHash } from 'crypto';
 import type { HarvestedSession } from './types.js';
@@ -6,6 +6,7 @@ import type { HarvestedSession } from './types.js';
 export interface HarvesterOptions {
   sessionDir: string;
   outputDir: string;
+  stateFile?: string;
 }
 
 interface SessionMetadata {
@@ -35,7 +36,7 @@ export function parseSession(sessionPath: string): SessionMetadata | null {
     
     return {
       id: data.id,
-      slug: data.slug,
+      slug: data.slug || data.id || 'untitled',
       title: data.title || '',
       projectID: data.projectID,
       directory: data.directory,
@@ -139,7 +140,7 @@ export function getOutputPath(outputDir: string, projectPath: string, date: stri
   const hash = createHash('sha256').update(projectPath).digest('hex');
   const projectHash = hash.substring(0, 12);
   
-  const sanitizedSlug = slug
+  const sanitizedSlug = (slug || 'untitled')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
@@ -171,7 +172,9 @@ export function saveHarvestState(stateFile: string, state: Record<string, number
 }
 
 export async function harvestSessions(options: HarvesterOptions): Promise<HarvestedSession[]> {
-  const { sessionDir, outputDir } = options;
+  const { sessionDir, outputDir, stateFile: customStateFile } = options;
+  const stateFile = customStateFile || join(outputDir, '.harvest-state.json');
+  const state = loadHarvestState(stateFile);
   const harvested: HarvestedSession[] = [];
   
   const sessionRoot = join(sessionDir, 'session');
@@ -193,6 +196,13 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
     
     for (const sessionFile of sessionFiles) {
       const sessionPath = join(projectSessionDir, sessionFile);
+      
+      const stat = statSync(sessionPath);
+      const lastMtime = stat.mtimeMs;
+      if (state[sessionFile] && state[sessionFile] >= lastMtime) {
+        continue;
+      }
+      
       const session = parseSession(sessionPath);
       
       if (!session) {
@@ -234,8 +244,12 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       
       const markdown = sessionToMarkdown(harvestedSession);
       writeFileSync(outputPath, markdown, 'utf-8');
+      
+      state[sessionFile] = Date.now();
     }
   }
+  
+  saveHarvestState(stateFile, state);
   
   return harvested;
 }
