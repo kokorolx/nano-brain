@@ -90,6 +90,10 @@ Embedding Config (~/.config/nano-brain/config.yml):
     provider: ollama              # 'ollama' or 'local'
     url: http://localhost:11434   # Ollama API URL
     model: nomic-embed-text       # embedding model name
+  watcher:
+    pollIntervalMs: 120000          # reindex interval (default: 120000 = 2min)
+    sessionPollMs: 120000           # session harvest interval (default: 120000)
+    embedIntervalMs: 60000          # embedding interval (default: 60000 = 1min)
 `);
 }
 

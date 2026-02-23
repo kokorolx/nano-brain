@@ -67,6 +67,7 @@ export interface CollectionConfig {
   }
   codebase?: CodebaseConfig
   embedding?: EmbeddingConfig
+  watcher?: WatcherConfig
 }
 
 export interface CodebaseConfig {
@@ -83,6 +84,13 @@ export interface EmbeddingConfig {
   provider?: 'ollama' | 'local'
   url?: string
   model?: string
+}
+
+export interface WatcherConfig {
+  debounceMs?: number
+  pollIntervalMs?: number
+  sessionPollMs?: number
+  embedIntervalMs?: number
 }
 
 export interface CodebaseIndexResult {

@@ -6,7 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as http from 'http';
-import type { Store, SearchResult, IndexHealth, Collection, StorageConfig, CodebaseConfig, EmbeddingConfig } from './types.js'
+import type { Store, SearchResult, IndexHealth, Collection, StorageConfig, CodebaseConfig, EmbeddingConfig, WatcherConfig } from './types.js'
 import type { SearchProviders } from './search.js';
 import { hybridSearch } from './search.js';
 import { createStore } from './store.js';
@@ -584,13 +584,15 @@ export async function startServer(options: ServerOptions): Promise<void> {
     if (watcher) {
       return;
     }
+    const watcherConfig: WatcherConfig | undefined = config?.watcher;
     watcher = startWatcher({
       store,
       collections,
       embedder: providers.embedder,
-      debounceMs: 2000,
-      pollIntervalMs: 300000,
-      sessionPollMs: 120000,
+      debounceMs: watcherConfig?.debounceMs ?? 2000,
+      pollIntervalMs: watcherConfig?.pollIntervalMs ?? 120000,
+      sessionPollMs: watcherConfig?.sessionPollMs ?? 120000,
+      embedIntervalMs: watcherConfig?.embedIntervalMs ?? 60000,
       sessionStorageDir: path.join(homeDir, '.local/share/opencode/storage'),
       outputDir: path.join(outputDir, 'sessions'),
       storageConfig,

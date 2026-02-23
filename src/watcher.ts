@@ -17,6 +17,7 @@ export interface WatcherOptions {
   debounceMs?: number
   pollIntervalMs?: number
   sessionPollMs?: number
+  embedIntervalMs?: number
   sessionStorageDir?: string
   outputDir?: string
   storageConfig?: StorageConfig
@@ -49,6 +50,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
     debounceMs = 2000,
     pollIntervalMs = 300000,
     sessionPollMs = 120000,
+    embedIntervalMs = 60000,
     sessionStorageDir = path.join(os.homedir(), '.local/share/opencode/storage'),
     outputDir = path.join(os.homedir(), '.nano-brain/sessions'),
     storageConfig,
@@ -295,7 +297,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
         } finally {
           isEmbedding = false;
         }
-      }, 60000);
+      }, embedIntervalMs);
     }
   };
 
