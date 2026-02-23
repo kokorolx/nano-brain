@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026.1.4] - 2026-02-23
+
+### Added
+
+- **Slash commands**: 3 OpenCode slash commands shipped in `commands/` dir — `/nano-brain-init` (first-time setup), `/nano-brain-status` (health check), `/nano-brain-reindex` (rescan after branch switch). Installed to both global and project `.opencode/command/` during `init`.
+- **Slash command auto-install in `init`**: `handleInit()` copies slash command `.md` files from the package's `commands/` directory to global (`~/.config/opencode/.opencode/command/`) and project-level (`.opencode/command/`) directories.
+
+### Changed
+
+- **SKILL.md rewritten**: Cut from 153 lines to 45. Concise tool selection table, slash command reference, collection filtering, complementary tools note. No redundant parameter docs.
+
 ## [2026.1.3] - 2026-02-23
 
 ### Added

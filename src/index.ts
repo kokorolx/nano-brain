@@ -426,6 +426,23 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
     }
   }
   
+
+  // Install slash commands to both global and project .opencode/command/
+  const commandsDir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'commands');
+  if (fs.existsSync(commandsDir)) {
+    const commandFiles = fs.readdirSync(commandsDir).filter(f => f.endsWith('.md'));
+    const targets = [
+      path.join(os.homedir(), '.config', 'opencode', '.opencode', 'command'),
+      path.join(root, '.opencode', 'command'),
+    ];
+    for (const targetDir of targets) {
+      fs.mkdirSync(targetDir, { recursive: true });
+      for (const file of commandFiles) {
+        fs.copyFileSync(path.join(commandsDir, file), path.join(targetDir, file));
+      }
+    }
+    console.log(`✅ Installed ${commandFiles.length} slash commands (global + project)`);
+  }
   console.log('');
   console.log('nano-brain initialized! Run `npx nano-brain status` to verify.');
 }
