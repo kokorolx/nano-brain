@@ -11,10 +11,11 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 
-const DEFAULT_DB_DIR = path.join(os.homedir(), '.cache', 'nano-brain');
-const DEFAULT_CONFIG = path.join(os.homedir(), '.config', 'nano-brain', 'config.yml');
-const DEFAULT_OUTPUT_DIR = path.join(os.homedir(), '.nano-brain', 'sessions');
-const DEFAULT_MEMORY_DIR = path.join(os.homedir(), '.nano-brain', 'memory');
+const NANO_BRAIN_HOME = path.join(os.homedir(), '.nano-brain');
+const DEFAULT_DB_DIR = path.join(NANO_BRAIN_HOME, 'data');
+const DEFAULT_CONFIG = path.join(NANO_BRAIN_HOME, 'config.yml');
+const DEFAULT_OUTPUT_DIR = path.join(NANO_BRAIN_HOME, 'sessions');
+const DEFAULT_MEMORY_DIR = path.join(NANO_BRAIN_HOME, 'memory');
 
 interface GlobalOptions {
   dbPath: string;
@@ -70,8 +71,8 @@ export function showHelp(): void {
   console.log(`
 nano-brain - Memory system with hybrid search
   nano-brain [global-options] <command> [command-options]
-  --db=<path>       SQLite database path (default: ~/.cache/nano-brain/default.sqlite)
-  --config=<path>   Config YAML path (default: ~/.config/nano-brain/config.yml)
+  --db=<path>       SQLite database path (default: ~/.nano-brain/data/default.sqlite)
+  --config=<path>   Config YAML path (default: ~/.nano-brain/config.yml)
   --help, -h        Show help
   --version, -v     Show version
   init              Initialize nano-brain for current workspace
@@ -99,7 +100,7 @@ nano-brain - Memory system with hybrid search
     --from=<line>   Start line
     --lines=<n>     Number of lines
   harvest           Manually trigger session harvesting
-Embedding Config (~/.config/nano-brain/config.yml):
+Embedding Config (~/.nano-brain/config.yml):
   embedding:
     provider: ollama              # 'ollama' or 'local'
     url: http://localhost:11434   # Ollama API URL
@@ -706,10 +707,14 @@ async function handleHarvest(globalOpts: GlobalOptions): Promise<void> {
   console.log(`✅ Harvested ${sessions.length} sessions to ${outputDir}`);
 }
 
+
+
 async function main() {
   const args = process.argv.slice(2);
   
   const globalOpts = parseGlobalOptions(args);
+  
+
   const command = globalOpts.remaining[0] || 'mcp';
   const commandArgs = globalOpts.remaining.slice(1);
 

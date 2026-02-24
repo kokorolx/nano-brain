@@ -88,7 +88,7 @@ export async function resolveModelPath(
     throw new Error(`Invalid model URI format: ${uri}`);
   }
   
-  const baseDir = cacheDir || join(homedir(), '.cache', 'nano-brain', 'models');
+  const baseDir = cacheDir || join(homedir(), '.nano-brain', 'models');
   const modelPath = join(baseDir, parsed.org, parsed.repo, parsed.file);
   
   try {

@@ -532,9 +532,9 @@ export async function startServer(options: ServerOptions): Promise<void> {
   const { dbPath, configPath, httpPort, daemon } = options;
   
   const homeDir = os.homedir();
-  const outputDir = path.join(homeDir, '.nano-brain');
-  const cacheDir = path.join(homeDir, '.cache', 'nano-brain');
-  const pidPath = path.join(cacheDir, 'mcp.pid');
+  const nanoBrainHome = path.join(homeDir, '.nano-brain');
+  const outputDir = nanoBrainHome;
+  const pidPath = path.join(nanoBrainHome, 'mcp.pid');
   const finalConfigPath = configPath || path.join(outputDir, 'collections.yaml');
   const config = loadCollectionConfig(finalConfigPath);
   const collections = config ? getCollections(config) : [];

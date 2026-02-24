@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026.1.9] - 2026-02-24
+
+### Changed
+
+- **Consolidated all data paths under `~/.nano-brain/`**: DB, models, config, sessions, and memory now all live under `~/.nano-brain/` instead of scattered across `~/.cache/nano-brain/` and `~/.config/nano-brain/`. This fixes data loss in Docker containers where `~/.cache` was an ephemeral anonymous volume.
+- **New directory layout**:
+  ```
+  ~/.nano-brain/
+  ├── config.yml    # Configuration (was ~/.config/nano-brain/config.yml)
+  ├── data/         # SQLite databases (was ~/.cache/nano-brain/)
+  ├── models/       # Embedding models (was ~/.cache/nano-brain/models/)
+  ├── memory/       # Curated notes
+  └── sessions/     # Harvested sessions
+  ```
+- **Cleanup command**: After upgrading, remove old paths with `rm -rf ~/.cache/nano-brain ~/.config/nano-brain`
+
 ## [2026.1.8] - 2026-02-24
 
 ### Fixed
