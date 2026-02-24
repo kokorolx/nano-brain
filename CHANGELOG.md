@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026.1.10] - 2026-02-24
+
+### Fixed
+
+- **Ollama timeout issues in Docker**: Increased health check timeout from 3s to 10s to handle Docker networking latency. Added 30s timeout to `embed()` and 60s timeout to `embedBatch()` — previously these had no timeout and could hang indefinitely.
+
 ## [2026.1.9] - 2026-02-24
 
 ### Changed

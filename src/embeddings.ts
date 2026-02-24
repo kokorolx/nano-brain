@@ -136,7 +136,7 @@ export function detectOllamaUrl(): string {
 
 export async function checkOllamaHealth(url: string): Promise<{ reachable: boolean; models?: string[]; error?: string }> {
   try {
-    const resp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    const resp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(10000) });
     if (resp.ok) {
       const data = await resp.json() as { models?: Array<{ name: string }> };
       return { reachable: true, models: data.models?.map(m => m.name) || [] };
@@ -162,6 +162,7 @@ class OllamaEmbeddingProvider implements EmbeddingProvider {
         model: this.model,
         input: [truncateForOllama(text)],
       }),
+      signal: AbortSignal.timeout(30000),
     });
 
     if (!response.ok) {
@@ -183,6 +184,7 @@ class OllamaEmbeddingProvider implements EmbeddingProvider {
         model: this.model,
         input: texts.map(truncateForOllama),
       }),
+      signal: AbortSignal.timeout(60000),
     });
 
     if (!response.ok) {
@@ -283,7 +285,7 @@ export async function createEmbeddingProvider(
 
     try {
       // Health check — verify Ollama is reachable
-      const healthResp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      const healthResp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(10000) });
       if (healthResp.ok) {
         const provider = new OllamaEmbeddingProvider(url, model);
         // Verify the model works with a test embed
