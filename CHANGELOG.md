@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026.1.14] - 2026-03-02
+
+### Added
+
+- **`init --force` flag**: Clears all indexed documents, embeddings, and content for the current workspace before re-initializing. Useful when the index is corrupted or you want a clean slate without affecting other workspaces.
+
 ## [2026.1.13] - 2026-02-28
 
 ### Fixed

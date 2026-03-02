@@ -86,6 +86,7 @@ nano-brain - Memory system with hybrid search
   --version, -v     Show version
   init              Initialize nano-brain for current workspace
     --root=<path>   Workspace root (default: current directory)
+    --force         Clear all workspace memory and re-initialize
   mcp               Start MCP server (default command if no args)
     --http          Use HTTP transport instead of stdio
     --port=<n>      HTTP port (default: 8282)
@@ -325,10 +326,13 @@ async function handleStatus(globalOpts: GlobalOptions): Promise<void> {
 
 async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   let root = process.cwd();
+  let force = false;
   
   for (const arg of commandArgs) {
     if (arg.startsWith('--root=')) {
       root = arg.substring(7);
+    } else if (arg === '--force') {
+      force = true;
     }
   }
   
@@ -401,8 +405,13 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
   } else {
     console.log(`ℹ️  Workspace already configured: ${root}`);
   }
-  console.log('📂 Indexing codebase...');
   const projectHash = crypto.createHash('sha256').update(root).digest('hex').substring(0, 12);
+  if (force) {
+    console.log('🗑️  Force mode: clearing workspace memory...');
+    const cleared = store.clearWorkspace(projectHash);
+    console.log(`   Deleted ${cleared.documentsDeleted} documents, ${cleared.embeddingsDeleted} embeddings`);
+  }
+  console.log('📂 Indexing codebase...');
   const wsConfig = config.workspaces[root];
   const codebaseConfig = wsConfig?.codebase ?? { enabled: true };
   const codebaseStats = await indexCodebase(store, root, codebaseConfig, projectHash);

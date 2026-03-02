@@ -204,6 +204,7 @@ export interface Store {
   getWorkspaceStats(): Array<{ projectHash: string; count: number }>;
   
   deleteDocumentsByPath(filePath: string): number;
+  clearWorkspace(projectHash: string): { documentsDeleted: number; embeddingsDeleted: number };
   cleanOrphanedEmbeddings(): number;
   getCollectionStorageSize(collection: string): number;
   

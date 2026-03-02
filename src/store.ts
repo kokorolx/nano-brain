@@ -558,6 +558,52 @@ export function createStore(dbPath: string): Store {
       const result = deleteStmt.run(filePath);
       return result.changes;
     },
+
+    clearWorkspace(projectHash: string): { documentsDeleted: number; embeddingsDeleted: number } {
+      const transaction = db.transaction(() => {
+        // 1. Collect all documents for this workspace
+        const docs = db.prepare(
+          'SELECT id, hash, collection, path FROM documents WHERE project_hash = ?'
+        ).all(projectHash) as Array<{ id: number; hash: string; collection: string; path: string }>;
+
+        if (docs.length === 0) return { documentsDeleted: 0, embeddingsDeleted: 0 };
+
+        // 2. Find hashes that are ONLY used by this workspace (orphaned after delete)
+        const uniqueHashes = [...new Set(docs.map(d => d.hash))];
+        const orphanedHashes: string[] = [];
+        for (const hash of uniqueHashes) {
+          const otherUses = db.prepare(
+            'SELECT COUNT(*) as count FROM documents WHERE hash = ? AND project_hash != ?'
+          ).get(hash, projectHash) as { count: number };
+          if (otherUses.count === 0) {
+            orphanedHashes.push(hash);
+          }
+        }
+
+        // 3. Delete embeddings for orphaned hashes
+        let embeddingsDeleted = 0;
+        for (const hash of orphanedHashes) {
+          const cvResult = db.prepare('DELETE FROM content_vectors WHERE hash = ?').run(hash);
+          embeddingsDeleted += cvResult.changes;
+          if (vecAvailable) {
+            try {
+              db.prepare("DELETE FROM vectors_vec WHERE hash_seq LIKE ? || ':%'").run(hash);
+            } catch { /* vec table may not exist */ }
+          }
+        }
+
+        // 4. Delete the documents (AFTER DELETE trigger handles FTS cleanup)
+        const deleteResult = db.prepare('DELETE FROM documents WHERE project_hash = ?').run(projectHash);
+
+        // 5. Delete orphaned content
+        for (const hash of orphanedHashes) {
+          db.prepare('DELETE FROM content WHERE hash = ?').run(hash);
+        }
+
+        return { documentsDeleted: deleteResult.changes, embeddingsDeleted };
+      });
+      return transaction();
+    },
     
     cleanOrphanedEmbeddings(): number {
       let totalDeleted = 0;

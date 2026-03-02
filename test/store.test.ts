@@ -527,4 +527,178 @@ describe('Store', () => {
     });
   });
 
+  describe('clearWorkspace', () => {
+    it('should delete all documents for the given projectHash and return correct count', () => {
+      const body1 = '# Workspace Doc 1';
+      const hash1 = computeHash(body1);
+      const body2 = '# Workspace Doc 2';
+      const hash2 = computeHash(body2);
+
+      store.insertContent(hash1, body1);
+      store.insertDocument({
+        collection: 'test',
+        path: 'ws/doc1.md',
+        title: 'Workspace Doc 1',
+        hash: hash1,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash: 'workspace_a',
+      });
+
+      store.insertContent(hash2, body2);
+      store.insertDocument({
+        collection: 'test',
+        path: 'ws/doc2.md',
+        title: 'Workspace Doc 2',
+        hash: hash2,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash: 'workspace_a',
+      });
+
+      const result = store.clearWorkspace('workspace_a');
+      expect(result.documentsDeleted).toBe(2);
+
+      expect(store.findDocument('ws/doc1.md')).toBeNull();
+      expect(store.findDocument('ws/doc2.md')).toBeNull();
+    });
+
+    it('should preserve documents with project_hash = global', () => {
+      const globalBody = '# Global Doc';
+      const globalHash = computeHash(globalBody);
+      const wsBody = '# Workspace Doc';
+      const wsHash = computeHash(wsBody);
+
+      store.insertContent(globalHash, globalBody);
+      store.insertDocument({
+        collection: 'memory',
+        path: 'global/doc.md',
+        title: 'Global Doc',
+        hash: globalHash,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash: 'global',
+      });
+
+      store.insertContent(wsHash, wsBody);
+      store.insertDocument({
+        collection: 'test',
+        path: 'ws/doc.md',
+        title: 'Workspace Doc',
+        hash: wsHash,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash: 'workspace_a',
+      });
+
+      store.clearWorkspace('workspace_a');
+
+      expect(store.findDocument('global/doc.md')).not.toBeNull();
+      expect(store.findDocument('ws/doc.md')).toBeNull();
+    });
+
+    it('should preserve documents from other workspaces', () => {
+      const bodyA = '# Workspace A Doc';
+      const hashA = computeHash(bodyA);
+      const bodyB = '# Workspace B Doc';
+      const hashB = computeHash(bodyB);
+
+      store.insertContent(hashA, bodyA);
+      store.insertDocument({
+        collection: 'test',
+        path: 'a/doc.md',
+        title: 'Workspace A Doc',
+        hash: hashA,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash: 'workspace_a',
+      });
+
+      store.insertContent(hashB, bodyB);
+      store.insertDocument({
+        collection: 'test',
+        path: 'b/doc.md',
+        title: 'Workspace B Doc',
+        hash: hashB,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash: 'workspace_b',
+      });
+
+      store.clearWorkspace('workspace_a');
+
+      expect(store.findDocument('a/doc.md')).toBeNull();
+      expect(store.findDocument('b/doc.md')).not.toBeNull();
+    });
+
+    it('should clean up orphaned content (hash only used by deleted workspace)', () => {
+      const body = '# Orphan Content';
+      const hash = computeHash(body);
+
+      store.insertContent(hash, body);
+      store.insertDocument({
+        collection: 'test',
+        path: 'orphan/doc.md',
+        title: 'Orphan Content',
+        hash: hash,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash: 'workspace_a',
+      });
+
+      store.clearWorkspace('workspace_a');
+
+      const content = store.getDocumentBody(hash);
+      expect(content).toBeNull();
+    });
+
+    it('should preserve shared content (hash used by both deleted and other workspace)', () => {
+      const sharedBody = '# Shared Content';
+      const sharedHash = computeHash(sharedBody);
+
+      store.insertContent(sharedHash, sharedBody);
+      store.insertDocument({
+        collection: 'test',
+        path: 'shared/doc_a.md',
+        title: 'Shared A',
+        hash: sharedHash,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash: 'workspace_a',
+      });
+
+      store.insertDocument({
+        collection: 'test',
+        path: 'shared/doc_b.md',
+        title: 'Shared B',
+        hash: sharedHash,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash: 'workspace_b',
+      });
+
+      store.clearWorkspace('workspace_a');
+
+      expect(store.findDocument('shared/doc_a.md')).toBeNull();
+      expect(store.findDocument('shared/doc_b.md')).not.toBeNull();
+      const content = store.getDocumentBody(sharedHash);
+      expect(content).toBe(sharedBody);
+    });
+
+    it('should return { documentsDeleted: 0, embeddingsDeleted: 0 } when no documents match', () => {
+      const result = store.clearWorkspace('nonexistent_workspace');
+      expect(result.documentsDeleted).toBe(0);
+      expect(result.embeddingsDeleted).toBe(0);
+    });
+  });
+
 });

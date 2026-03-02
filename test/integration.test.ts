@@ -217,3 +217,66 @@ describe('Workspace-scoped session indexing', () => {
     expect(titles).toEqual(['Session Alpha', 'Session Beta']);
   });
 });
+
+describe('init --force clearWorkspace', () => {
+  let tempDir: string;
+  let dbPath: string;
+  let store: Store;
+
+  beforeAll(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nano-brain-force-test-'));
+    dbPath = path.join(tempDir, 'test.db');
+    store = createStore(dbPath);
+  });
+
+  afterAll(() => {
+    store.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('should clear workspace data and allow re-indexing', () => {
+    const projectHash = 'abc123def456';
+    const content1 = '# Original Document\n\nThis is the original content.';
+    
+    indexDocument(store, 'codebase', 'src/original.ts', content1, 'Original Document', projectHash);
+    
+    let doc = store.findDocument('src/original.ts');
+    expect(doc).not.toBeNull();
+    expect(doc!.projectHash).toBe(projectHash);
+    
+    const cleared = store.clearWorkspace(projectHash);
+    expect(cleared.documentsDeleted).toBe(1);
+    
+    doc = store.findDocument('src/original.ts');
+    expect(doc).toBeNull();
+    
+    const content2 = '# New Document\n\nThis is the new content after force re-init.';
+    indexDocument(store, 'codebase', 'src/new.ts', content2, 'New Document', projectHash);
+    
+    const newDoc = store.findDocument('src/new.ts');
+    expect(newDoc).not.toBeNull();
+    expect(newDoc!.title).toBe('New Document');
+    expect(newDoc!.projectHash).toBe(projectHash);
+  });
+
+  it('should preserve global and other workspace documents', () => {
+    const globalContent = '# Global Memory\n\nThis is global content.';
+    const workspaceAContent = '# Workspace A\n\nThis is workspace A content.';
+    const workspaceBContent = '# Workspace B\n\nThis is workspace B content.';
+    
+    indexDocument(store, 'memory', 'memory/global.md', globalContent, 'Global Memory', 'global');
+    indexDocument(store, 'codebase', 'src/a.ts', workspaceAContent, 'Workspace A', 'workspace_a');
+    indexDocument(store, 'codebase', 'src/b.ts', workspaceBContent, 'Workspace B', 'workspace_b');
+    
+    expect(store.findDocument('memory/global.md')).not.toBeNull();
+    expect(store.findDocument('src/a.ts')).not.toBeNull();
+    expect(store.findDocument('src/b.ts')).not.toBeNull();
+    
+    const cleared = store.clearWorkspace('workspace_a');
+    expect(cleared.documentsDeleted).toBe(1);
+    
+    expect(store.findDocument('memory/global.md')).not.toBeNull();
+    expect(store.findDocument('src/a.ts')).toBeNull();
+    expect(store.findDocument('src/b.ts')).not.toBeNull();
+  });
+});
