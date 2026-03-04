@@ -86,9 +86,11 @@ export interface WorkspaceConfig {
 }
 
 export interface EmbeddingConfig {
-  provider?: 'ollama' | 'local'
+  provider?: 'ollama' | 'local' | 'openai'
   url?: string
   model?: string
+  apiKey?: string
+  maxChars?: number
 }
 
 export interface WatcherConfig {

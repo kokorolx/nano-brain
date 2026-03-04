@@ -258,6 +258,132 @@ class OllamaEmbeddingProvider implements EmbeddingProvider {
   }
 }
 
+type OpenAIEmbeddingResponse = {
+  data: Array<{ embedding: number[]; index: number }>;
+  model: string;
+  usage?: { prompt_tokens: number; total_tokens: number };
+};
+
+class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
+  private baseUrl: string;
+  private model: string;
+  private apiKey: string;
+  private dimensions: number | null = null;
+  private maxChars: number;
+
+  constructor(baseUrl: string, model: string, apiKey: string, maxChars?: number) {
+    this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.model = model;
+    this.apiKey = apiKey;
+    this.maxChars = maxChars ?? 8000;
+  }
+
+  private truncate(text: string): string {
+    if (text.length <= this.maxChars) return text;
+    return text.substring(0, this.maxChars);
+  }
+
+  private setDimensions(embedding: number[]): void {
+    if (this.dimensions === null) {
+      this.dimensions = embedding.length;
+    }
+  }
+
+  async embed(text: string): Promise<EmbeddingResult> {
+    const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        input: [this.truncate(text)],
+        input_type: 'query',
+        encoding_format: 'float',
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI-compatible embed failed: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json() as OpenAIEmbeddingResponse;
+    const embedding = data.data[0]?.embedding;
+    if (!embedding) {
+      throw new Error('OpenAI-compatible embed failed: missing embedding');
+    }
+    this.setDimensions(embedding);
+    return {
+      embedding,
+      model: this.model,
+      dimensions: this.dimensions ?? embedding.length,
+    };
+  }
+
+  async embedBatch(texts: string[]): Promise<EmbeddingResult[]> {
+    const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: this.model,
+        input: texts.map(text => this.truncate(text)),
+        input_type: 'passage',
+        encoding_format: 'float',
+      }),
+      signal: AbortSignal.timeout(120000),
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI-compatible embedBatch failed: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json() as OpenAIEmbeddingResponse;
+    const results = new Map<number, EmbeddingResult>();
+    for (const item of data.data) {
+      const embedding = item.embedding;
+      if (!embedding) continue;
+      this.setDimensions(embedding);
+      results.set(item.index, {
+        embedding,
+        model: this.model,
+        dimensions: this.dimensions ?? embedding.length,
+      });
+    }
+
+    if (results.size !== texts.length) {
+      throw new Error('OpenAI-compatible embedBatch failed: missing embeddings');
+    }
+
+    return texts.map((_, index) => {
+      const result = results.get(index);
+      if (!result) {
+        throw new Error('OpenAI-compatible embedBatch failed: missing embedding index');
+      }
+      return result;
+    });
+  }
+
+  getDimensions(): number {
+    return this.dimensions ?? 0;
+  }
+
+  getModel(): string {
+    return this.model;
+  }
+
+  getMaxChars(): number {
+    return this.maxChars;
+  }
+
+  dispose(): void {
+  }
+}
+
 class EmbeddingProviderImpl implements EmbeddingProvider {
   private contexts: any[] = [];
   private currentContextIndex = 0;
@@ -331,6 +457,27 @@ export async function createEmbeddingProvider(
   options?: EmbeddingProviderOptions
 ): Promise<EmbeddingProvider | null> {
   const config = options?.embeddingConfig;
+
+  if (config?.provider === 'openai') {
+    const url = config.url;
+    const apiKey = config.apiKey;
+    const model = config.model || 'text-embedding-3-small';
+
+    if (!url || !apiKey) {
+      console.error('[embedding] OpenAI-compatible provider requires url and apiKey');
+      return null;
+    }
+
+    try {
+      const provider = new OpenAICompatibleEmbeddingProvider(url, model, apiKey, config.maxChars);
+      await provider.embed('test');
+      console.error(`[embedding] Using OpenAI-compatible provider: ${model} at ${url}`);
+      return provider;
+    } catch (err) {
+      console.error(`[embedding] OpenAI-compatible provider error: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
 
   // Try Ollama if configured (or by default)
   if (!config || config.provider !== 'local') {
