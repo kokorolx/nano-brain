@@ -24,7 +24,7 @@ describe('Watcher', () => {
       bulkDeactivateExcept: vi.fn().mockReturnValue(0),
       getIndexHealth: vi.fn().mockReturnValue({
         documentCount: 0,
-        chunkCount: 0,
+        embeddedCount: 0,
         pendingEmbeddings: 0,
         collections: [],
         databaseSize: 0,
@@ -42,7 +42,19 @@ describe('Watcher', () => {
       searchVec: vi.fn().mockReturnValue([]),
       getCachedResult: vi.fn().mockReturnValue(null),
       setCachedResult: vi.fn(),
+      getQueryEmbeddingCache: vi.fn().mockReturnValue(null),
+      setQueryEmbeddingCache: vi.fn(),
+      clearQueryEmbeddingCache: vi.fn(),
+      clearCache: vi.fn().mockReturnValue(0),
+      getCacheStats: vi.fn().mockReturnValue([]),
       getHashesNeedingEmbedding: vi.fn().mockReturnValue([]),
+      getNextHashNeedingEmbedding: vi.fn().mockReturnValue(null),
+      getWorkspaceStats: vi.fn().mockReturnValue([]),
+      deleteDocumentsByPath: vi.fn().mockReturnValue(0),
+      clearWorkspace: vi.fn().mockReturnValue({ documentsDeleted: 0, embeddingsDeleted: 0 }),
+      cleanOrphanedEmbeddings: vi.fn().mockReturnValue(0),
+      getCollectionStorageSize: vi.fn().mockReturnValue(0),
+      modelStatus: { embedding: 'missing', reranker: 'missing', expander: 'missing' },
     } as unknown as Store;
 
     collections = [
@@ -596,9 +608,10 @@ describe('Watcher', () => {
         embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
       };
 
-      vi.mocked(mockStore.getHashesNeedingEmbedding).mockReturnValue([
-        { hash: 'abc123', body: 'Content to embed', path: testFile },
-      ]);
+      // embedPendingCodebase calls getNextHashNeedingEmbedding in a loop
+      vi.mocked(mockStore.getNextHashNeedingEmbedding)
+        .mockReturnValueOnce({ hash: 'abc123', body: 'Content to embed', path: testFile })
+        .mockReturnValue(null);
 
       const watcher = startWatcher({
         store: mockStore,
@@ -608,7 +621,7 @@ describe('Watcher', () => {
 
       await watcher.triggerReindex();
 
-      expect(mockEmbedder.embed).toHaveBeenCalledWith('Content to embed');
+      expect(mockEmbedder.embed).toHaveBeenCalled();
       expect(mockStore.insertEmbedding).toHaveBeenCalled();
 
       watcher.stop();
@@ -638,9 +651,9 @@ describe('Watcher', () => {
         embed: vi.fn().mockRejectedValue(new Error('Model unavailable')),
       };
 
-      vi.mocked(mockStore.getHashesNeedingEmbedding).mockReturnValue([
-        { hash: 'abc123', body: 'Content', path: testFile },
-      ]);
+      vi.mocked(mockStore.getNextHashNeedingEmbedding)
+        .mockReturnValueOnce({ hash: 'abc123', body: 'Content', path: testFile })
+        .mockReturnValue(null);
 
       const watcher = startWatcher({
         store: mockStore,

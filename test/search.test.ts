@@ -30,6 +30,11 @@ function createMockStore(ftsResults: SearchResult[], vecResults: SearchResult[])
     searchVec: vi.fn().mockReturnValue(vecResults),
     getCachedResult: vi.fn().mockReturnValue(null),
     setCachedResult: vi.fn(),
+    getQueryEmbeddingCache: vi.fn().mockReturnValue(null),
+    setQueryEmbeddingCache: vi.fn(),
+    clearQueryEmbeddingCache: vi.fn(),
+    clearCache: vi.fn().mockReturnValue(0),
+    getCacheStats: vi.fn().mockReturnValue([]),
     close: vi.fn(),
     insertDocument: vi.fn(),
     findDocument: vi.fn(),
@@ -41,6 +46,13 @@ function createMockStore(ftsResults: SearchResult[], vecResults: SearchResult[])
     ensureVecTable: vi.fn(),
     getIndexHealth: vi.fn(),
     getHashesNeedingEmbedding: vi.fn(),
+    getNextHashNeedingEmbedding: vi.fn().mockReturnValue(null),
+    getWorkspaceStats: vi.fn().mockReturnValue([]),
+    deleteDocumentsByPath: vi.fn().mockReturnValue(0),
+    clearWorkspace: vi.fn().mockReturnValue({ documentsDeleted: 0, embeddingsDeleted: 0 }),
+    cleanOrphanedEmbeddings: vi.fn().mockReturnValue(0),
+    getCollectionStorageSize: vi.fn().mockReturnValue(0),
+    modelStatus: { embedding: 'missing', reranker: 'missing', expander: 'missing' },
   } as unknown as Store;
 }
 
