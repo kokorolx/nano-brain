@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026.1.17] - 2026-03-04
+
+### Added
+
+- **OpenAI-compatible embedding provider**: Support any OpenAI-compatible embedding API (NVIDIA, GitHub Models, OpenAI, etc.) via `provider: openai` config. Requires `url`, `apiKey`, and `model`. Supports batch embedding, auto-detects dimensions from first response. Default provider remains Ollama.
+
 ## [2026.1.16] - 2026-03-04
 
 ### Fixed

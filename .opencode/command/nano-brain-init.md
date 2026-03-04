@@ -2,12 +2,35 @@
 description: Initialize nano-brain persistent memory for the current workspace.
 ---
 
-Run these MCP tools in order:
+## Prerequisites
 
-1. `memory_status` — check if already initialized (codebase docs > 0 means skip to step 4)
-2. `memory_index_codebase` — index source files from workspace root
-3. `memory_update` — reindex sessions and curated notes
-4. `memory_status` — show final state
+nano-brain MCP server must be configured in opencode.json. If `memory_status` tool is not available, tell user to add nano-brain to their MCP config first.
 
-Report: document counts, pending embeddings, and whether AGENTS.md snippet exists.
-If pending embeddings > 0, note they process in background.
+## Steps
+
+1. Call `memory_status` tool to check current state
+   - If codebase > 0 docs: already initialized, skip to step 4
+   - If error "tool not found": MCP not configured, stop and instruct user
+
+2. Call `memory_index_codebase` with `root` = current workspace path
+   - This indexes source files (respects .gitignore)
+
+3. Call `memory_update` to index sessions and curated notes
+
+4. Call `memory_status` again and report:
+   - Total documents indexed
+   - Pending embeddings count
+   - Embedding server status (connected/disconnected)
+
+## Output Format
+
+```
+nano-brain initialized:
+- Codebase: X files
+- Sessions: Y documents  
+- Pending embeddings: Z (processing in background)
+- Embedding server: ✅ connected / ❌ disconnected
+```
+
+If pending embeddings > 0, explain they process automatically when MCP server runs.
+If embedding server disconnected, suggest: "Start Ollama: `ollama serve`"
