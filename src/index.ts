@@ -87,7 +87,8 @@ nano-brain - Memory system with hybrid search
   --version, -v     Show version
   init              Initialize nano-brain for current workspace
     --root=<path>   Workspace root (default: current directory)
-    --force         Clear all workspace memory and re-initialize
+    --force         Clear current workspace memory and re-initialize
+    --all           With --force, clear ALL workspaces (deletes all database files)
   mcp               Start MCP server (default command if no args)
     --http          Use HTTP transport instead of stdio
     --port=<n>      HTTP port (default: 8282)
@@ -339,12 +340,15 @@ async function handleStatus(globalOpts: GlobalOptions): Promise<void> {
 async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   let root = process.cwd();
   let force = false;
+  let all = false;
   
   for (const arg of commandArgs) {
     if (arg.startsWith('--root=')) {
       root = arg.substring(7);
     } else if (arg === '--force') {
       force = true;
+    } else if (arg === '--all') {
+      all = true;
     }
   }
   
@@ -403,6 +407,23 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
   } else {
     console.log(`⚠️  Ollama not reachable at ${ollamaUrl} — will use local GGUF fallback`);
   }
+
+  if (all && !force) {
+    console.log('⚠️  --all ignored without --force');
+  }
+
+  if (force && all) {
+    const dataDir = path.dirname(globalOpts.dbPath);
+    let deletedCount = 0;
+    if (fs.existsSync(dataDir)) {
+      const sqliteFiles = fs.readdirSync(dataDir).filter(file => file.endsWith('.sqlite'));
+      for (const file of sqliteFiles) {
+        fs.unlinkSync(path.join(dataDir, file));
+      }
+      deletedCount = sqliteFiles.length;
+    }
+    console.log(`🗑️  Force --all: deleted ${deletedCount} database files from ${dataDir}`);
+  }
   
   const store = createStore(globalOpts.dbPath);
   if (!config.workspaces) {
@@ -418,7 +439,7 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
     console.log(`ℹ️  Workspace already configured: ${root}`);
   }
   const projectHash = crypto.createHash('sha256').update(root).digest('hex').substring(0, 12);
-  if (force) {
+  if (force && !all) {
     console.log('🗑️  Force mode: clearing workspace memory...');
     const cleared = store.clearWorkspace(projectHash);
     console.log(`   Deleted ${cleared.documentsDeleted} documents, ${cleared.embeddingsDeleted} embeddings`);

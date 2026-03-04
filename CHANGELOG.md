@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026.1.18] - 2026-03-04
+
+### Added
+
+- **`init --force --all`**: Clear ALL workspace databases at once, not just the current workspace. Useful when switching embedding providers (different dimensions require full re-embed).
+
 ## [2026.1.17] - 2026-03-04
 
 ### Added
