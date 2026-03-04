@@ -1,5 +1,31 @@
 # Changelog
 
+## [2026.1.15] - 2026-03-04
+
+### Added
+
+- **Benchmark suite**: Dual-mode performance benchmarking for regression detection and real-world measurement.
+  - **Vitest bench** (`npx vitest bench`): CI-safe synthetic benchmarks with 200 deterministic documents, seeded PRNG, and mock embeddings. Covers FTS search (simple + multi-term), vector search, hybrid search, cache hit/miss/write, and store operations (insertDocument, insertEmbedding, getIndexHealth).
+  - **CLI bench** (`nano-brain bench`): Real-workspace benchmarks against the user's actual database with live Ollama embeddings. Supports `--suite=search|embed|cache|store` filtering, `--iterations=N` control, `--json` output, `--save` baseline persistence to `~/.nano-brain/benchmarks/`, and `--compare` delta reporting against saved baselines.
+  - Graceful degradation: embedding and vector search benchmarks skip with warning when Ollama is unavailable.
+- **Embedding pipeline upgrade** (**BREAKING** — triggers automatic re-embedding):
+  - **Default model switched to mxbai-embed-large** (1024 dims vs 768). Higher quality embeddings with GPU-accelerated performance.
+  - **Per-chunk embedding**: Each document chunk is embedded independently instead of one embedding per whole document, dramatically improving vector recall for large files.
+  - **Query embedding cache**: Query embeddings cached in `llm_cache` table to eliminate repeated Ollama HTTP calls for identical queries.
+  - **Parallel hybrid search**: FTS and vector search run concurrently with `Promise.all` instead of sequential loops, cutting hybrid search latency ~50%.
+  - **Vector search snippets**: Vector search results now include populated snippet text by JOINing with the content table, enabling proper reranking.
+  - **Raised embedding truncation limit**: `OLLAMA_MAX_CHARS` increased from 1800 to 6000 (nomic-embed-text supports 8192 tokens).
+  - **Larger embedding batch size**: Batch size increased from 10 to 50 for faster indexing throughput.
+- **Cache project-scoping**: LLM cache entries are now isolated per workspace.
+  - Added `project_hash` and `type` columns to `llm_cache` table. Expansion and reranking caches are workspace-scoped; query embedding cache remains global (text→vector is project-independent).
+  - **`cache clear`** CLI command: Clears cache for current workspace by default, `--all` for global wipe, `--type=embed|expand|rerank` for selective clearing.
+  - **`cache stats`** CLI command: Shows cache entry counts by type and workspace.
+  - Backward-compatible migration: existing entries get `project_hash='global'` and `type='general'`.
+
+### Fixed
+
+- 10 pre-existing test failures across 6 test files fixed. All 449 tests passing.
+
 ## [2026.1.14] - 2026-03-02
 
 ### Added

@@ -12,5 +12,8 @@ export default defineConfig({
         execArgv: ['--max-old-space-size=8192'],
       },
     },
+    benchmark: {
+      include: ['test/bench/**/*.bench.ts'],
+    },
   },
 });

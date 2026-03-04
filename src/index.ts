@@ -5,6 +5,7 @@ import { harvestSessions } from './harvester.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth } from './embeddings.js';
 import { hybridSearch } from './search.js';
 import { indexCodebase, embedPendingCodebase } from './codebase.js';
+import { handleBench } from './bench.js';
 import type { SearchResult } from './types.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -26,7 +27,7 @@ const DEFAULT_CONFIG = path.join(NANO_BRAIN_HOME, 'config.yml');
 const DEFAULT_OUTPUT_DIR = path.join(NANO_BRAIN_HOME, 'sessions');
 const DEFAULT_MEMORY_DIR = path.join(NANO_BRAIN_HOME, 'memory');
 
-interface GlobalOptions {
+export interface GlobalOptions {
   dbPath: string;
   configPath: string;
   remaining: string[];
@@ -115,6 +116,12 @@ nano-brain - Memory system with hybrid search
       --all         Clear all cache entries across all workspaces
       --type=<type> Filter by type (embed, expand, rerank)
     stats           Show cache entry counts by type and workspace
+  bench             Run performance benchmarks
+    --suite=<name>  Run specific suite (search, embed, cache, store)
+    --iterations=<n> Override iteration count
+    --json          Output as JSON
+    --save          Save results as baseline
+    --compare       Compare with last saved baseline
 Embedding Config (~/.nano-brain/config.yml):
   embedding:
     provider: ollama              # 'ollama' or 'local'
@@ -844,6 +851,8 @@ async function main() {
       return handleHarvest(globalOpts);
     case 'cache':
       return handleCache(globalOpts, commandArgs);
+    case 'bench':
+      return handleBench(globalOpts, commandArgs);
     default:
       console.error(`Unknown command: ${command}`);
       showHelp();
