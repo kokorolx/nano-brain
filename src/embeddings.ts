@@ -9,6 +9,7 @@ export interface EmbeddingProvider {
   embedBatch(texts: string[]): Promise<EmbeddingResult[]>;
   getDimensions(): number;
   getModel(): string;
+  getMaxChars(): number;
   dispose(): void;
 }
 
@@ -109,14 +110,7 @@ function formatDocumentPrompt(title: string, content: string): string {
   return `search_document: ${content}`;
 }
 
-// Ollama's truncate:true is broken (github.com/ollama/ollama/issues/14186)
-// Client-side truncation: 6000 chars for larger context models
-const OLLAMA_MAX_CHARS = 6000;
 
-function truncateForOllama(text: string): string {
-  if (text.length <= OLLAMA_MAX_CHARS) return text;
-  return text.substring(0, OLLAMA_MAX_CHARS);
-}
 export function detectOllamaUrl(): string {
   const isDocker = (() => {
     try {
@@ -151,17 +145,60 @@ class OllamaEmbeddingProvider implements EmbeddingProvider {
   private url: string;
   private model: string;
   private dimensions: number = DIMENSIONS;
+  private maxChars: number = 6000;
+  private contextTokens: number = 0;
+
   constructor(url: string, model: string) {
     this.url = url.replace(/\/$/, '');
     this.model = model;
   }
+
+  async detectModelContext(): Promise<void> {
+    try {
+      const resp = await fetch(`${this.url}/api/show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: this.model }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) return;
+
+      const data = await resp.json() as { model_info?: Record<string, any> };
+      const modelInfo = data.model_info;
+      if (!modelInfo) return;
+
+      const arch = modelInfo['general.architecture'] as string | undefined;
+      if (arch) {
+        const ctxLen = modelInfo[`${arch}.context_length`] as number | undefined;
+        if (ctxLen && ctxLen > 0) {
+          this.contextTokens = ctxLen;
+          const bufferTokens = 128;
+          // BERT WordPiece: ~2 chars/token for code-heavy content (empirically tested)
+          this.maxChars = Math.floor((ctxLen - bufferTokens) * 2);
+          console.error(`[embedding] Detected ${this.model} context: ${ctxLen} tokens → ${this.maxChars} max chars`);
+        }
+
+        const embLen = modelInfo[`${arch}.embedding_length`] as number | undefined;
+        if (embLen && embLen > 0) {
+          this.dimensions = embLen;
+        }
+      }
+    } catch {
+    }
+  }
+
+  private truncate(text: string): string {
+    if (text.length <= this.maxChars) return text;
+    return text.substring(0, this.maxChars);
+  }
+
   async embed(text: string): Promise<EmbeddingResult> {
     const response = await fetch(`${this.url}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.model,
-        input: [truncateForOllama(text)],
+        input: [this.truncate(text)],
       }),
       signal: AbortSignal.timeout(30000),
     });
@@ -178,13 +215,14 @@ class OllamaEmbeddingProvider implements EmbeddingProvider {
       dimensions: this.dimensions,
     };
   }
+
   async embedBatch(texts: string[]): Promise<EmbeddingResult[]> {
     const response = await fetch(`${this.url}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.model,
-        input: texts.map(truncateForOllama),
+        input: texts.map(t => this.truncate(t)),
       }),
       signal: AbortSignal.timeout(60000),
     });
@@ -203,12 +241,19 @@ class OllamaEmbeddingProvider implements EmbeddingProvider {
       dimensions: emb.length,
     }));
   }
+
   getDimensions(): number {
     return this.dimensions;
   }
+
   getModel(): string {
     return this.model;
   }
+
+  getMaxChars(): number {
+    return this.maxChars;
+  }
+
   dispose(): void {
   }
 }
@@ -272,6 +317,10 @@ class EmbeddingProviderImpl implements EmbeddingProvider {
   getModel(): string {
     return MODEL_NAME;
   }
+
+  getMaxChars(): number {
+    return 6000;
+  }
   
   dispose(): void {
     this.contexts = [];
@@ -286,14 +335,14 @@ export async function createEmbeddingProvider(
   // Try Ollama if configured (or by default)
   if (!config || config.provider !== 'local') {
     const url = config?.url || detectOllamaUrl();
-    const model = config?.model || 'mxbai-embed-large';
+    const model = config?.model || 'nomic-embed-text';
 
     try {
       // Health check — verify Ollama is reachable
       const healthResp = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(10000) });
       if (healthResp.ok) {
         const provider = new OllamaEmbeddingProvider(url, model);
-        // Verify the model works with a test embed
+        await provider.detectModelContext();
         await provider.embed('test');
         console.error(`[embedding] Using Ollama provider: ${model} at ${url}`);
         return provider;

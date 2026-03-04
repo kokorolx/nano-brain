@@ -474,7 +474,8 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
       const row = store.getNextHashNeedingEmbedding(projectHash);
       if (!row) break;
       try {
-        const result = await provider.embed(row.body.slice(0, 8000));
+        const maxChars = provider.getMaxChars();
+        const result = await provider.embed(row.body.slice(0, maxChars));
         store.insertEmbedding(row.hash, 0, 0, result.embedding, 'nomic-embed-text-v1.5');
         embedded++;
       } catch {
@@ -606,19 +607,12 @@ async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     process.exit(1);
   }
   
+  store.ensureVecTable(provider.getDimensions());
   console.log('Generating embeddings...');
   
-  for (let i = 0; i < hashes.length; i++) {
-    const { hash, body } = hashes[i];
-    const result = await provider.embed(body);
-    store.insertEmbedding(hash, 0, 0, result.embedding, result.model);
-    
-    if ((i + 1) % 10 === 0) {
-      console.log(`  Progress: ${i + 1}/${hashes.length}`);
-    }
-  }
+  const embedded = await embedPendingCodebase(store, provider, 50);
   
-  console.log(`✅ Generated ${hashes.length} embeddings`);
+  console.log(`✅ Embedded ${embedded} documents`);
   
   provider.dispose();
   store.close();

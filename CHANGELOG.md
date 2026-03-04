@@ -1,5 +1,15 @@
 # Changelog
 
+## [2026.1.16] - 2026-03-04
+
+### Fixed
+
+- **Auto-detect model context length**: Embedding provider now queries Ollama `/api/show` to detect the model's actual context window and embedding dimensions at runtime. Removes hardcoded `OLLAMA_MAX_CHARS` constant — max chars computed dynamically as `(contextTokens - 128) * 2`.
+- **Default model reverted to nomic-embed-text**: mxbai-embed-large only has 512-token context (not 8192), causing widespread embedding failures on real content. nomic-embed-text (2048 tokens, 768 dims) covers full chunks without loss.
+- **handleEmbed infinite loop**: `handleEmbed` was passing raw document bodies to `embed()` without chunking, bypassing the chunking pipeline entirely. Replaced with `embedPendingCodebase()` call.
+- **embedPendingCodebase infinite loop on total chunk failure**: When ALL chunks of a document failed embedding (e.g., token-dense minified code), the document was never marked as processed, causing `getNextHashNeedingEmbedding()` to return it forever. Now tracks failed hashes within the session and skips them.
+- **Removed hardcoded truncation**: `OLLAMA_MAX_CHARS` constant and `truncateForOllama()` removed. Truncation now uses the provider's dynamically-detected `maxChars`.
+
 ## [2026.1.15] - 2026-03-04
 
 ### Added

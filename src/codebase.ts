@@ -328,25 +328,21 @@ export async function indexCodebase(
   }
 }
 
-const MAX_EMBED_CHARS = 6000
-
-function truncateForEmbedding(text: string): string {
-  if (text.length <= MAX_EMBED_CHARS) return text
-  return text.substring(0, MAX_EMBED_CHARS)
-}
-
 export async function embedPendingCodebase(
   store: Store,
-  embedder: { embed(text: string): Promise<{ embedding: number[]; model?: string }>; embedBatch?(texts: string[]): Promise<Array<{ embedding: number[] }>>; getModel?(): string },
+  embedder: { embed(text: string): Promise<{ embedding: number[]; model?: string }>; embedBatch?(texts: string[]): Promise<Array<{ embedding: number[] }>>; getModel?(): string; getMaxChars?(): number },
   batchSize: number = 50,
   projectHash?: string
 ): Promise<number> {
+  const maxChars = embedder.getMaxChars?.() ?? 6000
   let embedded = 0
+  const failedHashes = new Set<string>()
   while (true) {
     const batch: Array<{ hash: string; body: string; path: string }> = []
     for (let i = 0; i < batchSize; i++) {
       const row = store.getNextHashNeedingEmbedding(projectHash)
       if (!row) break
+      if (failedHashes.has(row.hash)) break // all remaining docs already failed
       batch.push(row)
     }
     if (batch.length === 0) break
@@ -359,7 +355,7 @@ export async function embedPendingCodebase(
           hash: row.hash,
           seq: chunk.seq,
           pos: chunk.pos,
-          text: truncateForEmbedding(chunk.text),
+          text: chunk.text.length > maxChars ? chunk.text.substring(0, maxChars) : chunk.text,
         })
       }
     }
@@ -383,13 +379,22 @@ export async function embedPendingCodebase(
       embedded += batch.length
     } catch (err) {
       console.warn('[embed] Batch failed, falling back to sequential:', err)
+      const succeededHashes = new Set<string>()
       for (let i = 0; i < allChunks.length; i++) {
         try {
           const result = await embedder.embed(texts[i])
           store.insertEmbedding(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, result.embedding, result.model || modelName)
+          succeededHashes.add(allChunks[i].hash)
         } catch {
           console.warn(`[embed] Skipping chunk ${allChunks[i].hash}:${allChunks[i].seq}`)
           continue
+        }
+      }
+      // Track hashes where ALL chunks failed to prevent infinite retry
+      for (const row of batch) {
+        if (!succeededHashes.has(row.hash)) {
+          failedHashes.add(row.hash)
+          console.warn(`[embed] All chunks failed for ${row.path} (${row.hash.substring(0, 8)}…) — skipping, FTS still covers it`)
         }
       }
       embedded += batch.length
