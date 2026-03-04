@@ -1,9 +1,11 @@
 # Changelog
 
-## [2026.1.19] - 2026-03-04
+## [2026.1.20] - 2026-03-04
 
 ### Fixed
 
+- **Embed/search commands not using config**: `nano-brain embed`, `vsearch`, and `query` were calling `createEmbeddingProvider()` without passing the config, always falling back to Ollama/local instead of using the configured provider.
+- **Rate limiting for OpenAI-compatible providers**: Token bucket throttle at configurable RPM (default 40). Automatic retry with backoff on 429 responses. Configurable via `rpmLimit` in config.
 - **Status/init health check for OpenAI provider**: `nano-brain status` and `init` no longer use the Ollama health check (`/api/tags`) for OpenAI-compatible providers. Now tests the actual embedding endpoint, showing correct ✅/❌ status.
 
 ## [2026.1.18] - 2026-03-04

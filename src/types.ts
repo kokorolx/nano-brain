@@ -91,6 +91,7 @@ export interface EmbeddingConfig {
   model?: string
   apiKey?: string
   maxChars?: number
+  rpmLimit?: number
 }
 
 export interface WatcherConfig {

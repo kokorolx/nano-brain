@@ -630,7 +630,8 @@ async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   console.log(`Found ${hashes.length} chunks needing embeddings`);
   console.log('Loading embedding model...');
   
-  const provider = await createEmbeddingProvider();
+  const config = loadCollectionConfig(globalOpts.configPath);
+  const provider = await createEmbeddingProvider({ embeddingConfig: config?.embedding });
   
   if (!provider) {
     console.error('Failed to load embedding provider');
@@ -688,7 +689,8 @@ async function handleSearch(
   if (mode === 'fts') {
     results = store.searchFTS(query, limit, collection);
   } else if (mode === 'vec') {
-    const provider = await createEmbeddingProvider();
+    const searchConfig = loadCollectionConfig(globalOpts.configPath);
+    const provider = await createEmbeddingProvider({ embeddingConfig: searchConfig?.embedding });
     if (!provider) {
       console.error('Vector search requires embedding model');
       store.close();
@@ -699,7 +701,8 @@ async function handleSearch(
     results = store.searchVec(query, embedding, limit, collection);
     provider.dispose();
   } else {
-    const provider = await createEmbeddingProvider();
+    const searchConfig = loadCollectionConfig(globalOpts.configPath);
+    const provider = await createEmbeddingProvider({ embeddingConfig: searchConfig?.embedding });
     results = await hybridSearch(
       store,
       { query, limit, collection, minScore },

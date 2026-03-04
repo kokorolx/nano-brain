@@ -301,12 +301,15 @@ class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
   private apiKey: string;
   private dimensions: number | null = null;
   private maxChars: number;
+  private requestTimestamps: number[] = [];
+  private rpmLimit: number;
 
-  constructor(baseUrl: string, model: string, apiKey: string, maxChars?: number) {
+  constructor(baseUrl: string, model: string, apiKey: string, maxChars?: number, rpmLimit?: number) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.model = model;
     this.apiKey = apiKey;
     this.maxChars = maxChars ?? 8000;
+    this.rpmLimit = rpmLimit ?? 40;
   }
 
   private truncate(text: string): string {
@@ -320,27 +323,58 @@ class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
     }
   }
 
-  async embed(text: string): Promise<EmbeddingResult> {
-    const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.model,
-        input: [this.truncate(text)],
-        input_type: 'query',
-        encoding_format: 'float',
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-
-    if (!response.ok) {
-      throw new Error(`OpenAI-compatible embed failed: ${response.status} ${response.statusText}`);
+  private async throttle(): Promise<void> {
+    const now = Date.now();
+    const windowMs = 60_000;
+    this.requestTimestamps = this.requestTimestamps.filter(t => now - t < windowMs);
+    if (this.requestTimestamps.length >= this.rpmLimit) {
+      const oldest = this.requestTimestamps[0];
+      const waitMs = windowMs - (now - oldest) + 100;
+      console.error(`[embedding] Rate limit (${this.rpmLimit} rpm), waiting ${(waitMs / 1000).toFixed(1)}s...`);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
     }
+    this.requestTimestamps.push(Date.now());
+  }
 
-    const data = await response.json() as OpenAIEmbeddingResponse;
+  private async fetchWithRetry(body: Record<string, unknown>, timeoutMs: number): Promise<OpenAIEmbeddingResponse> {
+    const maxRetries = 3;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      await this.throttle();
+      const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+
+      if (response.status === 429) {
+        const retryAfter = parseInt(response.headers.get('retry-after') || '0', 10);
+        const waitMs = (retryAfter > 0 ? retryAfter * 1000 : 2000 * (attempt + 1));
+        console.error(`[embedding] 429 rate limited, retrying in ${(waitMs / 1000).toFixed(1)}s (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, waitMs));
+        continue;
+      }
+
+      if (!response.ok) {
+        throw new Error(`OpenAI-compatible embed failed: ${response.status} ${response.statusText}`);
+      }
+
+      return await response.json() as OpenAIEmbeddingResponse;
+    }
+    throw new Error('OpenAI-compatible embed failed: max retries exceeded (429)');
+  }
+
+  async embed(text: string): Promise<EmbeddingResult> {
+    const data = await this.fetchWithRetry({
+      model: this.model,
+      input: [this.truncate(text)],
+      input_type: 'query',
+      encoding_format: 'float',
+    }, 30000);
+
     const embedding = data.data[0]?.embedding;
     if (!embedding) {
       throw new Error('OpenAI-compatible embed failed: missing embedding');
@@ -354,26 +388,13 @@ class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embedBatch(texts: string[]): Promise<EmbeddingResult[]> {
-    const response = await fetch(`${this.baseUrl}/v1/embeddings`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: this.model,
-        input: texts.map(text => this.truncate(text)),
-        input_type: 'passage',
-        encoding_format: 'float',
-      }),
-      signal: AbortSignal.timeout(120000),
-    });
+    const data = await this.fetchWithRetry({
+      model: this.model,
+      input: texts.map(text => this.truncate(text)),
+      input_type: 'passage',
+      encoding_format: 'float',
+    }, 120000);
 
-    if (!response.ok) {
-      throw new Error(`OpenAI-compatible embedBatch failed: ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json() as OpenAIEmbeddingResponse;
     const results = new Map<number, EmbeddingResult>();
     for (const item of data.data) {
       const embedding = item.embedding;
@@ -409,6 +430,10 @@ class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
 
   getMaxChars(): number {
     return this.maxChars;
+  }
+
+  getRpmLimit(): number {
+    return this.rpmLimit;
   }
 
   dispose(): void {
@@ -500,9 +525,9 @@ export async function createEmbeddingProvider(
     }
 
     try {
-      const provider = new OpenAICompatibleEmbeddingProvider(url, model, apiKey, config.maxChars);
+      const provider = new OpenAICompatibleEmbeddingProvider(url, model, apiKey, config.maxChars, config.rpmLimit);
       await provider.embed('test');
-      console.error(`[embedding] Using OpenAI-compatible provider: ${model} at ${url}`);
+      console.error(`[embedding] Using OpenAI-compatible provider: ${model} at ${url} (${provider.getRpmLimit()} rpm)`);
       return provider;
     } catch (err) {
       console.error(`[embedding] OpenAI-compatible provider error: ${err instanceof Error ? err.message : String(err)}`);
