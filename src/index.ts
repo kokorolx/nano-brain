@@ -110,6 +110,11 @@ nano-brain - Memory system with hybrid search
     --from=<line>   Start line
     --lines=<n>     Number of lines
   harvest           Manually trigger session harvesting
+  cache             Manage LLM cache
+    clear           Clear cache for current workspace
+      --all         Clear all cache entries across all workspaces
+      --type=<type> Filter by type (embed, expand, rerank)
+    stats           Show cache entry counts by type and workspace
 Embedding Config (~/.nano-brain/config.yml):
   embedding:
     provider: ollama              # 'ollama' or 'local'
@@ -731,6 +736,75 @@ async function handleHarvest(globalOpts: GlobalOptions): Promise<void> {
   console.log(`✅ Harvested ${sessions.length} sessions to ${outputDir}`);
 }
 
+async function handleCache(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  const subcommand = commandArgs[0];
+
+  if (!subcommand) {
+    console.error('Missing cache subcommand (clear, stats)');
+    process.exit(1);
+  }
+
+  const store = createStore(globalOpts.dbPath);
+
+  switch (subcommand) {
+    case 'clear': {
+      let all = false;
+      let type: string | undefined;
+
+      for (const arg of commandArgs.slice(1)) {
+        if (arg === '--all') {
+          all = true;
+        } else if (arg.startsWith('--type=')) {
+          type = arg.substring(7);
+        }
+      }
+
+      if (type) {
+        const typeMap: Record<string, string> = { embed: 'qembed', expand: 'expand', rerank: 'rerank' };
+        if (!typeMap[type]) {
+          console.error(`Invalid cache type "${type}". Valid types: embed, expand, rerank`);
+          store.close();
+          process.exit(1);
+        }
+        type = typeMap[type];
+      }
+
+      let deleted: number;
+      if (all) {
+        deleted = store.clearCache(undefined, type);
+        console.log(`Cleared all cache entries${type ? ` of type ${type}` : ''} (${deleted} total)`);
+      } else {
+        const projectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12);
+        deleted = store.clearCache(projectHash, type);
+        console.log(`Cleared ${deleted} cache entries for workspace ${projectHash}${type ? ` (type: ${type})` : ''}`);
+      }
+      break;
+    }
+
+    case 'stats': {
+      const stats = store.getCacheStats();
+      if (stats.length === 0) {
+        console.log('No cache entries');
+      } else {
+        console.log('Cache Statistics:');
+        console.log('  Type        Project Hash    Count');
+        console.log('  ──────────  ──────────────  ─────');
+        for (const row of stats) {
+          console.log(`  ${row.type.padEnd(10)}  ${row.projectHash.padEnd(14)}  ${row.count}`);
+        }
+      }
+      break;
+    }
+
+    default:
+      console.error(`Unknown cache subcommand: ${subcommand}`);
+      store.close();
+      process.exit(1);
+  }
+
+  store.close();
+}
+
 async function main() {
   const args = process.argv.slice(2);
   
@@ -768,6 +842,8 @@ async function main() {
       return handleGet(globalOpts, commandArgs);
     case 'harvest':
       return handleHarvest(globalOpts);
+    case 'cache':
+      return handleCache(globalOpts, commandArgs);
     default:
       console.error(`Unknown command: ${command}`);
       showHelp();
