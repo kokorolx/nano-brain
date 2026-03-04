@@ -611,6 +611,29 @@ describe('harvestSessions', () => {
       })
     );
 
+    const messageDir1 = join(tmpDir, 'message', sessionId1);
+    mkdirSync(messageDir1, { recursive: true });
+    writeFileSync(
+      join(messageDir1, 'msg_001.json'),
+      JSON.stringify({
+        id: 'msg_001',
+        sessionID: sessionId1,
+        role: 'user',
+        time: { created: 1770106366200 }
+      })
+    );
+
+    const partDir1 = join(tmpDir, 'part', 'msg_001');
+    mkdirSync(partDir1, { recursive: true });
+    writeFileSync(
+      join(partDir1, 'prt_001.json'),
+      JSON.stringify({
+        id: 'prt_001',
+        type: 'text',
+        text: 'Project one message'
+      })
+    );
+
     const sessionDir2 = join(tmpDir, 'session', projectHash2);
     mkdirSync(sessionDir2, { recursive: true });
     writeFileSync(
@@ -622,6 +645,30 @@ describe('harvestSessions', () => {
         projectID: projectHash2,
         directory: '/project2',
         time: { created: 1770106366300 }
+      })
+    );
+
+    const messageDir2 = join(tmpDir, 'message', sessionId2);
+    mkdirSync(messageDir2, { recursive: true });
+    writeFileSync(
+      join(messageDir2, 'msg_002.json'),
+      JSON.stringify({
+        id: 'msg_002',
+        sessionID: sessionId2,
+        role: 'assistant',
+        agent: 'sisyphus',
+        time: { created: 1770106366350 }
+      })
+    );
+
+    const partDir2 = join(tmpDir, 'part', 'msg_002');
+    mkdirSync(partDir2, { recursive: true });
+    writeFileSync(
+      join(partDir2, 'prt_002.json'),
+      JSON.stringify({
+        id: 'prt_002',
+        type: 'text',
+        text: 'Project two message'
       })
     );
 

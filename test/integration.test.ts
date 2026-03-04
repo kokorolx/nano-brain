@@ -46,7 +46,7 @@ describe('Real Database Integration', () => {
     dbPath = path.join(tempDir, 'test.db');
     store = createStore(dbPath);
 
-    const doc1Content = '# Nano Brain\n\nThis is a test document about nano-brain architecture.';
+    const doc1Content = '# Nano Brain\n\nThis is a test document about nano-brain architecture and memory systems.';
     const doc1Hash = crypto.createHash('sha256').update(doc1Content).digest('hex');
     store.insertContent(doc1Hash, doc1Content);
     store.insertDocument({

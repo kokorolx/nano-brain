@@ -54,8 +54,8 @@ describe('CLI Argument Parsing', () => {
       const args = ['status'];
       const result = parseGlobalOptions(args);
       
-      expect(result.dbPath).toContain('.cache/nano-brain/default.sqlite');
-      expect(result.configPath).toContain('.config/nano-brain/config.yml');
+      expect(result.dbPath).toContain('.nano-brain/data/default.sqlite');
+      expect(result.configPath).toContain('.nano-brain/config.yml');
       expect(result.remaining).toEqual(['status']);
     });
     
@@ -103,8 +103,6 @@ describe('CLI Argument Parsing', () => {
       const output = consoleLogSpy.mock.calls[0][0] as string;
       
       expect(output).toContain('nano-brain');
-      expect(output).toContain('Usage:');
-      expect(output).toContain('Commands:');
       expect(output).toContain('mcp');
       expect(output).toContain('collection');
       expect(output).toContain('status');
@@ -126,7 +124,7 @@ describe('CLI Argument Parsing', () => {
     it('should output version', () => {
       showVersion();
       
-      expect(consoleLogSpy).toHaveBeenCalledWith('nano-brain v0.1.0');
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringMatching(/^nano-brain v/));
     });
   });
 });

@@ -192,10 +192,10 @@ describe('mergeExcludePatterns', () => {
   it('should include builtin patterns', () => {
     const config: CodebaseConfig = { enabled: true };
     const patterns = mergeExcludePatterns(config, tmpDir);
-    expect(patterns).toContain('node_modules');
-    expect(patterns).toContain('.git');
-    expect(patterns).toContain('dist');
-    expect(patterns).toContain('__pycache__');
+    expect(patterns).toContain('**/node_modules/**');
+    expect(patterns).toContain('**/.git/**');
+    expect(patterns).toContain('**/dist/**');
+    expect(patterns).toContain('**/__pycache__/**');
   });
 
   it('should include gitignore patterns', () => {
@@ -217,7 +217,7 @@ describe('mergeExcludePatterns', () => {
     fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'node_modules\ndist');
     const config: CodebaseConfig = { enabled: true, exclude: ['node_modules', 'custom'] };
     const patterns = mergeExcludePatterns(config, tmpDir);
-    const nodeModulesCount = patterns.filter(p => p === 'node_modules').length;
+    const nodeModulesCount = patterns.filter(p => p === '**/node_modules/**').length;
     expect(nodeModulesCount).toBe(1);
   });
 
@@ -225,7 +225,7 @@ describe('mergeExcludePatterns', () => {
     fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'gitignore_pattern');
     const config: CodebaseConfig = { enabled: true, exclude: ['config_pattern'] };
     const patterns = mergeExcludePatterns(config, tmpDir);
-    expect(patterns).toContain('node_modules');
+    expect(patterns).toContain('**/node_modules/**');
     expect(patterns).toContain('gitignore_pattern');
     expect(patterns).toContain('config_pattern');
   });

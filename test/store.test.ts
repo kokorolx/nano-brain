@@ -28,7 +28,7 @@ describe('Store', () => {
       const health = store.getIndexHealth();
       expect(health).toBeDefined();
       expect(health.documentCount).toBe(0);
-      expect(health.chunkCount).toBe(0);
+      expect(health.embeddedCount).toBe(0);
     });
   });
   

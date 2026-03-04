@@ -34,7 +34,7 @@ function createMockStore(): Store {
     ensureVecTable: vi.fn(),
     getIndexHealth: vi.fn().mockReturnValue({
       documentCount: 100,
-      chunkCount: 500,
+      embeddedCount: 500,
       pendingEmbeddings: 10,
       collections: [
         { name: 'docs', documentCount: 50, path: '/path/to/docs' },
@@ -110,7 +110,7 @@ describe('Server', () => {
     it('should format health status correctly', () => {
       const health: IndexHealth = {
         documentCount: 100,
-        chunkCount: 500,
+        embeddedCount: 500,
         pendingEmbeddings: 10,
         collections: [
           { name: 'docs', documentCount: 50, path: '/path/to/docs' },
@@ -128,7 +128,7 @@ describe('Server', () => {
       
       expect(formatted).toContain('📊 **Memory Index Status**');
       expect(formatted).toContain('Documents: 100');
-      expect(formatted).toContain('Chunks: 500');
+      expect(formatted).toContain('Embedded: 500');
       expect(formatted).toContain('Pending embeddings: 10');
       expect(formatted).toContain('Database size: 5.0 MB');
       expect(formatted).toContain('**Collections:**');
@@ -143,7 +143,7 @@ describe('Server', () => {
     it('should handle empty collections', () => {
       const health: IndexHealth = {
         documentCount: 0,
-        chunkCount: 0,
+        embeddedCount: 0,
         pendingEmbeddings: 0,
         collections: [],
         databaseSize: 0,
@@ -429,7 +429,7 @@ describe('Server', () => {
       expect(mockStore.getIndexHealth).toHaveBeenCalled();
       expect(formatted).toContain('📊 **Memory Index Status**');
       expect(formatted).toContain('Documents: 100');
-      expect(formatted).toContain('Chunks: 500');
+      expect(formatted).toContain('Embedded: 500');
     });
   });
   
@@ -505,7 +505,7 @@ describe('Server', () => {
     it('should include workspaceStats in formatStatus output', () => {
       const health = {
         documentCount: 100,
-        chunkCount: 500,
+        embeddedCount: 500,
         pendingEmbeddings: 10,
         collections: [],
         databaseSize: 1024 * 1024 * 5,
