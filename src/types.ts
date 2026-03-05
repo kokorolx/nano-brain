@@ -75,6 +75,13 @@ export interface CollectionConfig {
   embedding?: EmbeddingConfig
   watcher?: WatcherConfig
   search?: Partial<SearchConfig>
+  vector?: {
+    provider: 'sqlite-vec' | 'qdrant'
+    url?: string
+    apiKey?: string
+    collection?: string
+    dimensions?: number
+  }
 }
 
 export interface CodebaseConfig {
@@ -250,6 +257,8 @@ export interface Store {
   
   searchFTS(query: string, options?: StoreSearchOptions): SearchResult[];
   searchVec(query: string, embedding: number[], options?: StoreSearchOptions): SearchResult[];
+  searchVecAsync(query: string, embedding: number[], options?: StoreSearchOptions): Promise<SearchResult[]>;
+  setVectorStore(vs: import('./vector-store.js').VectorStore): void;
   
   getCachedResult(hash: string, projectHash?: string): string | null;
   setCachedResult(hash: string, result: string, projectHash?: string, type?: string): void;
