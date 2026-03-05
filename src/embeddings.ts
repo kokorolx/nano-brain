@@ -3,6 +3,7 @@ import { promises as fs, accessSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir, cpus } from 'os';
 import type { EmbeddingResult, EmbeddingConfig } from './types.js';
+import { log } from './logger.js';
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<EmbeddingResult>;
@@ -205,6 +206,7 @@ class OllamaEmbeddingProvider implements EmbeddingProvider {
           const bufferTokens = 128;
           // BERT WordPiece: ~2 chars/token for code-heavy content (empirically tested)
           this.maxChars = Math.floor((ctxLen - bufferTokens) * 2);
+          log('embedding', 'detectModelContext model=' + this.model + ' context=' + ctxLen);
           console.error(`[embedding] Detected ${this.model} context: ${ctxLen} tokens → ${this.maxChars} max chars`);
         }
 
@@ -329,6 +331,7 @@ class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
     if (this.requestTimestamps.length >= this.rpmLimit) {
       const oldest = this.requestTimestamps[0];
       const waitMs = windowMs - (now - oldest) + 100;
+      log('embedding', 'throttle waiting ms=' + waitMs);
       console.error(`[embedding] Rate limit (${this.rpmLimit} rpm), waiting ${(waitMs / 1000).toFixed(1)}s...`);
       await new Promise(resolve => setTimeout(resolve, waitMs));
     }
@@ -352,6 +355,7 @@ class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
       if (response.status === 429) {
         const retryAfter = parseInt(response.headers.get('retry-after') || '0', 10);
         const waitMs = (retryAfter > 0 ? retryAfter * 1000 : 2000 * (attempt + 1));
+        log('embedding', 'fetchWithRetry 429 retry attempt=' + (attempt + 1) + ' waitMs=' + waitMs);
         console.error(`[embedding] 429 rate limited, retrying in ${(waitMs / 1000).toFixed(1)}s (attempt ${attempt + 1}/${maxRetries})`);
         await new Promise(resolve => setTimeout(resolve, waitMs));
         continue;
@@ -550,9 +554,11 @@ export async function createEmbeddingProvider(
     try {
       const provider = new OpenAICompatibleEmbeddingProvider(url, model, apiKey, config.maxChars, config.rpmLimit);
       await provider.embed('test');
+      log('embedding', 'createEmbeddingProvider selected=openai model=' + model);
       console.error(`[embedding] Using OpenAI-compatible provider: ${model} at ${url} (${provider.getRpmLimit()} rpm)`);
       return provider;
     } catch (err) {
+      log('embedding', 'createEmbeddingProvider openai failed');
       console.error(`[embedding] OpenAI-compatible provider error: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
@@ -570,6 +576,7 @@ export async function createEmbeddingProvider(
         const provider = new OllamaEmbeddingProvider(url, model);
         await provider.detectModelContext();
         await provider.embed('test');
+        log('embedding', 'createEmbeddingProvider selected=ollama model=' + model);
         console.error(`[embedding] Using Ollama provider: ${model} at ${url}`);
         return provider;
       }
@@ -577,9 +584,11 @@ export async function createEmbeddingProvider(
       console.warn(`[embedding] Ollama not reachable at ${url}: ${err instanceof Error ? err.message : String(err)}`);
       if (config?.provider === 'ollama') {
         // Explicitly configured Ollama but it's not available
+        log('embedding', 'createEmbeddingProvider ollama failed no-fallback');
         console.error('[embedding] Ollama explicitly configured but not reachable, no fallback');
         return null;
       }
+      log('embedding', 'createEmbeddingProvider ollama unreachable fallback=local');
       console.warn('[embedding] Falling back to local node-llama-cpp...');
     }
   }
@@ -594,9 +603,11 @@ export async function createEmbeddingProvider(
     const parallelism = Math.max(1, Math.min(4, Math.floor(cpuCount / 4)));
     const provider = new EmbeddingProviderImpl(model, parallelism);
     await provider.initialize();
+    log('embedding', 'createEmbeddingProvider selected=local model=' + MODEL_NAME);
     console.error(`[embedding] Using local provider: ${MODEL_NAME}`);
     return provider;
   } catch (error) {
+    log('embedding', 'createEmbeddingProvider local failed');
     console.warn('Failed to load embedding model:', error instanceof Error ? error.message : String(error));
     return null;
   }

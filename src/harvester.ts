@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, statSy
 import { join, dirname } from 'path';
 import { createHash } from 'crypto';
 import type { HarvestedSession } from './types.js';
+import { log } from './logger.js';
 
 export interface HarvesterOptions {
   sessionDir: string;
@@ -177,6 +178,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
   const state = loadHarvestState(stateFile);
   const harvested: HarvestedSession[] = [];
   
+  log('harvester', 'Starting harvest cycle')
   const sessionRoot = join(sessionDir, 'session');
   
   if (!existsSync(sessionRoot)) {
@@ -213,6 +215,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
             continue;
           }
           // Output file missing — fall through to re-harvest
+          log('harvester', 'Re-harvest triggered: ' + sessionFile + ' (output file missing)')
           console.log(`[harvester] Re-harvesting ${sessionFile}: output file missing`);
         } else {
           continue;
@@ -279,14 +282,17 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
         
         // Verify the file was actually written before updating state
         if (!existsSync(outputPath)) {
+          log('harvester', 'Write failed: ' + outputPath + ' (file not found after write)')
           console.warn(`[harvester] Write succeeded but file not found: ${outputPath}`);
           continue;
         }
         
+        log('harvester', 'Processed session: ' + session.id)
         harvested.push(harvestedSession);
         state[sessionFile] = lastMtime;
         stateChanged = true;
       } catch (err) {
+        log('harvester', 'Write failed: ' + outputPath)
         console.warn(`[harvester] Failed to write ${outputPath}:`, err);
         // Do NOT update state — will retry on next cycle
         continue;
@@ -299,6 +305,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
   }
   
   if (harvested.length > 0) {
+    log('harvester', 'Harvest complete: ' + harvested.length + ' session(s)')
     console.log(`[harvester] Harvested ${harvested.length} session(s)`);
   }
   

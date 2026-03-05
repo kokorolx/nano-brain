@@ -2,6 +2,7 @@ import { getLlama } from 'node-llama-cpp';
 import { cpus } from 'os';
 import { resolveModelPath } from './embeddings.js';
 import type { RerankResult, RerankDocument } from './types.js';
+import { log } from './logger.js';
 
 export interface Reranker {
   rerank(query: string, documents: RerankDocument[]): Promise<RerankResult>;
@@ -30,6 +31,7 @@ class RerankerImpl implements Reranker {
   ) {}
   
   async initialize(): Promise<void> {
+    log('reranker', 'initializing with parallelism=' + this.parallelism);
     for (let i = 0; i < this.parallelism; i++) {
       const context = await this.model.createContext({
         contextSize: CONTEXT_SIZE,
@@ -39,9 +41,11 @@ class RerankerImpl implements Reranker {
   }
   
   async rerank(query: string, documents: RerankDocument[]): Promise<RerankResult> {
+    log('reranker', 'rerank query="' + query.slice(0, 50) + '" docs=' + documents.length);
     const scoredDocs: Array<{ file: string; score: number; index: number }> = [];
     
     const batchSize = Math.min(4, this.parallelism);
+    log('reranker', 'batch size=' + batchSize);
     
     for (let i = 0; i < documents.length; i += batchSize) {
       const batch = documents.slice(i, i + batchSize);
@@ -68,6 +72,7 @@ class RerankerImpl implements Reranker {
     
     scoredDocs.sort((a, b) => b.score - a.score);
     
+    log('reranker', 'rerank complete results=' + scoredDocs.length);
     return {
       results: scoredDocs,
       model: MODEL_NAME,
@@ -83,6 +88,7 @@ export async function createReranker(
   options?: RerankerOptions
 ): Promise<Reranker | null> {
   try {
+    log('reranker', 'loading reranker model');
     const modelUri = options?.modelPath || DEFAULT_MODEL_URI;
     const modelPath = await resolveModelPath(modelUri, options?.cacheDir);
     
@@ -95,8 +101,10 @@ export async function createReranker(
     const reranker = new RerankerImpl(model, parallelism);
     await reranker.initialize();
     
+    log('reranker', 'reranker model loaded successfully');
     return reranker;
   } catch (error) {
+    log('reranker', 'failed to load reranker model: ' + (error instanceof Error ? error.message : String(error)));
     console.warn('Failed to load reranker model:', error instanceof Error ? error.message : String(error));
     return null;
   }

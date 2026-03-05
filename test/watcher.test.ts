@@ -55,6 +55,17 @@ describe('Watcher', () => {
       cleanOrphanedEmbeddings: vi.fn().mockReturnValue(0),
       getCollectionStorageSize: vi.fn().mockReturnValue(0),
       modelStatus: { embedding: 'missing', reranker: 'missing', expander: 'missing' },
+      insertFileEdge: vi.fn(),
+      deleteFileEdges: vi.fn(),
+      getFileEdges: vi.fn().mockReturnValue([]),
+      updateCentralityScores: vi.fn(),
+      updateClusterIds: vi.fn(),
+      getEdgeSetHash: vi.fn().mockReturnValue(null),
+      setEdgeSetHash: vi.fn(),
+      supersedeDocument: vi.fn(),
+      insertTags: vi.fn(),
+      getDocumentTags: vi.fn().mockReturnValue([]),
+      listAllTags: vi.fn().mockReturnValue([]),
     } as unknown as Store;
 
     collections = [

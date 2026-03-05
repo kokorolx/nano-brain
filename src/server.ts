@@ -6,10 +6,12 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as http from 'http';
-import type { Store, SearchResult, IndexHealth, Collection, StorageConfig, CodebaseConfig, EmbeddingConfig, WatcherConfig } from './types.js'
+import type { Store, SearchResult, IndexHealth, Collection, StorageConfig, CodebaseConfig, EmbeddingConfig, WatcherConfig, SearchConfig } from './types.js'
 import type { SearchProviders } from './search.js';
-import { hybridSearch } from './search.js';
+import { hybridSearch, parseSearchConfig } from './search.js';
+import { findCycles } from './graph.js';
 import { createStore, extractProjectHashFromPath } from './store.js';
+import { log, initLogger } from './logger.js';
 import { loadCollectionConfig, getCollections, scanCollectionFiles, getWorkspaceConfig } from './collections.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth } from './embeddings.js';
 import { createReranker } from './reranker.js';
@@ -35,6 +37,7 @@ export interface ServerDeps {
   codebaseConfig?: CodebaseConfig
   workspaceRoot: string
   embeddingConfig?: EmbeddingConfig
+  searchConfig?: SearchConfig
 }
 
 export function formatSearchResults(results: SearchResult[]): string {
@@ -126,10 +129,22 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       limit: z.number().optional().default(10).describe('Max results'),
       collection: z.string().optional().describe('Filter by collection name'),
       workspace: z.string().optional().describe('Filter by workspace hash. Omit for current workspace, "all" for cross-workspace search'),
+      tags: z.string().optional().describe('Comma-separated tags to filter by (AND logic)'),
+      since: z.string().optional().describe('Filter documents modified on or after this date (ISO format)'),
+      until: z.string().optional().describe('Filter documents modified on or before this date (ISO format)'),
     },
-    async ({ query, limit, collection, workspace }) => {
+    async ({ query, limit, collection, workspace, tags, since, until }) => {
+      log('mcp', 'memory_search query="' + query + '" limit=' + limit);
       const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
-      const results = store.searchFTS(query, limit, collection, effectiveWorkspace);
+      const parsedTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : undefined;
+      const results = store.searchFTS(query, {
+        limit,
+        collection,
+        projectHash: effectiveWorkspace,
+        tags: parsedTags,
+        since,
+        until,
+      });
       return {
         content: [
           {
@@ -149,9 +164,22 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       limit: z.number().optional().default(10).describe('Max results'),
       collection: z.string().optional().describe('Filter by collection name'),
       workspace: z.string().optional().describe('Filter by workspace hash. Omit for current workspace, "all" for cross-workspace search'),
+      tags: z.string().optional().describe('Comma-separated tags to filter by (AND logic)'),
+      since: z.string().optional().describe('Filter documents modified on or after this date (ISO format)'),
+      until: z.string().optional().describe('Filter documents modified on or before this date (ISO format)'),
     },
-    async ({ query, limit, collection, workspace }) => {
+    async ({ query, limit, collection, workspace, tags, since, until }) => {
+      log('mcp', 'memory_vsearch query="' + query + '" limit=' + limit);
       const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
+      const parsedTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : undefined;
+      const searchOpts = {
+        limit,
+        collection,
+        projectHash: effectiveWorkspace,
+        tags: parsedTags,
+        since,
+        until,
+      };
       if (providers.embedder) {
         try {
           let embedding: number[];
@@ -163,7 +191,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
             embedding = result.embedding;
             store.setQueryEmbeddingCache(query, embedding);
           }
-          const results = store.searchVec(query, embedding, limit, collection, effectiveWorkspace);
+          const results = store.searchVec(query, embedding, searchOpts);
           return {
             content: [
               {
@@ -173,7 +201,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
             ],
           };
         } catch (err) {
-          const fallbackResults = store.searchFTS(query, limit, collection, effectiveWorkspace);
+          const fallbackResults = store.searchFTS(query, searchOpts);
           return {
             content: [
               {
@@ -184,7 +212,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
           };
         }
       } else {
-        const fallbackResults = store.searchFTS(query, limit, collection, effectiveWorkspace);
+        const fallbackResults = store.searchFTS(query, searchOpts);
         return {
           content: [
             {
@@ -206,12 +234,17 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       collection: z.string().optional().describe('Filter by collection name'),
       minScore: z.number().optional().default(0).describe('Minimum score threshold'),
       workspace: z.string().optional().describe('Filter by workspace hash. Omit for current workspace, "all" for cross-workspace search'),
+      tags: z.string().optional().describe('Comma-separated tags to filter by (AND logic)'),
+      since: z.string().optional().describe('Filter documents modified on or after this date (ISO format)'),
+      until: z.string().optional().describe('Filter documents modified on or before this date (ISO format)'),
     },
-    async ({ query, limit, collection, minScore, workspace }) => {
+    async ({ query, limit, collection, minScore, workspace, tags, since, until }) => {
+      log('mcp', 'memory_query query="' + query + '" limit=' + limit);
       const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
+      const parsedTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : undefined;
       const results = await hybridSearch(
         store,
-        { query, limit, collection, minScore, projectHash: effectiveWorkspace },
+        { query, limit, collection, minScore, projectHash: effectiveWorkspace, tags: parsedTags, since, until, searchConfig: deps.searchConfig },
         providers
       );
       
@@ -235,6 +268,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       maxLines: z.number().optional().describe('Maximum number of lines to return'),
     },
     async ({ id, fromLine, maxLines }) => {
+      log('mcp', 'memory_get id="' + id + '"');
       const docid = id.startsWith('#') ? id.slice(1) : id;
       const doc = store.findDocument(docid);
       
@@ -270,6 +304,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       maxBytes: z.number().optional().default(50000).describe('Maximum total bytes to return'),
     },
     async ({ pattern, maxBytes }) => {
+      log('mcp', 'memory_multi_get pattern="' + pattern + '" maxBytes=' + maxBytes);
       const ids = pattern.split(',').map(s => s.trim());
       
       let totalBytes = 0;
@@ -317,8 +352,11 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     'Write content to daily log with workspace context',
     {
       content: z.string().describe('Content to write'),
+      supersedes: z.string().optional().describe('Path or docid of document this supersedes'),
+      tags: z.string().optional().describe('Comma-separated tags to associate with this entry'),
     },
-    async ({ content }) => {
+    async ({ content, supersedes, tags }) => {
+      log('mcp', 'memory_write content_length=' + content.length);
       const date = new Date().toISOString().split('T')[0];
       const memoryDir = path.join(outputDir, 'memory');
       fs.mkdirSync(memoryDir, { recursive: true });
@@ -329,11 +367,77 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       
       fs.appendFileSync(targetPath, entry, 'utf-8');
       
+      let supersedeWarning = '';
+      if (supersedes) {
+        const targetDoc = store.findDocument(supersedes);
+        if (targetDoc) {
+          store.supersedeDocument(targetDoc.id, 0);
+        } else {
+          supersedeWarning = `\n⚠️ Supersede target not found: ${supersedes}`;
+        }
+      }
+      
+      let tagInfo = '';
+      if (tags) {
+        const fileContent = fs.readFileSync(targetPath, 'utf-8');
+        const title = path.basename(targetPath, path.extname(targetPath));
+        const hash = crypto.createHash('sha256').update(fileContent).digest('hex');
+        store.insertContent(hash, fileContent);
+        const stats = fs.statSync(targetPath);
+        const docId = store.insertDocument({
+          collection: 'memory',
+          path: targetPath,
+          title,
+          hash,
+          createdAt: stats.birthtime.toISOString(),
+          modifiedAt: stats.mtime.toISOString(),
+          active: true,
+          projectHash: currentProjectHash,
+        });
+        const parsedTags = tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0);
+        if (parsedTags.length > 0) {
+          store.insertTags(docId, parsedTags);
+          tagInfo = `\n📌 Tags: ${parsedTags.join(', ')}`;
+        }
+      }
+      
       return {
         content: [
           {
             type: 'text',
-            text: `✅ Written to ${targetPath} [${workspaceName}]`,
+            text: `✅ Written to ${targetPath} [${workspaceName}]${supersedeWarning}${tagInfo}`,
+          },
+        ],
+      };
+    }
+  );
+  
+  server.tool(
+    'memory_tags',
+    'List all tags with document counts',
+    {},
+    async () => {
+      log('mcp', 'memory_tags');
+      const tags = store.listAllTags();
+      if (tags.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'No tags found.',
+            },
+          ],
+        };
+      }
+      const lines = ['**Tags:**', ''];
+      for (const { tag, count } of tags) {
+        lines.push(`- ${tag}: ${count} document${count === 1 ? '' : 's'}`);
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: lines.join('\n'),
           },
         ],
       };
@@ -347,6 +451,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       root: z.string().optional().describe('Workspace root path for codebase stats'),
     },
     async ({ root }) => {
+      log('mcp', 'memory_status root="' + (root || '') + '"');
       const health = store.getIndexHealth()
       const effectiveRoot = root || deps.workspaceRoot
       const codebaseStats = getCodebaseStats(store, deps.codebaseConfig, effectiveRoot)
@@ -380,6 +485,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       root: z.string().optional().describe('Workspace root path to index. Defaults to configured root or server cwd.'),
     },
     async ({ root }) => {
+      log('mcp', 'memory_index_codebase root="' + (root || '') + '"');
       if (!deps.codebaseConfig?.enabled) {
         return {
           content: [
@@ -429,6 +535,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     'Trigger immediate reindex of all collections',
     {},
     async () => {
+      log('mcp', 'memory_update');
       let totalAdded = 0;
       let totalUpdated = 0;
       
@@ -484,6 +591,237 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     }
   );
   
+  server.tool(
+    'memory_focus',
+    'Get dependency graph context for a specific file',
+    {
+      filePath: z.string().describe('Absolute path to the file'),
+    },
+    async ({ filePath }) => {
+      log('mcp', 'memory_focus filePath="' + filePath + '"');
+      const dependencies = store.getFileDependencies(filePath, currentProjectHash);
+      const dependents = store.getFileDependents(filePath, currentProjectHash);
+      const centralityInfo = store.getDocumentCentrality(filePath);
+      
+      const lines: string[] = [];
+      lines.push(`**File:** ${filePath}`);
+      lines.push('');
+      
+      if (centralityInfo) {
+        lines.push(`**Centrality:** ${centralityInfo.centrality.toFixed(4)}`);
+        if (centralityInfo.clusterId !== null) {
+          const clusterMembers = store.getClusterMembers(centralityInfo.clusterId, currentProjectHash);
+          lines.push(`**Cluster ID:** ${centralityInfo.clusterId} (${clusterMembers.length} members)`);
+          if (clusterMembers.length > 0) {
+            lines.push('**Cluster Members:**');
+            for (const member of clusterMembers.slice(0, 10)) {
+              lines.push(`  - ${member}`);
+            }
+            if (clusterMembers.length > 10) {
+              lines.push(`  ... and ${clusterMembers.length - 10} more`);
+            }
+          }
+        }
+      } else {
+        lines.push('**Centrality:** Not indexed');
+      }
+      lines.push('');
+      
+      lines.push(`**Dependencies (imports):** ${dependencies.length}`);
+      for (const dep of dependencies) {
+        lines.push(`  → ${dep}`);
+      }
+      lines.push('');
+      
+      lines.push(`**Dependents (imported by):** ${dependents.length}`);
+      for (const dep of dependents) {
+        lines.push(`  ← ${dep}`);
+      }
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: lines.join('\n'),
+          },
+        ],
+      };
+    }
+  );
+  
+  server.tool(
+    'memory_graph_stats',
+    'Get statistics about the file dependency graph',
+    {},
+    async () => {
+      log('mcp', 'memory_graph_stats');
+      const stats = store.getGraphStats(currentProjectHash);
+      const edges = store.getFileEdges(currentProjectHash);
+      const cycles = findCycles(edges.map(e => ({ source: e.source_path, target: e.target_path })), 5);
+      
+      const lines: string[] = [];
+      lines.push('**Graph Statistics**');
+      lines.push('');
+      lines.push(`**Nodes:** ${stats.nodeCount}`);
+      lines.push(`**Edges:** ${stats.edgeCount}`);
+      lines.push(`**Clusters:** ${stats.clusterCount}`);
+      lines.push('');
+      
+      if (stats.topCentrality.length > 0) {
+        lines.push('**Top 10 by Centrality:**');
+        for (const { path: filePath, centrality } of stats.topCentrality) {
+          lines.push(`  ${centrality.toFixed(4)} - ${filePath}`);
+        }
+        lines.push('');
+      }
+      
+      if (cycles.length > 0) {
+        lines.push(`**Cycles (length ≤ 5):** ${cycles.length}`);
+        for (const cycle of cycles.slice(0, 5)) {
+          lines.push(`  ${cycle.join(' → ')} → ${cycle[0]}`);
+        }
+        if (cycles.length > 5) {
+          lines.push(`  ... and ${cycles.length - 5} more`);
+        }
+      } else {
+        lines.push('**Cycles:** None detected');
+      }
+      
+      return {
+        content: [
+          {
+            type: 'text',
+            text: lines.join('\n'),
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    'memory_symbols',
+    'Query cross-repo symbols (Redis keys, PubSub channels, MySQL tables, API endpoints, HTTP calls, Bull queues)',
+    {
+      type: z.string().optional().describe('Symbol type: redis_key, pubsub_channel, mysql_table, api_endpoint, http_call, bull_queue'),
+      pattern: z.string().optional().describe('Glob pattern to match (e.g., "sinv:*" matches "sinv:*:compressed")'),
+      repo: z.string().optional().describe('Filter by repository name'),
+      operation: z.string().optional().describe('Filter by operation: read, write, publish, subscribe, define, call, produce, consume'),
+    },
+    async ({ type, pattern, repo, operation }) => {
+      log('mcp', 'memory_symbols type="' + (type || '') + '" pattern="' + (pattern || '') + '"');
+      const results = store.querySymbols({
+        type,
+        pattern,
+        repo,
+        operation,
+        projectHash: currentProjectHash,
+      });
+
+      if (results.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'No symbols found matching the criteria.',
+            },
+          ],
+        };
+      }
+
+      const grouped = new Map<string, Array<{ operation: string; repo: string; filePath: string; lineNumber: number }>>();
+      for (const r of results) {
+        const key = `${r.type}:${r.pattern}`;
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key)!.push({ operation: r.operation, repo: r.repo, filePath: r.filePath, lineNumber: r.lineNumber });
+      }
+
+      const lines: string[] = [];
+      lines.push(`**Found ${results.length} symbol(s) across ${grouped.size} pattern(s)**`);
+      lines.push('');
+
+      for (const [key, items] of grouped) {
+        const [symbolType, symbolPattern] = key.split(':');
+        lines.push(`### ${symbolType}: \`${symbolPattern}\``);
+        for (const item of items) {
+          lines.push(`  - [${item.operation}] ${item.repo}: ${item.filePath}:${item.lineNumber}`);
+        }
+        lines.push('');
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: lines.join('\n'),
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    'memory_impact',
+    'Analyze cross-repo impact of a symbol (writers vs readers, publishers vs subscribers)',
+    {
+      type: z.string().describe('Symbol type: redis_key, pubsub_channel, mysql_table, api_endpoint, http_call, bull_queue'),
+      pattern: z.string().describe('Pattern to analyze (e.g., "sinv:*:compressed")'),
+    },
+    async ({ type, pattern }) => {
+      log('mcp', 'memory_impact type="' + type + '" pattern="' + pattern + '"');
+      const results = store.getSymbolImpact(type, pattern, currentProjectHash);
+
+      if (results.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `No symbols found for ${type}: ${pattern}`,
+            },
+          ],
+        };
+      }
+
+      const byOperation = new Map<string, Array<{ repo: string; filePath: string; lineNumber: number }>>();
+      for (const r of results) {
+        if (!byOperation.has(r.operation)) byOperation.set(r.operation, []);
+        byOperation.get(r.operation)!.push({ repo: r.repo, filePath: r.filePath, lineNumber: r.lineNumber });
+      }
+
+      const lines: string[] = [];
+      lines.push(`**Impact Analysis: ${type} \`${pattern}\`**`);
+      lines.push('');
+
+      const operationLabels: Record<string, string> = {
+        read: '📖 Readers',
+        write: '✏️ Writers',
+        publish: '📤 Publishers',
+        subscribe: '📥 Subscribers',
+        define: '📋 Definitions',
+        call: '📞 Callers',
+        produce: '📦 Producers',
+        consume: '🔧 Consumers',
+      };
+
+      for (const [op, items] of byOperation) {
+        const label = operationLabels[op] || op;
+        lines.push(`### ${label} (${items.length})`);
+        for (const item of items) {
+          lines.push(`  - ${item.repo}: ${item.filePath}:${item.lineNumber}`);
+        }
+        lines.push('');
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: lines.join('\n'),
+          },
+        ],
+      };
+    }
+  );
+  
   return server;
 }
 
@@ -524,6 +862,7 @@ function setupSingletonGuard(pidPath: string, store: Store, stopWatcher: () => v
     setTimeout(() => {
       try {
         process.kill(oldPid!, 0); // Still alive?
+        log('server', 'Killing previous nano-brain process PID=' + oldPid);
         console.error(`[memory] Killing previous nano-brain process (PID ${oldPid})`);
         process.kill(oldPid!, 'SIGTERM');
       } catch { /* already dead */ }
@@ -535,6 +874,7 @@ function setupSingletonGuard(pidPath: string, store: Store, stopWatcher: () => v
     try {
       const currentPid = parseInt(fs.readFileSync(pidPath, 'utf-8').trim(), 10);
       if (currentPid !== process.pid) {
+        log('server', 'Newer instance detected PID=' + currentPid + ', shutting down');
         console.error(`[memory] Newer instance detected (PID ${currentPid}), shutting down`);
         clearInterval(ownerCheck);
         stopWatcher();
@@ -557,6 +897,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
   // PID file path — singleton guard set up after server starts
   const finalConfigPath = configPath || path.join(outputDir, 'collections.yaml');
   const config = loadCollectionConfig(finalConfigPath);
+  initLogger(config ?? undefined);
   const collections = config ? getCollections(config) : [];
   const storageConfig = parseStorageConfig(config?.storage);
   const resolvedWorkspaceRoot = process.cwd();
@@ -567,8 +908,11 @@ export async function startServer(options: ServerOptions): Promise<void> {
   const isDefaultDb = dbPath.endsWith('/default.sqlite') || dbPath.endsWith('\\default.sqlite');
   const workspaceDirName = path.basename(resolvedWorkspaceRoot).replace(/[^a-zA-Z0-9_-]/g, '_');
   const effectiveDbPath = isDefaultDb ? path.join(path.dirname(dbPath), `${workspaceDirName}-${currentProjectHash}.sqlite`) : dbPath;
+  log('server', 'Workspace path=' + resolvedWorkspaceRoot + ' hash=' + currentProjectHash);
   console.error(`[memory] Workspace: ${resolvedWorkspaceRoot} (${currentProjectHash})`);
+  log('server', 'Database path=' + effectiveDbPath);
   console.error(`[memory] Database: ${effectiveDbPath}`);
+  log('server', 'Config path=' + finalConfigPath);
   const store = createStore(effectiveDbPath);
   
   let embedder: SearchProviders['embedder'] = null;
@@ -597,6 +941,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
     codebaseConfig: resolvedCodebaseConfig,
     embeddingConfig: config?.embedding,
     workspaceRoot: resolvedWorkspaceRoot,
+    searchConfig: parseSearchConfig(config?.search),
   };
   
   const server = createMcpServer(deps);
@@ -606,6 +951,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
     if (watcher) {
       return;
     }
+    log('server', 'Starting file watcher');
     const watcherConfig: WatcherConfig | undefined = config?.watcher;
     watcher = startWatcher({
       store,
@@ -632,6 +978,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
   
   // Cleanup on exit (all modes, not just daemon)
   const cleanup = () => {
+    log('server', 'Shutting down');
     if (watcher) watcher.stop();
     // Only remove PID file if it's still ours
     try {
@@ -685,6 +1032,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
   }
   
   // Singleton guard: write PID, kill old process, monitor for newer instances
+  log('server', 'Setting up singleton guard pid=' + process.pid);
   setupSingletonGuard(pidPath, store, () => { if (watcher) watcher.stop(); });
   
   Promise.all([
@@ -695,11 +1043,13 @@ export async function startServer(options: ServerOptions): Promise<void> {
         if (loadedEmbedder) {
           store.ensureVecTable(loadedEmbedder.getDimensions());
         }
+        log('server', 'Embedding provider initialized model=' + store.modelStatus.embedding);
         console.error(`[memory] Embedding model: ${store.modelStatus.embedding}`);
         startFileWatcher();
       })
       .catch((err) => {
         store.modelStatus.embedding = 'failed';
+        log('server', 'Embedding provider failed error=' + (err instanceof Error ? err.message : String(err)));
         console.error('[memory] Embedding model failed:', err);
         startFileWatcher();
       }),
@@ -707,10 +1057,12 @@ export async function startServer(options: ServerOptions): Promise<void> {
       .then((loadedReranker) => {
         providers.reranker = loadedReranker;
         store.modelStatus.reranker = loadedReranker ? 'bge-reranker-v2-m3' : 'missing';
+        log('server', 'Reranker initialized model=' + store.modelStatus.reranker);
         console.error(`[memory] Reranker model: ${store.modelStatus.reranker}`);
       })
       .catch((err) => {
         store.modelStatus.reranker = 'failed';
+        log('server', 'Reranker failed error=' + (err instanceof Error ? err.message : String(err)));
         console.error('[memory] Reranker model failed:', err);
       }),
   ]);
@@ -750,6 +1102,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
             store.modelStatus.embedding = newProvider.getModel();
             store.ensureVecTable(newProvider.getDimensions());
             if (oldProvider && 'dispose' in oldProvider) (oldProvider as { dispose(): void }).dispose();
+            log('server', 'Reconnected to Ollama url=' + ollamaUrl + ' model=' + ollamaModel);
             console.error(`[memory] Reconnected to Ollama at ${ollamaUrl} — switched from local GGUF`);
             startedWithLocalGGUF = false;
             clearInterval(reconnectTimer);

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createStore, computeHash, indexDocument, extractProjectHashFromPath } from '../src/store.js';
 import type { Store } from '../src/types.js';
+import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -29,6 +30,171 @@ describe('Store', () => {
       expect(health).toBeDefined();
       expect(health.documentCount).toBe(0);
       expect(health.embeddedCount).toBe(0);
+    });
+
+    it('should create file_edges table with correct schema', () => {
+      const db = new Database(dbPath);
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='file_edges'").all();
+      expect(tables.length).toBe(1);
+      
+      const columns = db.prepare("PRAGMA table_info(file_edges)").all() as Array<{ name: string; type: string }>;
+      const columnNames = columns.map(c => c.name);
+      expect(columnNames).toContain('source_path');
+      expect(columnNames).toContain('target_path');
+      expect(columnNames).toContain('edge_type');
+      expect(columnNames).toContain('project_hash');
+      db.close();
+    });
+
+    it('should create document_tags table with correct schema', () => {
+      const db = new Database(dbPath);
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='document_tags'").all();
+      expect(tables.length).toBe(1);
+      
+      const columns = db.prepare("PRAGMA table_info(document_tags)").all() as Array<{ name: string; type: string }>;
+      const columnNames = columns.map(c => c.name);
+      expect(columnNames).toContain('document_id');
+      expect(columnNames).toContain('tag');
+      db.close();
+    });
+
+    it('should create symbols table with correct schema', () => {
+      const db = new Database(dbPath);
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='symbols'").all();
+      expect(tables.length).toBe(1);
+      
+      const columns = db.prepare("PRAGMA table_info(symbols)").all() as Array<{ name: string; type: string }>;
+      const columnNames = columns.map(c => c.name);
+      expect(columnNames).toContain('id');
+      expect(columnNames).toContain('type');
+      expect(columnNames).toContain('pattern');
+      expect(columnNames).toContain('operation');
+      expect(columnNames).toContain('repo');
+      expect(columnNames).toContain('file_path');
+      expect(columnNames).toContain('line_number');
+      expect(columnNames).toContain('raw_expression');
+      expect(columnNames).toContain('project_hash');
+      db.close();
+    });
+
+    it('should add centrality, cluster_id, superseded_by columns to documents table', () => {
+      const db = new Database(dbPath);
+      const columns = db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string; type: string }>;
+      const columnNames = columns.map(c => c.name);
+      expect(columnNames).toContain('centrality');
+      expect(columnNames).toContain('cluster_id');
+      expect(columnNames).toContain('superseded_by');
+      db.close();
+    });
+
+    it('should handle idempotent schema creation (calling createStore twice)', () => {
+      store.close();
+      const store2 = createStore(dbPath);
+      const health = store2.getIndexHealth();
+      expect(health).toBeDefined();
+      store2.close();
+      store = createStore(dbPath);
+    });
+  });
+
+  describe('file_edges constraints', () => {
+    it('should enforce unique constraint on (source_path, target_path, project_hash)', () => {
+      const db = new Database(dbPath);
+      db.prepare("INSERT INTO file_edges (source_path, target_path, edge_type, project_hash) VALUES (?, ?, ?, ?)").run('a.ts', 'b.ts', 'import', 'global');
+      
+      expect(() => {
+        db.prepare("INSERT INTO file_edges (source_path, target_path, edge_type, project_hash) VALUES (?, ?, ?, ?)").run('a.ts', 'b.ts', 'import', 'global');
+      }).toThrow();
+      
+      expect(() => {
+        db.prepare("INSERT INTO file_edges (source_path, target_path, edge_type, project_hash) VALUES (?, ?, ?, ?)").run('a.ts', 'b.ts', 'import', 'other');
+      }).not.toThrow();
+      
+      db.close();
+    });
+  });
+
+  describe('document_tags constraints', () => {
+    it('should enforce unique constraint on (document_id, tag)', () => {
+      const body = '# Tagged Doc';
+      const hash = computeHash(body);
+      store.insertContent(hash, body);
+      const docId = store.insertDocument({
+        collection: 'test',
+        path: 'tagged/doc.md',
+        title: 'Tagged Doc',
+        hash,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+      });
+      
+      const db = new Database(dbPath);
+      db.prepare("INSERT INTO document_tags (document_id, tag) VALUES (?, ?)").run(docId, 'test-tag');
+      
+      expect(() => {
+        db.prepare("INSERT INTO document_tags (document_id, tag) VALUES (?, ?)").run(docId, 'test-tag');
+      }).toThrow();
+      
+      expect(() => {
+        db.prepare("INSERT INTO document_tags (document_id, tag) VALUES (?, ?)").run(docId, 'other-tag');
+      }).not.toThrow();
+      
+      db.close();
+    });
+
+    it('should cascade delete tags when document is deleted', () => {
+      const body = '# Cascade Doc';
+      const hash = computeHash(body);
+      store.insertContent(hash, body);
+      const docId = store.insertDocument({
+        collection: 'test',
+        path: 'cascade/doc.md',
+        title: 'Cascade Doc',
+        hash,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+      });
+      
+      const db = new Database(dbPath);
+      db.prepare("INSERT INTO document_tags (document_id, tag) VALUES (?, ?)").run(docId, 'cascade-tag');
+      
+      const tagsBefore = db.prepare("SELECT * FROM document_tags WHERE document_id = ?").all(docId);
+      expect(tagsBefore.length).toBe(1);
+      
+      db.prepare("DELETE FROM documents WHERE id = ?").run(docId);
+      
+      const tagsAfter = db.prepare("SELECT * FROM document_tags WHERE document_id = ?").all(docId);
+      expect(tagsAfter.length).toBe(0);
+      
+      db.close();
+    });
+  });
+
+  describe('symbols constraints', () => {
+    it('should enforce unique constraint on symbol combination', () => {
+      const db = new Database(dbPath);
+      db.prepare(`
+        INSERT INTO symbols (type, pattern, operation, repo, file_path, line_number, raw_expression, project_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run('function', 'myFunc', 'definition', 'test-repo', 'src/index.ts', 10, 'function myFunc() {}', 'global');
+      
+      expect(() => {
+        db.prepare(`
+          INSERT INTO symbols (type, pattern, operation, repo, file_path, line_number, raw_expression, project_hash)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run('function', 'myFunc', 'definition', 'test-repo', 'src/index.ts', 10, 'function myFunc() {}', 'global');
+      }).toThrow();
+      
+      expect(() => {
+        db.prepare(`
+          INSERT INTO symbols (type, pattern, operation, repo, file_path, line_number, raw_expression, project_hash)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run('function', 'myFunc', 'definition', 'test-repo', 'src/index.ts', 20, 'function myFunc() {}', 'global');
+      }).not.toThrow();
+      
+      db.close();
     });
   });
   
@@ -198,7 +364,7 @@ describe('Store', () => {
       const allResults = store.searchFTS('findme');
       expect(allResults.length).toBe(2);
       
-      const filteredResults = store.searchFTS('findme', 10, 'collection-a');
+      const filteredResults = store.searchFTS('findme', { limit: 10, collection: 'collection-a' });
       expect(filteredResults.length).toBe(1);
       expect(filteredResults[0].collection).toBe('collection-a');
     });

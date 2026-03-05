@@ -1,10 +1,11 @@
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
-import type { Store, Document, SearchResult, IndexHealth } from './types.js';
+import type { Store, Document, SearchResult, IndexHealth, StoreSearchOptions } from './types.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { chunkMarkdown } from './chunker.js';
+import { log } from './logger.js';
 
 export function sanitizeFTS5Query(query: string): string {
   const trimmed = query.trim();
@@ -14,6 +15,7 @@ export function sanitizeFTS5Query(query: string): string {
 }
 
 export function createStore(dbPath: string): Store {
+  log('store', 'createStore dbPath=' + dbPath);
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -98,6 +100,39 @@ export function createStore(dbPath: string): Store {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (hash, project_hash)
     );
+
+    CREATE TABLE IF NOT EXISTS file_edges (
+      source_path TEXT NOT NULL,
+      target_path TEXT NOT NULL,
+      edge_type TEXT NOT NULL DEFAULT 'import',
+      project_hash TEXT NOT NULL DEFAULT 'global',
+      PRIMARY KEY(source_path, target_path, project_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_file_edges_source ON file_edges(source_path);
+    CREATE INDEX IF NOT EXISTS idx_file_edges_target ON file_edges(target_path);
+
+    CREATE TABLE IF NOT EXISTS document_tags (
+      document_id INTEGER NOT NULL,
+      tag TEXT NOT NULL,
+      PRIMARY KEY(document_id, tag),
+      FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags(tag);
+
+    CREATE TABLE IF NOT EXISTS symbols (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      pattern TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      line_number INTEGER,
+      raw_expression TEXT,
+      project_hash TEXT NOT NULL DEFAULT 'global',
+      UNIQUE(type, pattern, operation, repo, file_path, line_number)
+    );
+    CREATE INDEX IF NOT EXISTS idx_symbols_type_pattern ON symbols(type, pattern);
+    CREATE INDEX IF NOT EXISTS idx_symbols_repo ON symbols(repo);
   `);
   
   const hasProjectHash = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'project_hash');
@@ -114,6 +149,21 @@ export function createStore(dbPath: string): Store {
     }
   }
   db.exec("CREATE INDEX IF NOT EXISTS idx_documents_project_hash ON documents(project_hash, active)");
+  
+  const hasCentrality = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'centrality');
+  if (!hasCentrality) {
+    db.exec("ALTER TABLE documents ADD COLUMN centrality REAL DEFAULT 0.0");
+  }
+  
+  const hasClusterId = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'cluster_id');
+  if (!hasClusterId) {
+    db.exec("ALTER TABLE documents ADD COLUMN cluster_id INTEGER DEFAULT NULL");
+  }
+  
+  const hasSupersededBy = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'superseded_by');
+  if (!hasSupersededBy) {
+    db.exec("ALTER TABLE documents ADD COLUMN superseded_by INTEGER DEFAULT NULL");
+  }
   
   const hasProjectHashCol = (db.pragma('table_info(llm_cache)') as Array<{name: string}>).some(c => c.name === 'project_hash');
   if (!hasProjectHashCol) {
@@ -299,6 +349,39 @@ export function createStore(dbPath: string): Store {
     WHERE cv.hash IS NULL AND d.project_hash IN (?, 'global')
     LIMIT 1
   `);
+
+  const insertFileEdgeStmt = db.prepare(`
+    INSERT OR REPLACE INTO file_edges (source_path, target_path, edge_type, project_hash)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  const deleteFileEdgesStmt = db.prepare(`
+    DELETE FROM file_edges WHERE source_path = ? AND project_hash = ?
+  `);
+
+  const getFileEdgesStmt = db.prepare(`
+    SELECT source_path, target_path FROM file_edges WHERE project_hash = ?
+  `);
+
+  const updateCentralityStmt = db.prepare(`
+    UPDATE documents SET centrality = ? WHERE collection = 'codebase' AND project_hash = ? AND path = ?
+  `);
+
+  const updateClusterIdStmt = db.prepare(`
+    UPDATE documents SET cluster_id = ? WHERE collection = 'codebase' AND project_hash = ? AND path = ?
+  `);
+
+  const getEdgeSetHashStmt = db.prepare(`
+    SELECT result FROM llm_cache WHERE hash = 'edge_hash' AND project_hash = ? AND type = 'edge_hash'
+  `);
+
+  const setEdgeSetHashStmt = db.prepare(`
+    INSERT OR REPLACE INTO llm_cache (hash, project_hash, type, result) VALUES ('edge_hash', ?, 'edge_hash', ?)
+  `);
+
+  const supersedeDocumentStmt = db.prepare(`
+    UPDATE documents SET superseded_by = ? WHERE id = ?
+  `);
   
   return {
     modelStatus: {
@@ -316,6 +399,7 @@ export function createStore(dbPath: string): Store {
     },
     
     insertDocument(doc: Omit<Document, 'id'>): number {
+      log('store', 'insertDocument collection=' + doc.collection + ' path=' + doc.path);
       const result = insertDocumentStmt.run(
         doc.collection,
         doc.path,
@@ -381,6 +465,7 @@ export function createStore(dbPath: string): Store {
     },
     
     insertEmbedding(hash: string, seq: number, pos: number, embedding: number[], model: string) {
+      log('store', 'insertEmbedding hash=' + hash.substring(0, 8) + ' seq=' + seq);
       insertEmbeddingStmt.run(hash, seq, pos, model);
       
       if (vecAvailable) {
@@ -401,6 +486,7 @@ export function createStore(dbPath: string): Store {
           // Silently ignore duplicate key errors (vector already exists)
           const msg = err instanceof Error ? err.message : String(err);
           if (!msg.includes('UNIQUE constraint')) {
+            log('store', 'insertEmbedding vector insert failed hash=' + hash.substring(0, 8));
             console.warn('Failed to insert vector:', err);
           }
         }
@@ -420,6 +506,7 @@ export function createStore(dbPath: string): Store {
           const cvCount = (db.prepare('SELECT COUNT(*) as count FROM content_vectors').get() as { count: number }).count;
           if (vecCount === 0 && cvCount > 0) {
             // vectors_vec was rebuilt but content_vectors has stale tracking rows
+            log('store', 'ensureVecTable clearing stale content_vectors count=' + cvCount);
             console.error(`[store] vectors_vec empty but content_vectors has ${cvCount} stale rows, clearing for re-embedding`);
             db.exec(`DELETE FROM content_vectors`);
           }
@@ -428,6 +515,7 @@ export function createStore(dbPath: string): Store {
           needsRebuild = true;
         }
         if (needsRebuild) {
+          log('store', 'ensureVecTable rebuilding dimensions=' + dimensions);
           db.exec(`DROP TABLE IF EXISTS vectors_vec`);
           db.exec(`DELETE FROM content_vectors`);
           db.exec(`DELETE FROM llm_cache`);
@@ -444,24 +532,57 @@ export function createStore(dbPath: string): Store {
       }
     },
     
-    searchFTS(query: string, limit = 10, collection?: string, projectHash?: string): SearchResult[] {
+    searchFTS(query: string, options: StoreSearchOptions = {}): SearchResult[] {
+      const { limit = 10, collection, projectHash, tags, since, until } = options;
       const sanitized = sanitizeFTS5Query(query);
       if (!sanitized) return [];
       
-      let rows: unknown[];
+      let sql = `
+        SELECT 
+          d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
+          d.centrality, d.cluster_id, d.superseded_by,
+          snippet(documents_fts, 2, '<mark>', '</mark>', '...', 64) as snippet,
+          bm25(documents_fts) as score
+        FROM documents_fts f
+        JOIN documents d ON f.filepath = d.collection || '/' || d.path
+        WHERE documents_fts MATCH ? AND d.active = 1
+      `;
+      const params: (string | number)[] = [sanitized];
+      
+      if (collection) {
+        sql += ` AND d.collection = ?`;
+        params.push(collection);
+      }
       if (projectHash && projectHash !== 'all') {
-        if (collection) {
-          rows = searchFTSWithWorkspaceAndCollectionStmt.all(sanitized, collection, projectHash, limit);
-        } else {
-          rows = searchFTSWithWorkspaceStmt.all(sanitized, projectHash, limit);
-        }
-      } else {
-        rows = collection
-          ? searchFTSWithCollectionStmt.all(sanitized, collection, limit)
-          : searchFTSStmt.all(sanitized, limit);
+        sql += ` AND d.project_hash IN (?, 'global')`;
+        params.push(projectHash);
+      }
+      if (since) {
+        sql += ` AND d.modified_at >= ?`;
+        params.push(since);
+      }
+      if (until) {
+        sql += ` AND d.modified_at <= ?`;
+        params.push(until);
+      }
+      if (tags && tags.length > 0) {
+        sql += ` AND d.id IN (
+          SELECT dt.document_id FROM document_tags dt
+          WHERE dt.tag IN (${tags.map(() => '?').join(',')})
+          GROUP BY dt.document_id
+          HAVING COUNT(DISTINCT dt.tag) = ?
+        )`;
+        params.push(...tags.map(t => t.toLowerCase().trim()));
+        params.push(tags.length);
       }
       
-      return (rows as Array<Record<string, unknown>>).map(row => ({
+      sql += ` ORDER BY bm25(documents_fts) LIMIT ?`;
+      params.push(limit);
+      
+      const rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+      log('store', 'searchFTS query=' + query + ' results=' + rows.length);
+      
+      return rows.map(row => ({
         id: String(row.id),
         path: row.path as string,
         collection: row.collection as string,
@@ -472,17 +593,23 @@ export function createStore(dbPath: string): Store {
         endLine: 0,
         docid: (row.hash as string).substring(0, 6),
         agent: row.agent as string | undefined,
+        projectHash: projectHash === 'all' ? (row.project_hash as string | undefined) : undefined,
+        centrality: row.centrality as number | undefined,
+        clusterId: row.cluster_id as number | undefined,
+        supersededBy: row.superseded_by as number | null | undefined,
       }));
     },
     
-    searchVec(query: string, embedding: number[], limit = 10, collection?: string, projectHash?: string): SearchResult[] {
+    searchVec(query: string, embedding: number[], options: StoreSearchOptions = {}): SearchResult[] {
+      const { limit = 10, collection, projectHash, tags, since, until } = options;
       if (!vecAvailable) {
         return [];
       }
       
       try {
         let sql = `
-          SELECT v.hash_seq, v.distance, d.id, d.path, d.collection, d.title, d.hash, d.agent,
+          SELECT v.hash_seq, v.distance, d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
+                 d.centrality, d.cluster_id, d.superseded_by,
                  substr(c.body, 1, 700) as snippet
           FROM vectors_vec v
           JOIN documents d ON substr(v.hash_seq, 1, instr(v.hash_seq, ':') - 1) = d.hash
@@ -501,10 +628,29 @@ export function createStore(dbPath: string): Store {
           sql += ` AND d.project_hash IN (?, 'global')`;
           params.push(projectHash);
         }
+        if (since) {
+          sql += ` AND d.modified_at >= ?`;
+          params.push(since);
+        }
+        if (until) {
+          sql += ` AND d.modified_at <= ?`;
+          params.push(until);
+        }
+        if (tags && tags.length > 0) {
+          sql += ` AND d.id IN (
+            SELECT dt.document_id FROM document_tags dt
+            WHERE dt.tag IN (${tags.map(() => '?').join(',')})
+            GROUP BY dt.document_id
+            HAVING COUNT(DISTINCT dt.tag) = ?
+          )`;
+          params.push(...tags.map(t => t.toLowerCase().trim()));
+          params.push(tags.length);
+        }
         sql += ` ORDER BY v.distance`;
         
         const stmt = db.prepare(sql);
         const rows = stmt.all(...params) as Array<Record<string, unknown>>;
+        log('store', 'searchVec query=' + query + ' results=' + rows.length);
         
         return rows.map(row => ({
           id: String(row.id),
@@ -517,6 +663,10 @@ export function createStore(dbPath: string): Store {
           endLine: 0,
           docid: (row.hash as string).substring(0, 6),
           agent: row.agent as string | undefined,
+          projectHash: projectHash === 'all' ? (row.project_hash as string | undefined) : undefined,
+          centrality: row.centrality as number | undefined,
+          clusterId: row.cluster_id as number | undefined,
+          supersededBy: row.superseded_by as number | null | undefined,
         }));
       } catch (err) {
         console.warn('Vector search failed:', err);
@@ -604,6 +754,7 @@ export function createStore(dbPath: string): Store {
     },
 
     clearWorkspace(projectHash: string): { documentsDeleted: number; embeddingsDeleted: number } {
+      log('store', 'clearWorkspace projectHash=' + projectHash);
       const transaction = db.transaction(() => {
         // 1. Collect all documents for this workspace
         const docs = db.prepare(
@@ -647,6 +798,7 @@ export function createStore(dbPath: string): Store {
         // 6. Delete cache entries for this workspace
         db.prepare('DELETE FROM llm_cache WHERE project_hash = ?').run(projectHash);
 
+        log('store', 'clearWorkspace result docs=' + deleteResult.changes + ' embeddings=' + embeddingsDeleted);
         return { documentsDeleted: deleteResult.changes, embeddingsDeleted };
       });
       return transaction();
@@ -672,6 +824,7 @@ export function createStore(dbPath: string): Store {
         }
       }
       
+      log('store', 'cleanOrphanedEmbeddings deleted=' + totalDeleted);
       return totalDeleted;
     },
     
@@ -707,6 +860,252 @@ export function createStore(dbPath: string): Store {
     
     getCacheStats(): Array<{ type: string; projectHash: string; count: number }> {
       return db.prepare('SELECT type, project_hash as projectHash, COUNT(*) as count FROM llm_cache GROUP BY type, project_hash ORDER BY count DESC').all() as Array<{ type: string; projectHash: string; count: number }>;
+    },
+
+    insertFileEdge(sourcePath: string, targetPath: string, projectHash: string, edgeType: string = 'import') {
+      insertFileEdgeStmt.run(sourcePath, targetPath, edgeType, projectHash);
+    },
+
+    deleteFileEdges(sourcePath: string, projectHash: string) {
+      deleteFileEdgesStmt.run(sourcePath, projectHash);
+    },
+
+    getFileEdges(projectHash: string): Array<{ source_path: string; target_path: string }> {
+      return getFileEdgesStmt.all(projectHash) as Array<{ source_path: string; target_path: string }>;
+    },
+
+    updateCentralityScores(projectHash: string, scores: Map<string, number>) {
+      for (const [filePath, score] of scores) {
+        updateCentralityStmt.run(score, projectHash, filePath);
+      }
+    },
+
+    updateClusterIds(projectHash: string, clusters: Map<string, number>) {
+      for (const [filePath, clusterId] of clusters) {
+        updateClusterIdStmt.run(clusterId, projectHash, filePath);
+      }
+    },
+
+    getEdgeSetHash(projectHash: string): string | null {
+      const row = getEdgeSetHashStmt.get(projectHash) as { result: string } | undefined;
+      return row?.result ?? null;
+    },
+
+    setEdgeSetHash(projectHash: string, hash: string) {
+      setEdgeSetHashStmt.run(projectHash, hash);
+    },
+
+    supersedeDocument(targetId: number, newId: number) {
+      supersedeDocumentStmt.run(newId, targetId);
+    },
+
+    insertTags(documentId: number, tags: string[]) {
+      const insertTagStmt = db.prepare(`INSERT OR IGNORE INTO document_tags (document_id, tag) VALUES (?, ?)`);
+      const uniqueTags = [...new Set(tags.map(t => t.toLowerCase().trim()).filter(t => t.length > 0))];
+      for (const tag of uniqueTags) {
+        insertTagStmt.run(documentId, tag);
+      }
+    },
+
+    getDocumentTags(documentId: number): string[] {
+      const rows = db.prepare(`SELECT tag FROM document_tags WHERE document_id = ? ORDER BY tag`).all(documentId) as Array<{ tag: string }>;
+      return rows.map(r => r.tag);
+    },
+
+    listAllTags(): Array<{ tag: string; count: number }> {
+      return db.prepare(`
+        SELECT tag, COUNT(*) as count 
+        FROM document_tags 
+        GROUP BY tag 
+        ORDER BY count DESC, tag ASC
+      `).all() as Array<{ tag: string; count: number }>;
+    },
+
+    getFileDependencies(filePath: string, projectHash: string): string[] {
+      const rows = db.prepare(`
+        SELECT target_path FROM file_edges 
+        WHERE source_path = ? AND project_hash = ?
+      `).all(filePath, projectHash) as Array<{ target_path: string }>;
+      return rows.map(r => r.target_path);
+    },
+
+    getFileDependents(filePath: string, projectHash: string): string[] {
+      const rows = db.prepare(`
+        SELECT source_path FROM file_edges 
+        WHERE target_path = ? AND project_hash = ?
+      `).all(filePath, projectHash) as Array<{ source_path: string }>;
+      return rows.map(r => r.source_path);
+    },
+
+    getDocumentCentrality(filePath: string): { centrality: number; clusterId: number | null } | null {
+      const row = db.prepare(`
+        SELECT centrality, cluster_id FROM documents 
+        WHERE path = ? AND active = 1
+      `).get(filePath) as { centrality: number; cluster_id: number | null } | undefined;
+      if (!row) return null;
+      return { centrality: row.centrality ?? 0, clusterId: row.cluster_id };
+    },
+
+    getClusterMembers(clusterId: number, projectHash: string): string[] {
+      const rows = db.prepare(`
+        SELECT path FROM documents 
+        WHERE cluster_id = ? AND project_hash = ? AND active = 1
+        ORDER BY centrality DESC
+      `).all(clusterId, projectHash) as Array<{ path: string }>;
+      return rows.map(r => r.path);
+    },
+
+    getGraphStats(projectHash: string): {
+      nodeCount: number;
+      edgeCount: number;
+      clusterCount: number;
+      topCentrality: Array<{ path: string; centrality: number }>;
+    } {
+      const edges = db.prepare(`
+        SELECT COUNT(*) as count FROM file_edges WHERE project_hash = ?
+      `).get(projectHash) as { count: number };
+      
+      const nodes = db.prepare(`
+        SELECT COUNT(*) as count FROM (
+          SELECT source_path as node FROM file_edges WHERE project_hash = ?
+          UNION
+          SELECT target_path as node FROM file_edges WHERE project_hash = ?
+        )
+      `).get(projectHash, projectHash) as { count: number };
+      
+      const clusters = db.prepare(`
+        SELECT COUNT(DISTINCT cluster_id) as count FROM documents 
+        WHERE project_hash = ? AND cluster_id IS NOT NULL AND active = 1
+      `).get(projectHash) as { count: number };
+      
+      const topCentrality = db.prepare(`
+        SELECT path, centrality FROM documents 
+        WHERE project_hash = ? AND active = 1 AND centrality > 0
+        ORDER BY centrality DESC
+        LIMIT 10
+      `).all(projectHash) as Array<{ path: string; centrality: number }>;
+      
+      return {
+        nodeCount: nodes.count,
+        edgeCount: edges.count,
+        clusterCount: clusters.count,
+        topCentrality,
+      };
+    },
+
+    insertSymbol(symbol: {
+      type: string;
+      pattern: string;
+      operation: string;
+      repo: string;
+      filePath: string;
+      lineNumber: number;
+      rawExpression: string;
+      projectHash: string;
+    }) {
+      const stmt = db.prepare(`
+        INSERT OR REPLACE INTO symbols (type, pattern, operation, repo, file_path, line_number, raw_expression, project_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run(
+        symbol.type,
+        symbol.pattern,
+        symbol.operation,
+        symbol.repo,
+        symbol.filePath,
+        symbol.lineNumber,
+        symbol.rawExpression,
+        symbol.projectHash
+      );
+    },
+
+    deleteSymbols(filePath: string, projectHash: string) {
+      const stmt = db.prepare(`DELETE FROM symbols WHERE file_path = ? AND project_hash = ?`);
+      stmt.run(filePath, projectHash);
+    },
+
+    querySymbols(options: {
+      type?: string;
+      pattern?: string;
+      repo?: string;
+      operation?: string;
+      projectHash?: string;
+    }): Array<{
+      type: string;
+      pattern: string;
+      operation: string;
+      repo: string;
+      filePath: string;
+      lineNumber: number;
+      rawExpression: string;
+    }> {
+      let sql = `SELECT type, pattern, operation, repo, file_path as filePath, line_number as lineNumber, raw_expression as rawExpression FROM symbols WHERE 1=1`;
+      const params: string[] = [];
+
+      if (options.type) {
+        sql += ` AND type = ?`;
+        params.push(options.type);
+      }
+      if (options.pattern) {
+        const likePattern = options.pattern.replace(/\*/g, '%');
+        sql += ` AND pattern LIKE ?`;
+        params.push(likePattern);
+      }
+      if (options.repo) {
+        sql += ` AND repo = ?`;
+        params.push(options.repo);
+      }
+      if (options.operation) {
+        sql += ` AND operation = ?`;
+        params.push(options.operation);
+      }
+      if (options.projectHash) {
+        sql += ` AND project_hash = ?`;
+        params.push(options.projectHash);
+      }
+
+      sql += ` ORDER BY type, pattern, repo, file_path`;
+
+      return db.prepare(sql).all(...params) as Array<{
+        type: string;
+        pattern: string;
+        operation: string;
+        repo: string;
+        filePath: string;
+        lineNumber: number;
+        rawExpression: string;
+      }>;
+    },
+
+    getSymbolImpact(type: string, pattern: string, projectHash?: string): Array<{
+      pattern: string;
+      operation: string;
+      repo: string;
+      filePath: string;
+      lineNumber: number;
+    }> {
+      const likePattern = pattern.replace(/\*/g, '%');
+      let sql = `
+        SELECT pattern, operation, repo, file_path as filePath, line_number as lineNumber
+        FROM symbols
+        WHERE type = ? AND pattern LIKE ?
+      `;
+      const params: string[] = [type, likePattern];
+
+      if (projectHash) {
+        sql += ` AND project_hash = ?`;
+        params.push(projectHash);
+      }
+
+      sql += ` ORDER BY operation, repo, file_path`;
+
+      return db.prepare(sql).all(...params) as Array<{
+        pattern: string;
+        operation: string;
+        repo: string;
+        filePath: string;
+        lineNumber: number;
+      }>;
     },
   };
 }

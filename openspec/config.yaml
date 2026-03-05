@@ -1,0 +1,14 @@
+schema: spec-driven
+
+context: |
+  Tech stack: TypeScript, Node.js (ESM), better-sqlite3, sqlite-vec, node-llama-cpp
+  MCP server (stdio transport) + CLI tool
+  Zero external runtime dependencies beyond npm packages
+  Performance-sensitive: runs as background MCP server
+
+# Per-artifact rules (optional)
+# rules:
+#   proposal:
+#     - Keep proposals under 500 words
+#   tasks:
+#     - Break tasks into chunks of max 2 hours

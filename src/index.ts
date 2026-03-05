@@ -3,14 +3,16 @@ import { createStore, computeHash, indexDocument, extractProjectHashFromPath } f
 import { loadCollectionConfig, addCollection, removeCollection, renameCollection, listCollections, getCollections, scanCollectionFiles, saveCollectionConfig } from './collections.js';
 import { harvestSessions } from './harvester.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth, checkOpenAIHealth } from './embeddings.js';
-import { hybridSearch } from './search.js';
+import { hybridSearch, parseSearchConfig } from './search.js';
 import { indexCodebase, embedPendingCodebase } from './codebase.js';
+import { findCycles } from './graph.js';
 import { handleBench } from './bench.js';
 import type { SearchResult } from './types.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { log, initLogger } from './logger.js';
 
 function resolveOpenCodeStorageDir(): string {
   // XDG path (Linux): ~/.local/share/opencode/storage
@@ -102,27 +104,56 @@ nano-brain - Memory system with hybrid search
     rename <old> <new>
   embed             Generate embeddings for unembedded chunks
     --force         Re-embed all chunks
+  search <query>    BM25 full-text search
+  vsearch <query>   Semantic vector search
+  query <query>     Full hybrid search
     -n <limit>      Max results (default: 10)
     -c <collection> Filter by collection
     --json          Output as JSON
     --files         Show file paths only
-  query <query>     Full hybrid search (same options as search)
-    --min-score=<n> Minimum score threshold
-    --full          Show full content
-    --from=<line>   Start line
-    --lines=<n>     Number of lines
+    --min-score=<n> Minimum score threshold (query only)
+    --scope=all     Search across all workspaces
+    --tags=<tags>   Filter by comma-separated tags (AND logic)
+    --since=<date>  Filter by modified date (ISO format)
+    --until=<date>  Filter by modified date (ISO format)
+  tags              List all tags with document counts
+  focus <filepath>  Show dependency graph context for a file
+  graph-stats       Show graph statistics (nodes, edges, clusters, cycles)
+  symbols           Query cross-repo symbols (Redis keys, PubSub, MySQL, APIs, etc.)
+    --type=<type>   Filter by type: redis_key, pubsub_channel, mysql_table, api_endpoint, http_call, bull_queue
+    --pattern=<pat> Glob pattern (e.g., "sinv:*")
+    --repo=<name>   Filter by repository name
+    --operation=<op> Filter by operation: read, write, publish, subscribe, define, call, produce, consume
+    --json          Output as JSON
+  impact            Analyze cross-repo impact of a symbol
+    --type=<type>   Symbol type (required)
+    --pattern=<pat> Pattern to analyze (required)
+    --json          Output as JSON
   harvest           Manually trigger session harvesting
   cache             Manage LLM cache
     clear           Clear cache for current workspace
       --all         Clear all cache entries across all workspaces
       --type=<type> Filter by type (embed, expand, rerank)
     stats           Show cache entry counts by type and workspace
+  write <content>   Write content to daily log
+    --supersedes=<path-or-docid>  Mark a document as superseded
+    --tags=<tags>   Comma-separated tags to associate
+  logs [file]       View diagnostic logs (default: today's log)
+    path            Print log directory path
+    -f, --follow    Follow log output in real-time (tail -f)
+    -n <lines>      Show last N lines (default: 50)
+    --date=<date>   Show log for specific date (YYYY-MM-DD, default: today)
+    --clear         Delete all log files
   bench             Run performance benchmarks
     --suite=<name>  Run specific suite (search, embed, cache, store)
     --iterations=<n> Override iteration count
     --json          Output as JSON
     --save          Save results as baseline
     --compare       Compare with last saved baseline
+Logging Config (~/.nano-brain/config.yml):
+  logging:
+    enabled: true               # enable file logging (or use NANO_BRAIN_LOG=1 env)
+  Log files: ~/.nano-brain/logs/nano-brain-YYYY-MM-DD.log
 Embedding Config (~/.nano-brain/config.yml):
   embedding:
     provider: ollama              # 'ollama' or 'local'
@@ -192,6 +223,7 @@ async function handleMcp(globalOpts: GlobalOptions, commandArgs: string[]): Prom
     }
   }
   
+  log('cli', 'mcp server start transport=' + (useHttp ? 'http:' + port : 'stdio'));
   await startServer({
     dbPath: globalOpts.dbPath,
     configPath: globalOpts.configPath,
@@ -281,6 +313,7 @@ async function handleCollection(globalOpts: GlobalOptions, commandArgs: string[]
 }
 
 async function handleStatus(globalOpts: GlobalOptions): Promise<void> {
+  log('cli', 'status command invoked');
   const store = createStore(globalOpts.dbPath);
   const config = loadCollectionConfig(globalOpts.configPath);
   const health = store.getIndexHealth();
@@ -360,6 +393,7 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
     }
   }
   
+  log('cli', 'init start root=' + root + ' force=' + force + ' all=' + all);
   
   // Resolve per-workspace DB path with the actual root
   globalOpts.dbPath = resolveDbPath(globalOpts.dbPath, root);
@@ -572,6 +606,7 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
 }
 
 async function handleUpdate(globalOpts: GlobalOptions): Promise<void> {
+  log('cli', 'update start');
   const store = createStore(globalOpts.dbPath);
   const config = loadCollectionConfig(globalOpts.configPath);
   
@@ -618,6 +653,7 @@ async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     }
   }
   
+  log('cli', 'embed start force=' + force);
   const store = createStore(globalOpts.dbPath);
   const hashes = store.getHashesNeedingEmbedding();
   
@@ -627,6 +663,7 @@ async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     return;
   }
   
+  log('cli', 'embed pending count=' + hashes.length);
   console.log(`Found ${hashes.length} chunks needing embeddings`);
   console.log('Loading embedding model...');
   
@@ -655,6 +692,7 @@ async function handleSearch(
   commandArgs: string[],
   mode: 'fts' | 'vec' | 'hybrid'
 ): Promise<void> {
+  log('cli', 'search mode=' + mode + ' query=' + (commandArgs[0] || ''));
   const query = commandArgs[0];
   
   if (!query) {
@@ -666,6 +704,10 @@ async function handleSearch(
   let collection: string | undefined;
   let format: 'text' | 'json' | 'files' = 'text';
   let minScore = 0;
+  let scope: 'workspace' | 'all' = 'workspace';
+  let tags: string[] | undefined;
+  let since: string | undefined;
+  let until: string | undefined;
   
   for (let i = 1; i < commandArgs.length; i++) {
     const arg = commandArgs[i];
@@ -680,14 +722,26 @@ async function handleSearch(
       format = 'files';
     } else if (arg.startsWith('--min-score=')) {
       minScore = parseFloat(arg.substring(12));
+    } else if (arg === '--scope=all' || arg === '--scope' && commandArgs[i + 1] === 'all') {
+      scope = 'all';
+      if (arg === '--scope') i++;
+    } else if (arg.startsWith('--tags=')) {
+      tags = arg.substring(7).split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0);
+    } else if (arg.startsWith('--since=')) {
+      since = arg.substring(8);
+    } else if (arg.startsWith('--until=')) {
+      until = arg.substring(8);
     }
   }
+  
+  const workspaceRoot = process.cwd();
+  const projectHash = scope === 'all' ? 'all' : crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
   
   const store = createStore(globalOpts.dbPath);
   let results: SearchResult[];
   
   if (mode === 'fts') {
-    results = store.searchFTS(query, limit, collection);
+    results = store.searchFTS(query, { limit, collection, projectHash, tags, since, until });
   } else if (mode === 'vec') {
     const searchConfig = loadCollectionConfig(globalOpts.configPath);
     const provider = await createEmbeddingProvider({ embeddingConfig: searchConfig?.embedding });
@@ -698,14 +752,14 @@ async function handleSearch(
     }
     
     const { embedding } = await provider.embed(query);
-    results = store.searchVec(query, embedding, limit, collection);
+    results = store.searchVec(query, embedding, { limit, collection, projectHash, tags, since, until });
     provider.dispose();
   } else {
     const searchConfig = loadCollectionConfig(globalOpts.configPath);
     const provider = await createEmbeddingProvider({ embeddingConfig: searchConfig?.embedding });
     results = await hybridSearch(
       store,
-      { query, limit, collection, minScore },
+      { query, limit, collection, minScore, projectHash, tags, since, until },
       { embedder: provider }
     );
     provider?.dispose();
@@ -762,6 +816,7 @@ async function handleGet(globalOpts: GlobalOptions, commandArgs: string[]): Prom
 }
 
 async function handleHarvest(globalOpts: GlobalOptions): Promise<void> {
+  log('cli', 'harvest start');
   const sessionDir = resolveOpenCodeStorageDir();
   const outputDir = DEFAULT_OUTPUT_DIR;
   
@@ -769,6 +824,328 @@ async function handleHarvest(globalOpts: GlobalOptions): Promise<void> {
   const sessions = await harvestSessions({ sessionDir, outputDir });
   
   console.log(`✅ Harvested ${sessions.length} sessions to ${outputDir}`);
+}
+
+async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  const content = commandArgs[0]
+  
+  if (!content) {
+    console.error('Usage: write "content here" [--supersedes=<path-or-docid>] [--tags=<comma-separated>]')
+    process.exit(1)
+  }
+  
+  log('cli', 'write command contentLength=' + content.length);
+  let supersedes: string | undefined
+  let tags: string[] | undefined
+  
+  for (let i = 1; i < commandArgs.length; i++) {
+    const arg = commandArgs[i]
+    if (arg.startsWith('--supersedes=')) {
+      supersedes = arg.substring(13)
+    } else if (arg.startsWith('--tags=')) {
+      tags = arg.substring(7).split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0)
+    }
+  }
+  
+  const date = new Date().toISOString().split('T')[0]
+  const memoryDir = DEFAULT_MEMORY_DIR
+  if (!fs.existsSync(memoryDir)) {
+    fs.mkdirSync(memoryDir, { recursive: true })
+  }
+  const targetPath = path.join(memoryDir, `${date}.md`)
+  const timestamp = new Date().toISOString()
+  const workspaceRoot = process.cwd()
+  const workspaceName = path.basename(workspaceRoot)
+  const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12)
+  const entry = `\n## ${timestamp}\n\n**Workspace:** ${workspaceName} (${projectHash})\n\n${content}\n`
+  
+  fs.appendFileSync(targetPath, entry, 'utf-8')
+  
+  let supersedeWarning = ''
+  let tagInfo = ''
+  const store = createStore(globalOpts.dbPath)
+  
+  if (supersedes) {
+    const targetDoc = store.findDocument(supersedes)
+    if (targetDoc) {
+      store.supersedeDocument(targetDoc.id, 0)
+    } else {
+      supersedeWarning = `\n⚠️ Supersede target not found: ${supersedes}`
+    }
+  }
+  
+  if (tags && tags.length > 0) {
+    const fileContent = fs.readFileSync(targetPath, 'utf-8')
+    const title = path.basename(targetPath, path.extname(targetPath))
+    const hash = crypto.createHash('sha256').update(fileContent).digest('hex')
+    store.insertContent(hash, fileContent)
+    const stats = fs.statSync(targetPath)
+    const docId = store.insertDocument({
+      collection: 'memory',
+      path: targetPath,
+      title,
+      hash,
+      createdAt: stats.birthtime.toISOString(),
+      modifiedAt: stats.mtime.toISOString(),
+      active: true,
+      projectHash,
+    })
+    store.insertTags(docId, tags)
+    tagInfo = `\n📌 Tags: ${tags.join(', ')}`
+  }
+  
+  store.close()
+  
+  console.log(`✅ Written to ${targetPath} [${workspaceName}]${supersedeWarning}${tagInfo}`)
+}
+
+async function handleTags(globalOpts: GlobalOptions): Promise<void> {
+  const store = createStore(globalOpts.dbPath)
+  const tags = store.listAllTags()
+  
+  if (tags.length === 0) {
+    console.log('No tags found.')
+    store.close()
+    return
+  }
+  
+  console.log('Tags:')
+  for (const { tag, count } of tags) {
+    console.log(`  ${tag}: ${count} document${count === 1 ? '' : 's'}`)
+  }
+  store.close()
+}
+
+async function handleFocus(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  const filePath = commandArgs[0]
+  
+  if (!filePath) {
+    console.error('Usage: focus <filepath>')
+    process.exit(1)
+  }
+  
+  log('cli', 'focus file=' + filePath);
+  const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath)
+  const store = createStore(globalOpts.dbPath)
+  const projectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12)
+  
+  const dependencies = store.getFileDependencies(absolutePath, projectHash)
+  const dependents = store.getFileDependents(absolutePath, projectHash)
+  const centralityInfo = store.getDocumentCentrality(absolutePath)
+  
+  console.log(`File: ${absolutePath}`)
+  console.log('')
+  
+  if (centralityInfo) {
+    console.log(`Centrality: ${centralityInfo.centrality.toFixed(4)}`)
+    if (centralityInfo.clusterId !== null) {
+      const clusterMembers = store.getClusterMembers(centralityInfo.clusterId, projectHash)
+      console.log(`Cluster ID: ${centralityInfo.clusterId} (${clusterMembers.length} members)`)
+      if (clusterMembers.length > 0) {
+        console.log('Cluster Members:')
+        for (const member of clusterMembers.slice(0, 10)) {
+          console.log(`  - ${member}`)
+        }
+        if (clusterMembers.length > 10) {
+          console.log(`  ... and ${clusterMembers.length - 10} more`)
+        }
+      }
+    }
+  } else {
+    console.log('Centrality: Not indexed')
+  }
+  console.log('')
+  
+  console.log(`Dependencies (imports): ${dependencies.length}`)
+  for (const dep of dependencies) {
+    console.log(`  → ${dep}`)
+  }
+  console.log('')
+  
+  console.log(`Dependents (imported by): ${dependents.length}`)
+  for (const dep of dependents) {
+    console.log(`  ← ${dep}`)
+  }
+  
+  store.close()
+}
+
+async function handleGraphStats(globalOpts: GlobalOptions): Promise<void> {
+  log('cli', 'graph-stats invoked');
+  const store = createStore(globalOpts.dbPath)
+  const projectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12)
+  
+  const stats = store.getGraphStats(projectHash)
+  const edges = store.getFileEdges(projectHash)
+  const cycles = findCycles(edges.map(e => ({ source: e.source_path, target: e.target_path })), 5)
+  
+  console.log('Graph Statistics')
+  console.log('═══════════════════════════════════════════════════')
+  console.log('')
+  console.log(`Nodes: ${stats.nodeCount}`)
+  console.log(`Edges: ${stats.edgeCount}`)
+  console.log(`Clusters: ${stats.clusterCount}`)
+  console.log('')
+  
+  if (stats.topCentrality.length > 0) {
+    console.log('Top 10 by Centrality:')
+    for (const { path: filePath, centrality } of stats.topCentrality) {
+      console.log(`  ${centrality.toFixed(4)} - ${filePath}`)
+    }
+    console.log('')
+  }
+  
+  if (cycles.length > 0) {
+    console.log(`Cycles (length ≤ 5): ${cycles.length}`)
+    for (const cycle of cycles.slice(0, 5)) {
+      console.log(`  ${cycle.join(' → ')} → ${cycle[0]}`)
+    }
+    if (cycles.length > 5) {
+      console.log(`  ... and ${cycles.length - 5} more`)
+    }
+  } else {
+    console.log('Cycles: None detected')
+  }
+  
+  store.close()
+}
+
+async function handleSymbols(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  let type: string | undefined
+  let pattern: string | undefined
+  let repo: string | undefined
+  let operation: string | undefined
+  let format: 'text' | 'json' = 'text'
+
+  for (const arg of commandArgs) {
+    if (arg.startsWith('--type=')) {
+      type = arg.substring(7)
+    } else if (arg.startsWith('--pattern=')) {
+      pattern = arg.substring(10)
+    } else if (arg.startsWith('--repo=')) {
+      repo = arg.substring(7)
+    } else if (arg.startsWith('--operation=')) {
+      operation = arg.substring(12)
+    } else if (arg === '--json') {
+      format = 'json'
+    }
+  }
+
+  log('cli', 'symbols type=' + (type || '') + ' pattern=' + (pattern || '') + ' repo=' + (repo || '') + ' operation=' + (operation || ''));
+  const store = createStore(globalOpts.dbPath)
+  const projectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12)
+
+  const results = store.querySymbols({
+    type,
+    pattern,
+    repo,
+    operation,
+    projectHash,
+  })
+
+  if (format === 'json') {
+    console.log(JSON.stringify(results, null, 2))
+    store.close()
+    return
+  }
+
+  if (results.length === 0) {
+    console.log('No symbols found matching the criteria.')
+    store.close()
+    return
+  }
+
+  const grouped = new Map<string, Array<{ operation: string; repo: string; filePath: string; lineNumber: number }>>()
+  for (const r of results) {
+    const key = `${r.type}:${r.pattern}`
+    if (!grouped.has(key)) grouped.set(key, [])
+    grouped.get(key)!.push({ operation: r.operation, repo: r.repo, filePath: r.filePath, lineNumber: r.lineNumber })
+  }
+
+  console.log(`Found ${results.length} symbol(s) across ${grouped.size} pattern(s)`)
+  console.log('')
+
+  for (const [key, items] of grouped) {
+    const [symbolType, symbolPattern] = key.split(':')
+    console.log(`${symbolType}: ${symbolPattern}`)
+    for (const item of items) {
+      console.log(`  [${item.operation}] ${item.repo}: ${item.filePath}:${item.lineNumber}`)
+    }
+    console.log('')
+  }
+
+  store.close()
+}
+
+async function handleImpact(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  let type: string | undefined
+  let pattern: string | undefined
+  let format: 'text' | 'json' = 'text'
+
+  for (const arg of commandArgs) {
+    if (arg.startsWith('--type=')) {
+      type = arg.substring(7)
+    } else if (arg.startsWith('--pattern=')) {
+      pattern = arg.substring(10)
+    } else if (arg === '--json') {
+      format = 'json'
+    }
+  }
+
+  log('cli', 'impact type=' + (type || '') + ' pattern=' + (pattern || ''));
+  if (!type || !pattern) {
+    console.error('Usage: impact --type=<type> --pattern=<pattern> [--json]')
+    console.error('Types: redis_key, pubsub_channel, mysql_table, api_endpoint, http_call, bull_queue')
+    process.exit(1)
+  }
+
+  const store = createStore(globalOpts.dbPath)
+  const projectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12)
+
+  const results = store.getSymbolImpact(type, pattern, projectHash)
+
+  if (format === 'json') {
+    console.log(JSON.stringify(results, null, 2))
+    store.close()
+    return
+  }
+
+  if (results.length === 0) {
+    console.log(`No symbols found for ${type}: ${pattern}`)
+    store.close()
+    return
+  }
+
+  const byOperation = new Map<string, Array<{ repo: string; filePath: string; lineNumber: number }>>()
+  for (const r of results) {
+    if (!byOperation.has(r.operation)) byOperation.set(r.operation, [])
+    byOperation.get(r.operation)!.push({ repo: r.repo, filePath: r.filePath, lineNumber: r.lineNumber })
+  }
+
+  console.log(`Impact Analysis: ${type} "${pattern}"`)
+  console.log('')
+
+  const operationLabels: Record<string, string> = {
+    read: 'Readers',
+    write: 'Writers',
+    publish: 'Publishers',
+    subscribe: 'Subscribers',
+    define: 'Definitions',
+    call: 'Callers',
+    produce: 'Producers',
+    consume: 'Consumers',
+  }
+
+  for (const [op, items] of byOperation) {
+    const label = operationLabels[op] || op
+    console.log(`${label} (${items.length}):`)
+    for (const item of items) {
+      console.log(`  ${item.repo}: ${item.filePath}:${item.lineNumber}`)
+    }
+    console.log('')
+  }
+
+  store.close()
 }
 
 async function handleCache(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
@@ -779,6 +1156,7 @@ async function handleCache(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     process.exit(1);
   }
 
+  log('cli', 'cache subcommand=' + subcommand);
   const store = createStore(globalOpts.dbPath);
 
   switch (subcommand) {
@@ -840,14 +1218,101 @@ async function handleCache(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   store.close();
 }
 
+async function handleLogs(commandArgs: string[]): Promise<void> {
+  const logsDir = path.join(os.homedir(), '.nano-brain', 'logs');
+
+  if (commandArgs[0] === 'path') {
+    console.log(logsDir);
+    return;
+  }
+
+  let follow = false;
+  let lines = 50;
+  let date = new Date().toISOString().split('T')[0];
+  let clear = false;
+  let logFile: string | null = null;
+
+  for (let i = 0; i < commandArgs.length; i++) {
+    const arg = commandArgs[i];
+    if (arg === '-f' || arg === '--follow') {
+      follow = true;
+    } else if (arg === '-n' && i + 1 < commandArgs.length) {
+      lines = parseInt(commandArgs[++i], 10);
+    } else if (arg.startsWith('--date=')) {
+      date = arg.substring(7);
+    } else if (arg === '--clear') {
+      clear = true;
+    } else if (!arg.startsWith('-')) {
+      logFile = path.isAbsolute(arg) ? arg : path.resolve(process.cwd(), arg);
+    }
+  }
+
+  log('cli', 'logs follow=' + follow + ' lines=' + lines + ' date=' + date + ' clear=' + clear);
+
+  if (clear) {
+    if (!fs.existsSync(logsDir)) {
+      console.log('No logs directory');
+      return;
+    }
+    const files = fs.readdirSync(logsDir).filter(f => f.startsWith('nano-brain-') && f.endsWith('.log'));
+    for (const file of files) {
+      fs.unlinkSync(path.join(logsDir, file));
+    }
+    console.log('Cleared ' + files.length + ' log file(s)');
+    return;
+  }
+
+  if (!logFile) {
+    logFile = path.join(logsDir, 'nano-brain-' + date + '.log');
+  }
+
+  if (!fs.existsSync(logFile)) {
+    console.log('No log file: ' + logFile);
+    console.log('Enable logging: set logging.enabled: true in ~/.nano-brain/config.yml');
+    return;
+  }
+
+  if (follow) {
+    const { spawn } = await import('child_process');
+    const tail = spawn('tail', ['-f', '-n', String(lines), logFile], { stdio: 'inherit' });
+    tail.on('error', () => {
+      console.error('tail command not available, showing last ' + lines + ' lines instead');
+      printLastLines(logFile!, lines);
+    });
+    await new Promise<void>((resolve) => {
+      tail.on('close', () => resolve());
+      process.on('SIGINT', () => { tail.kill(); resolve(); });
+    });
+  } else {
+    printLastLines(logFile, lines);
+  }
+}
+
+function printLastLines(filePath: string, n: number): void {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const allLines = content.split('\n').filter(l => l.length > 0);
+  const start = Math.max(0, allLines.length - n);
+  const selected = allLines.slice(start);
+  if (start > 0) {
+    console.log('... (' + start + ' earlier lines omitted, use -n to show more)');
+  }
+  for (const line of selected) {
+    console.log(line);
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   
   const globalOpts = parseGlobalOptions(args);
   
+  const cliConfig = loadCollectionConfig(globalOpts.configPath);
+  initLogger(cliConfig ?? undefined);
 
   const command = globalOpts.remaining[0] || 'mcp';
   const commandArgs = globalOpts.remaining.slice(1);
+
+  log('cli', 'command=' + command);
 
   // Resolve per-workspace DB path (init command handles this separately with --root)
   if (command !== 'init') {
@@ -879,8 +1344,22 @@ async function main() {
       return handleHarvest(globalOpts);
     case 'cache':
       return handleCache(globalOpts, commandArgs);
+    case 'write':
+      return handleWrite(globalOpts, commandArgs);
     case 'bench':
       return handleBench(globalOpts, commandArgs);
+    case 'tags':
+      return handleTags(globalOpts);
+    case 'focus':
+      return handleFocus(globalOpts, commandArgs);
+    case 'graph-stats':
+      return handleGraphStats(globalOpts);
+    case 'symbols':
+      return handleSymbols(globalOpts, commandArgs);
+    case 'impact':
+      return handleImpact(globalOpts, commandArgs);
+    case 'logs':
+      return handleLogs(commandArgs);
     default:
       console.error(`Unknown command: ${command}`);
       showHelp();

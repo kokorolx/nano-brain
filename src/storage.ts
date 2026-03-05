@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Store, StorageConfig } from './types.js';
+import { log } from './logger.js';
 
 const DEFAULT_MAX_SIZE = 2147483648;
 const DEFAULT_RETENTION = 7776000000;
@@ -86,6 +87,7 @@ export function parseStorageConfig(raw?: { maxSize?: string; retention?: string;
     }
   }
   
+  log('storage', 'parsed config maxSize=' + maxSize + ' retention=' + retention + ' minFreeDisk=' + minFreeDisk);
   return { maxSize, retention, minFreeDisk };
 }
 
@@ -93,11 +95,14 @@ export function checkDiskSpace(dir: string, minFreeDisk: number): { ok: boolean;
   try {
     const stats = fs.statfsSync(dir);
     const freeBytes = stats.bfree * stats.bsize;
+    const ok = freeBytes >= minFreeDisk;
+    log('storage', 'disk space check freeBytes=' + freeBytes + ' ok=' + ok);
     return {
-      ok: freeBytes >= minFreeDisk,
+      ok,
       freeBytes,
     };
   } catch {
+    log('storage', 'disk space check unavailable');
     console.warn('[storage] statfs unavailable, disk safety check disabled');
     return { ok: true, freeBytes: -1 };
   }
@@ -181,6 +186,7 @@ export function evictExpiredSessions(sessionsDir: string, retention: number, sto
     }
   }
   
+  log('storage', 'evictExpiredSessions checked=' + files.length + ' evicted=' + evictedCount);
   return evictedCount;
 }
 
@@ -193,6 +199,8 @@ export function evictBySize(sessionsDir: string, dbPath: string, maxSize: number
   
   let sessionsSize = getDirectorySize(sessionsDir);
   let totalSize = dbSize + sessionsSize;
+  
+  log('storage', 'evictBySize totalSize=' + totalSize + ' maxSize=' + maxSize);
   
   if (totalSize <= maxSize) {
     return 0;
@@ -217,5 +225,6 @@ export function evictBySize(sessionsDir: string, dbPath: string, maxSize: number
     }
   }
   
+  log('storage', 'evictBySize evicted=' + evictedCount);
   return evictedCount;
 }

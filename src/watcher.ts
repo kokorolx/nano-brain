@@ -5,6 +5,7 @@ import { indexDocument, computeHash, extractProjectHashFromPath } from './store.
 import { harvestSessions } from './harvester.js';
 import { checkDiskSpace, evictExpiredSessions, evictBySize } from './storage.js';
 import { indexCodebase, mergeExcludePatterns, resolveExtensions, embedPendingCodebase } from './codebase.js'
+import { log } from './logger.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -81,6 +82,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
   const handleFileChange = (filePath: string) => {
     if (stopped) return
     
+    log('watcher', 'File change detected: ' + filePath)
     dirty = true
     pendingPaths.add(filePath)
     if (debounceTimer) {
@@ -105,6 +107,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
     if (isReindexing || stopped) return
     
     isReindexing = true
+    log('watcher', 'Starting reindex')
     
     try {
       for (const collection of collections) {
@@ -141,6 +144,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
       dirty = false
       pendingPaths.clear()
       lastReindexAt = Date.now()
+      log('watcher', 'Reindex completed: ' + collections.length + ' collections scanned')
     } finally {
       isReindexing = false
     }
@@ -174,6 +178,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
     }
     
     if (mismatches > 0) {
+      log('watcher', 'Integrity check found ' + mismatches + ' mismatches')
       console.log(`Integrity check: ${mismatches} file(s) need re-indexing`);
     }
   };
@@ -259,17 +264,20 @@ export function startWatcher(options: WatcherOptions): Watcher {
         });
         
         if (sessions.length > 0) {
+          log('watcher', 'Session harvest: ' + sessions.length + ' session(s) harvested')
           await triggerReindex();
         }
         
         if (storageConfig && dbPath) {
           const expiredCount = evictExpiredSessions(outputDir, storageConfig.retention, store);
           if (expiredCount > 0) {
+            log('watcher', 'Storage eviction: ' + expiredCount + ' expired session(s)')
             console.log(`[storage] Evicted ${expiredCount} expired session(s)`);
           }
           
           const sizeEvictedCount = evictBySize(outputDir, dbPath, storageConfig.maxSize, store);
           if (sizeEvictedCount > 0) {
+            log('watcher', 'Storage eviction: ' + sizeEvictedCount + ' session(s) due to size limit')
             console.log(`[storage] Evicted ${sizeEvictedCount} session(s) due to size limit`);
           }
         }
@@ -278,6 +286,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
         if (harvestCycleCount % 10 === 0) {
           const orphansDeleted = store.cleanOrphanedEmbeddings();
           if (orphansDeleted > 0) {
+            log('watcher', 'Orphan cleanup: ' + orphansDeleted + ' orphaned embedding(s)')
             console.log(`[storage] Cleaned ${orphansDeleted} orphaned embedding(s)`);
           }
         }
@@ -293,6 +302,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
         try {
           const count = await embedPendingCodebase(store, embedder, 50, projectHash);
           if (count > 0) {
+            log('watcher', 'Embedding cycle: ' + count + ' document(s) embedded')
             console.log(`[embed] Embedded ${count} document(s)`);
           }
         } catch (err) {

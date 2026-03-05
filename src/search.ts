@@ -1,5 +1,7 @@
-import type { SearchResult, Store } from './types.js';
+import type { SearchResult, Store, StoreSearchOptions, SearchConfig } from './types.js';
+import { DEFAULT_SEARCH_CONFIG } from './types.js';
 import { computeHash } from './store.js';
+import { log } from './logger.js';
 
 export interface SearchOptions {
   query: string;
@@ -18,6 +20,11 @@ export interface HybridSearchOptions {
   useReranking?: boolean;
   topK?: number;
   projectHash?: string;
+  scope?: 'workspace' | 'all';
+  tags?: string[];
+  since?: string;
+  until?: string;
+  searchConfig?: SearchConfig;
 }
 
 export interface SearchProviders {
@@ -26,25 +33,96 @@ export interface SearchProviders {
   expander?: { expand(query: string): Promise<string[]> } | null;
 }
 
+export function parseSearchConfig(partial?: Partial<SearchConfig>): SearchConfig {
+  if (!partial) return { ...DEFAULT_SEARCH_CONFIG };
+  
+  const config: SearchConfig = { ...DEFAULT_SEARCH_CONFIG };
+  
+  if (partial.rrf_k !== undefined) {
+    if (partial.rrf_k < 0) {
+      console.warn('[search] Invalid rrf_k (negative), using default');
+    } else {
+      config.rrf_k = partial.rrf_k;
+    }
+  }
+  
+  if (partial.top_k !== undefined) {
+    if (partial.top_k < 0) {
+      console.warn('[search] Invalid top_k (negative), using default');
+    } else {
+      config.top_k = partial.top_k;
+    }
+  }
+  
+  if (partial.centrality_weight !== undefined) {
+    if (partial.centrality_weight < 0) {
+      console.warn('[search] Invalid centrality_weight (negative), using default');
+    } else {
+      config.centrality_weight = partial.centrality_weight;
+    }
+  }
+  
+  if (partial.supersede_demotion !== undefined) {
+    if (partial.supersede_demotion < 0) {
+      console.warn('[search] Invalid supersede_demotion (negative), using default');
+    } else {
+      config.supersede_demotion = partial.supersede_demotion;
+    }
+  }
+  
+  if (partial.blending) {
+    config.blending = {
+      top3: partial.blending.top3 ?? DEFAULT_SEARCH_CONFIG.blending.top3,
+      mid: partial.blending.mid ?? DEFAULT_SEARCH_CONFIG.blending.mid,
+      tail: partial.blending.tail ?? DEFAULT_SEARCH_CONFIG.blending.tail,
+    };
+    
+    const checkWeights = (name: string, weights: { rrf: number; rerank: number }) => {
+      const sum = weights.rrf + weights.rerank;
+      if (Math.abs(sum - 1.0) > 0.01) {
+        console.warn(`[search] Blending weights for ${name} sum to ${sum.toFixed(2)}, expected ~1.0`);
+      }
+    };
+    checkWeights('top3', config.blending.top3);
+    checkWeights('mid', config.blending.mid);
+    checkWeights('tail', config.blending.tail);
+  }
+  
+  if (partial.expansion) {
+    config.expansion = {
+      enabled: partial.expansion.enabled ?? DEFAULT_SEARCH_CONFIG.expansion.enabled,
+      weight: partial.expansion.weight ?? DEFAULT_SEARCH_CONFIG.expansion.weight,
+    };
+    if (config.expansion.weight < 0) {
+      console.warn('[search] Invalid expansion.weight (negative), using default');
+      config.expansion.weight = DEFAULT_SEARCH_CONFIG.expansion.weight;
+    }
+  }
+  
+  if (partial.reranking) {
+    config.reranking = {
+      enabled: partial.reranking.enabled ?? DEFAULT_SEARCH_CONFIG.reranking.enabled,
+    };
+  }
+  
+  return config;
+}
+
 export function searchFTS(
   store: Store,
   query: string,
-  options?: { limit?: number; collection?: string }
+  options?: StoreSearchOptions
 ): SearchResult[] {
-  const limit = options?.limit;
-  const collection = options?.collection;
-  return store.searchFTS(query, limit, collection);
+  return store.searchFTS(query, options);
 }
 
 export function searchVec(
   store: Store,
   query: string,
   embedding: number[],
-  options?: { limit?: number; collection?: string }
+  options?: StoreSearchOptions
 ): SearchResult[] {
-  const limit = options?.limit;
-  const collection = options?.collection;
-  return store.searchVec(query, embedding, limit, collection);
+  return store.searchVec(query, embedding, options);
 }
 
 export function rrfFuse(
@@ -106,8 +184,11 @@ export function applyTopRankBonus(
 
 export function positionAwareBlend(
   rrfResults: SearchResult[],
-  rerankScores: Map<string, number>
+  rerankScores: Map<string, number>,
+  blendingConfig?: SearchConfig['blending']
 ): SearchResult[] {
+  const blending = blendingConfig ?? DEFAULT_SEARCH_CONFIG.blending;
+  
   const blended = rrfResults.map((result, index) => {
     const rerankScore = rerankScores.get(result.id);
     
@@ -119,14 +200,14 @@ export function positionAwareBlend(
     let rerankWeight: number;
     
     if (index <= 2) {
-      rrfWeight = 0.75;
-      rerankWeight = 0.25;
+      rrfWeight = blending.top3.rrf;
+      rerankWeight = blending.top3.rerank;
     } else if (index <= 9) {
-      rrfWeight = 0.60;
-      rerankWeight = 0.40;
+      rrfWeight = blending.mid.rrf;
+      rerankWeight = blending.mid.rerank;
     } else {
-      rrfWeight = 0.40;
-      rerankWeight = 0.60;
+      rrfWeight = blending.tail.rrf;
+      rerankWeight = blending.tail.rerank;
     }
     
     const finalScore = rrfWeight * result.score + rerankWeight * rerankScore;
@@ -138,6 +219,36 @@ export function positionAwareBlend(
   });
   
   return blended.sort((a, b) => b.score - a.score);
+}
+
+export function applyCentralityBoost(
+  results: SearchResult[],
+  centralityWeight: number
+): SearchResult[] {
+  return results.map(r => {
+    if (r.centrality && r.centrality > 0) {
+      return {
+        ...r,
+        score: r.score * (1 + centralityWeight * r.centrality),
+      };
+    }
+    return r;
+  });
+}
+
+export function applySupersedeDemotion(
+  results: SearchResult[],
+  demotionFactor: number
+): SearchResult[] {
+  return results.map(r => {
+    if (r.supersededBy !== undefined && r.supersededBy !== null) {
+      return {
+        ...r,
+        score: r.score * demotionFactor,
+      };
+    }
+    return r;
+  });
 }
 
 export function formatSnippet(text: string, maxLength: number = 700): string {
@@ -169,13 +280,30 @@ export async function hybridSearch(
     limit = 10,
     collection,
     minScore = 0,
-    useExpansion = true,
-    useReranking = true,
-    topK = 30,
     projectHash,
+    tags,
+    since,
+    until,
+    searchConfig,
   } = options;
   
+  const config = searchConfig ?? DEFAULT_SEARCH_CONFIG;
+  const useExpansion = options.useExpansion ?? config.expansion.enabled;
+  const useReranking = options.useReranking ?? config.reranking.enabled;
+  const topK = options.topK ?? config.top_k;
+  
+  log('search', 'hybridSearch query=' + query + ' limit=' + limit + ' collection=' + (collection || 'all') + ' expansion=' + useExpansion + ' reranking=' + useReranking);
+  
   const { embedder, reranker, expander } = providers;
+  
+  const searchOpts: StoreSearchOptions = {
+    limit: topK,
+    collection,
+    projectHash,
+    tags,
+    since,
+    until,
+  };
   
   let queries: string[] = [query];
   
@@ -184,6 +312,7 @@ export async function hybridSearch(
     const cached = store.getCachedResult(expansionCacheKey, projectHash);
     
     if (cached) {
+      log('search', 'hybridSearch expansion cache hit');
       try {
         const variants = JSON.parse(cached) as string[];
         queries = [query, ...variants];
@@ -203,9 +332,9 @@ export async function hybridSearch(
   
   const searchPromises = queries.map(async (q, i) => {
     const isOriginal = i === 0;
-    const weight = isOriginal ? 2 : 1;
+    const weight = isOriginal ? 2 : config.expansion.weight;
     
-    const ftsResults = store.searchFTS(q, topK, collection, projectHash);
+    const ftsResults = store.searchFTS(q, searchOpts);
     
     let vecResults: SearchResult[] = [];
     if (embedder) {
@@ -219,7 +348,7 @@ export async function hybridSearch(
           embedding = result.embedding;
           store.setQueryEmbeddingCache(q, embedding);
         }
-        vecResults = store.searchVec(q, embedding, topK, collection, projectHash);
+        vecResults = store.searchVec(q, embedding, searchOpts);
       } catch {
       }
     }
@@ -231,20 +360,32 @@ export async function hybridSearch(
 
   const allResultSets: SearchResult[][] = [];
   const weights: number[] = [];
+  let totalFts = 0;
+  let totalVec = 0;
   for (const { ftsResults, vecResults, weight } of searchResults) {
     allResultSets.push(ftsResults);
     weights.push(weight);
+    totalFts += ftsResults.length;
     if (vecResults.length > 0) {
       allResultSets.push(vecResults);
       weights.push(weight);
+      totalVec += vecResults.length;
     }
   }
+  log('search', 'hybridSearch fts=' + totalFts + ' vec=' + totalVec);
   
   const originalFtsResults = allResultSets[0] || [];
   
-  let fusedResults = rrfFuse(allResultSets, 60, weights);
+  let fusedResults = rrfFuse(allResultSets, config.rrf_k, weights);
+  log('search', 'hybridSearch fused=' + fusedResults.length);
   
   fusedResults = applyTopRankBonus(fusedResults, originalFtsResults);
+  
+  fusedResults = applyCentralityBoost(fusedResults, config.centrality_weight);
+  
+  fusedResults = applySupersedeDemotion(fusedResults, config.supersede_demotion);
+  
+  fusedResults.sort((a, b) => b.score - a.score);
   
   const candidates = fusedResults.slice(0, topK);
   
@@ -256,6 +397,7 @@ export async function hybridSearch(
     let rerankScores = new Map<string, number>();
     
     if (cachedRerank) {
+      log('search', 'hybridSearch rerank cache hit');
       try {
         const parsed = JSON.parse(cachedRerank) as Array<{ file: string; score: number }>;
         parsed.forEach(r => rerankScores.set(r.file, r.score));
@@ -284,7 +426,8 @@ export async function hybridSearch(
       }
     }
     
-    fusedResults = positionAwareBlend(candidates, rerankScores);
+    fusedResults = positionAwareBlend(candidates, rerankScores, config.blending);
+    log('search', 'hybridSearch reranked=' + fusedResults.length);
   } else {
     fusedResults = candidates;
   }
@@ -295,6 +438,7 @@ export async function hybridSearch(
   }
   
   const final = filtered.slice(0, limit);
+  log('search', 'hybridSearch final=' + final.length);
   
   return final.map(r => ({
     ...r,
@@ -306,5 +450,5 @@ export async function search(
   store: Store,
   options: SearchOptions
 ): Promise<SearchResult[]> {
-  return store.searchFTS(options.query, options.limit, options.collection);
+  return store.searchFTS(options.query, { limit: options.limit, collection: options.collection });
 }

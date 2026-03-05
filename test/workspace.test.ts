@@ -159,7 +159,7 @@ describe('Workspace Scoping', () => {
     });
 
     it('should filter search by workspace', () => {
-      const results = store.searchFTS('searchterm', 10, undefined, 'ws1hash12345');
+      const results = store.searchFTS('searchterm', { limit: 10, projectHash: 'ws1hash12345' });
       
       const paths = results.map(r => r.path);
       expect(paths).toContain('ws1/doc.md');
@@ -168,20 +168,20 @@ describe('Workspace Scoping', () => {
     });
 
     it('should include global docs in workspace search', () => {
-      const results = store.searchFTS('searchterm', 10, undefined, 'ws1hash12345');
+      const results = store.searchFTS('searchterm', { limit: 10, projectHash: 'ws1hash12345' });
       
       const paths = results.map(r => r.path);
       expect(paths).toContain('global/doc.md');
     });
 
     it('should return all docs when projectHash is all', () => {
-      const results = store.searchFTS('searchterm', 10, undefined, 'all');
+      const results = store.searchFTS('searchterm', { limit: 10, projectHash: 'all' });
       
       expect(results.length).toBe(3);
     });
 
     it('should return all docs when no projectHash provided', () => {
-      const results = store.searchFTS('searchterm', 10);
+      const results = store.searchFTS('searchterm', { limit: 10 });
       
       expect(results.length).toBe(3);
     });

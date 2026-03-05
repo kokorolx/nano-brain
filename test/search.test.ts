@@ -317,7 +317,7 @@ describe('Search Pipeline', () => {
       
       const results = searchFTS(store, 'test query', { limit: 5, collection: 'test-col' });
       
-      expect(store.searchFTS).toHaveBeenCalledWith('test query', 5, 'test-col');
+      expect(store.searchFTS).toHaveBeenCalledWith('test query', { limit: 5, collection: 'test-col' });
       expect(results).toEqual(mockResults);
     });
     
@@ -327,7 +327,7 @@ describe('Search Pipeline', () => {
       
       const results = searchFTS(store, 'test query');
       
-      expect(store.searchFTS).toHaveBeenCalledWith('test query', undefined, undefined);
+      expect(store.searchFTS).toHaveBeenCalledWith('test query', undefined);
       expect(results).toEqual(mockResults);
     });
   });
@@ -340,7 +340,7 @@ describe('Search Pipeline', () => {
       
       const results = searchVec(store, 'test query', embedding, { limit: 5, collection: 'test-col' });
       
-      expect(store.searchVec).toHaveBeenCalledWith('test query', embedding, 5, 'test-col');
+      expect(store.searchVec).toHaveBeenCalledWith('test query', embedding, { limit: 5, collection: 'test-col' });
       expect(results).toEqual(mockResults);
     });
   });

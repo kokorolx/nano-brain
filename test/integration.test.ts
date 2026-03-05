@@ -93,39 +93,39 @@ describe('Real Database Integration', () => {
   });
 
   it('search finds indexed documents', () => {
-    const results = store.searchFTS('memory', 10);
+    const results = store.searchFTS('memory', { limit: 10 });
     expect(results.length).toBeGreaterThan(0);
     expect(results.some(r => r.title === 'Nano Brain')).toBe(true);
   });
 
   it('hyphenated query works without error', () => {
     expect(() => {
-      const results = store.searchFTS('nano-brain', 10);
+      const results = store.searchFTS('nano-brain', { limit: 10 });
       expect(Array.isArray(results)).toBe(true);
     }).not.toThrow();
   });
 
   it('FTS5 operator words work without error', () => {
     expect(() => {
-      const results = store.searchFTS('AND OR NOT', 10);
+      const results = store.searchFTS('AND OR NOT', { limit: 10 });
       expect(Array.isArray(results)).toBe(true);
     }).not.toThrow();
   });
 
   it('FTS5 column name words work without error', () => {
     expect(() => {
-      const results = store.searchFTS('filepath', 10);
+      const results = store.searchFTS('filepath', { limit: 10 });
       expect(Array.isArray(results)).toBe(true);
     }).not.toThrow();
   });
 
   it('empty query returns empty array', () => {
-    const results = store.searchFTS('', 10);
+    const results = store.searchFTS('', { limit: 10 });
     expect(results).toEqual([]);
   });
 
   it('collection filter works', () => {
-    const results = store.searchFTS('log', 10, 'daily');
+    const results = store.searchFTS('log', { limit: 10, collection: 'daily' });
     expect(results.length).toBeGreaterThan(0);
     expect(results.every(r => r.collection === 'daily')).toBe(true);
   });
@@ -203,15 +203,15 @@ describe('Workspace-scoped session indexing', () => {
   });
 
   it('should filter search results by workspace (task 5.2)', () => {
-    const resultsAlpha = store.searchFTS('testing', 10, undefined, 'abc123def456');
+    const resultsAlpha = store.searchFTS('testing', { limit: 10, projectHash: 'abc123def456' });
     expect(resultsAlpha.length).toBe(1);
     expect(resultsAlpha[0].title).toBe('Session Alpha');
 
-    const resultsBeta = store.searchFTS('testing', 10, undefined, 'fff000eee111');
+    const resultsBeta = store.searchFTS('testing', { limit: 10, projectHash: 'fff000eee111' });
     expect(resultsBeta.length).toBe(1);
     expect(resultsBeta[0].title).toBe('Session Beta');
 
-    const resultsAll = store.searchFTS('testing', 10, undefined, 'all');
+    const resultsAll = store.searchFTS('testing', { limit: 10, projectHash: 'all' });
     expect(resultsAll.length).toBe(2);
     const titles = resultsAll.map(r => r.title).sort();
     expect(titles).toEqual(['Session Alpha', 'Session Beta']);

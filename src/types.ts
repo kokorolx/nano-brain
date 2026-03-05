@@ -9,6 +9,10 @@ export interface SearchResult {
   endLine: number;
   docid: string;
   agent?: string;
+  projectHash?: string;
+  centrality?: number;
+  clusterId?: number;
+  supersededBy?: number | null;
 }
 
 export interface Document {
@@ -67,8 +71,10 @@ export interface CollectionConfig {
   }
   codebase?: CodebaseConfig
   workspaces?: Record<string, WorkspaceConfig>
+  logging?: { enabled?: boolean }
   embedding?: EmbeddingConfig
   watcher?: WatcherConfig
+  search?: Partial<SearchConfig>
 }
 
 export interface CodebaseConfig {
@@ -181,6 +187,53 @@ export interface IndexHealth {
   }
 }
 
+export interface StoreSearchOptions {
+  limit?: number;
+  collection?: string;
+  projectHash?: string;
+  tags?: string[];
+  since?: string;
+  until?: string;
+}
+
+export interface SearchConfig {
+  rrf_k: number;
+  top_k: number;
+  blending: {
+    top3: { rrf: number; rerank: number };
+    mid: { rrf: number; rerank: number };
+    tail: { rrf: number; rerank: number };
+  };
+  expansion: {
+    enabled: boolean;
+    weight: number;
+  };
+  reranking: {
+    enabled: boolean;
+  };
+  centrality_weight: number;
+  supersede_demotion: number;
+}
+
+export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
+  rrf_k: 60,
+  top_k: 30,
+  blending: {
+    top3: { rrf: 0.75, rerank: 0.25 },
+    mid: { rrf: 0.60, rerank: 0.40 },
+    tail: { rrf: 0.40, rerank: 0.60 },
+  },
+  expansion: {
+    enabled: true,
+    weight: 1,
+  },
+  reranking: {
+    enabled: true,
+  },
+  centrality_weight: 0.1,
+  supersede_demotion: 0.3,
+};
+
 export interface Store {
   close(): void;
   
@@ -195,8 +248,8 @@ export interface Store {
   insertEmbedding(hash: string, seq: number, pos: number, embedding: number[], model: string): void;
   ensureVecTable(dimensions: number): void;
   
-  searchFTS(query: string, limit?: number, collection?: string, projectHash?: string): SearchResult[];
-  searchVec(query: string, embedding: number[], limit?: number, collection?: string, projectHash?: string): SearchResult[];
+  searchFTS(query: string, options?: StoreSearchOptions): SearchResult[];
+  searchVec(query: string, embedding: number[], options?: StoreSearchOptions): SearchResult[];
   
   getCachedResult(hash: string, projectHash?: string): string | null;
   setCachedResult(hash: string, result: string, projectHash?: string, type?: string): void;
@@ -222,4 +275,64 @@ export interface Store {
     reranker: string;
     expander: string;
   };
+
+  insertFileEdge(sourcePath: string, targetPath: string, projectHash: string, edgeType?: string): void;
+  deleteFileEdges(sourcePath: string, projectHash: string): void;
+  getFileEdges(projectHash: string): Array<{ source_path: string; target_path: string }>;
+
+  updateCentralityScores(projectHash: string, scores: Map<string, number>): void;
+  updateClusterIds(projectHash: string, clusters: Map<string, number>): void;
+  getEdgeSetHash(projectHash: string): string | null;
+  setEdgeSetHash(projectHash: string, hash: string): void;
+
+  supersedeDocument(targetId: number, newId: number): void;
+
+  insertTags(documentId: number, tags: string[]): void;
+  getDocumentTags(documentId: number): string[];
+  listAllTags(): Array<{ tag: string; count: number }>;
+
+  getFileDependencies(filePath: string, projectHash: string): string[];
+  getFileDependents(filePath: string, projectHash: string): string[];
+  getDocumentCentrality(filePath: string): { centrality: number; clusterId: number | null } | null;
+  getClusterMembers(clusterId: number, projectHash: string): string[];
+  getGraphStats(projectHash: string): {
+    nodeCount: number;
+    edgeCount: number;
+    clusterCount: number;
+    topCentrality: Array<{ path: string; centrality: number }>;
+  };
+
+  insertSymbol(symbol: {
+    type: string;
+    pattern: string;
+    operation: string;
+    repo: string;
+    filePath: string;
+    lineNumber: number;
+    rawExpression: string;
+    projectHash: string;
+  }): void;
+  deleteSymbols(filePath: string, projectHash: string): void;
+  querySymbols(options: {
+    type?: string;
+    pattern?: string;
+    repo?: string;
+    operation?: string;
+    projectHash?: string;
+  }): Array<{
+    type: string;
+    pattern: string;
+    operation: string;
+    repo: string;
+    filePath: string;
+    lineNumber: number;
+    rawExpression: string;
+  }>;
+  getSymbolImpact(type: string, pattern: string, projectHash?: string): Array<{
+    pattern: string;
+    operation: string;
+    repo: string;
+    filePath: string;
+    lineNumber: number;
+  }>;
 }

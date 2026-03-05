@@ -4,18 +4,22 @@ import * as path from 'path';
 import * as os from 'os';
 import { parse, stringify } from 'yaml';
 import fg from 'fast-glob';
+import { log } from './logger.js';
 
 export function loadCollectionConfig(configPath: string): CollectionConfig | null {
   if (!fs.existsSync(configPath)) {
+    log('collections', 'config not found at ' + configPath);
     return null;
   }
   
+  log('collections', 'loading config from ' + configPath);
   const content = fs.readFileSync(configPath, 'utf-8');
   const config = parse(content) as CollectionConfig;
   return config;
 }
 
 export function saveCollectionConfig(configPath: string, config: CollectionConfig): void {
+  log('collections', 'saving config to ' + configPath);
   const dir = path.dirname(configPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
@@ -175,6 +179,7 @@ export async function scanCollectionFiles(collection: Collection): Promise<strin
   const expandedPath = collection.path.replace(/^~/, os.homedir());
   
   if (!fs.existsSync(expandedPath)) {
+    log('collections', 'scan collection=' + collection.name + ' path=' + expandedPath + ' not found');
     return [];
   }
   
@@ -184,6 +189,7 @@ export async function scanCollectionFiles(collection: Collection): Promise<strin
     onlyFiles: true,
   });
   
+  log('collections', 'scan collection=' + collection.name + ' path=' + expandedPath + ' files=' + files.length);
   return files;
 }
 
@@ -194,13 +200,16 @@ export function resolveCollectionPath(collection: Collection, basePath: string):
 export function getWorkspaceConfig(config: CollectionConfig | null, workspaceRoot: string): WorkspaceConfig {
   // 1. Check workspaces map for exact match
   if (config?.workspaces?.[workspaceRoot]) {
+    log('collections', 'workspace config source=workspaces map for ' + workspaceRoot);
     return config.workspaces[workspaceRoot]
   }
   // 2. Fall back to top-level codebase (backward compat)
   if (config?.codebase) {
+    log('collections', 'workspace config source=top-level codebase');
     return { codebase: config.codebase }
   }
   // 3. Default: codebase enabled, auto-detect everything
+  log('collections', 'workspace config source=default');
   return { codebase: { enabled: true } }
 }
 

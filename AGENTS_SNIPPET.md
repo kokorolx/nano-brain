@@ -16,6 +16,13 @@ All commands use the CLI via Bash tool:
 | Explore a concept semantically | `npx nano-brain vsearch "concept"` |
 | Save a decision for future sessions | Create file in `~/.nano-brain/memory/`, then `npx nano-brain update` |
 | Check index health | `npx nano-brain status` |
+| Write a note with tags | `npx nano-brain write "content" --tags=decision,auth` |
+| Supersede old info | `npx nano-brain write "new info" --supersedes=<path>` |
+| See file dependencies | `npx nano-brain focus src/server.ts` |
+| Find cross-repo Redis usage | `npx nano-brain symbols --type=redis_key --pattern="sinv:*"` |
+| Analyze cross-repo impact | `npx nano-brain impact --type=redis_key --pattern="sinv:*:compressed"` |
+| Search across all workspaces | `npx nano-brain query "topic" --scope=all` |
+| Filter by tags | `npx nano-brain query "topic" --tags=decision` |
 
 ### Session Workflow
 

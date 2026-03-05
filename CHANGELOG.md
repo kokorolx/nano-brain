@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026.2.0] - 2026-03-05
+
+### Added
+
+- **File-based diagnostic logging**: Optional file logger controlled via `logging.enabled: true` in config or `NANO_BRAIN_LOG=1` env var. Logs to `~/.nano-brain/logs/nano-brain-YYYY-MM-DD.log` with daily rotation. Zero CPU overhead when disabled (boolean guard). All 11 source modules instrumented with tagged log calls (server, watcher, store, search, embeddings, reranker, storage, collections, codebase, harvester, CLI).
+- **CLI `logs` command**: `npx nano-brain logs` to view today's log, `logs -f` to tail in real-time, `logs path` to print log directory, `logs --date=YYYY-MM-DD` for specific dates, `logs <filepath>` for arbitrary log files, `logs --clear` to delete all logs.
+- **Import graph with PageRank & clustering**: Codebase indexing now parses import/require statements (JS/TS, Python, Ruby/Rails) and builds a file dependency graph. PageRank centrality scores boost important files in search results. Louvain community detection identifies logical module clusters.
+- **Memory supersede**: `memory_write` and CLI `write` accept `--supersedes` to mark old documents as outdated. Superseded documents receive a 0.3x score demotion in search (configurable).
+- **Cross-workspace search**: `--scope=all` on search commands and `workspace: "all"` on MCP tools searches across all indexed workspaces with `projectHash` attribution.
+- **Structured tags**: `--tags` on `write` and tag filtering on search commands. `memory_tags` tool and `tags` CLI list all tags with counts. AND logic for multi-tag filters.
+- **Temporal queries**: `--since` and `--until` date filters on all search commands.
+- **Configurable search tuning**: `search` section in config.yml for RRF k, top_k, blending weights, expansion/reranking toggles, centrality weight, and supersede demotion factor.
+- **Focus & graph stats tools**: `memory_focus` shows file dependencies/dependents/centrality/cluster. `memory_graph_stats` shows graph overview with cycle detection.
+- **Cross-repo symbol extraction**: Regex-based extraction of Redis keys, PubSub channels, MySQL tables, API endpoints, HTTP calls, and Bull/Sidekiq queues during codebase indexing. Template literals converted to wildcard patterns.
+- **Symbol query & impact tools**: `memory_symbols` queries symbols with filters. `memory_impact` shows cross-repo impact (writers vs readers, publishers vs subscribers).
+- **CLI `write` command**: `npx nano-brain write "content"` with `--supersedes` and `--tags` options.
+- **CLI `focus` command**: `npx nano-brain focus <filepath>` for dependency analysis.
+- **CLI `graph-stats` command**: `npx nano-brain graph-stats` for graph overview.
+- **CLI `symbols` command**: `npx nano-brain symbols` with type/pattern/repo/operation filters.
+- **CLI `impact` command**: `npx nano-brain impact` for cross-repo impact analysis.
+- **CLI `tags` command**: `npx nano-brain tags` to list all tags.
+- **~170 new tests**: Comprehensive coverage for all new features. Total: 630+ tests.
+
 ## [2026.1.21] - 2026-03-04
 
 ### Fixed

@@ -2,6 +2,9 @@ import type { Store, CodebaseConfig, CodebaseIndexResult } from './types.js'
 import { computeHash } from './store.js'
 import { chunkSourceCode, chunkMarkdown } from './chunker.js'
 import { parseSize } from './storage.js'
+import { parseImports, detectLanguage, computePageRank, louvainClustering, computeEdgeSetHash } from './graph.js'
+import { extractSymbols } from './symbols.js'
+import { log } from './logger.js';
 import * as fs from 'fs'
 import * as path from 'path'
 import fg from 'fast-glob'
@@ -207,6 +210,7 @@ export async function scanCodebaseFiles(
   config: CodebaseConfig
 ): Promise<{ files: string[]; skippedTooLarge: number }> {
   const extensions = resolveExtensions(config, workspaceRoot)
+  log('codebase', 'Scanning with extensions: ' + extensions.join(', '))
   const excludePatterns = mergeExcludePatterns(config, workspaceRoot)
   
   const maxFileSize = config.maxFileSize
@@ -223,6 +227,7 @@ export async function scanCodebaseFiles(
     onlyFiles: true,
     ignore: excludePatterns,
   })
+  log('codebase', 'Found ' + allFiles.length + ' files matching patterns')
   
   const files: string[] = []
   let skippedTooLarge = 0
@@ -240,6 +245,9 @@ export async function scanCodebaseFiles(
     }
   }
   
+  if (skippedTooLarge > 0) {
+    log('codebase', 'Skipped ' + skippedTooLarge + ' files (too large)')
+  }
   return { files, skippedTooLarge }
 }
 
@@ -250,6 +258,7 @@ export async function indexCodebase(
   projectHash: string,
   _embedder?: { embed(text: string): Promise<{ embedding: number[] }> } | null
 ): Promise<CodebaseIndexResult> {
+  log('codebase', 'Starting codebase scan: ' + workspaceRoot)
   const { files, skippedTooLarge } = await scanCodebaseFiles(workspaceRoot, config)
   const maxSizeBytes = config.maxSize
     ? parseSize(config.maxSize)
@@ -300,6 +309,32 @@ export async function indexCodebase(
         active: true,
         projectHash,
       })
+
+      const language = detectLanguage(filePath)
+      if (language) {
+        store.deleteFileEdges(filePath, projectHash)
+        const importTargets = parseImports(filePath, content, language, workspaceRoot)
+        for (const target of importTargets) {
+          store.insertFileEdge(filePath, target, projectHash)
+        }
+
+        store.deleteSymbols(filePath, projectHash)
+        const repoName = path.basename(workspaceRoot)
+        const symbols = extractSymbols(filePath, content, language)
+        for (const symbol of symbols) {
+          store.insertSymbol({
+            type: symbol.type,
+            pattern: symbol.pattern,
+            operation: symbol.operation,
+            repo: repoName,
+            filePath: symbol.filePath,
+            lineNumber: symbol.lineNumber,
+            rawExpression: symbol.rawExpression,
+            projectHash,
+          })
+        }
+      }
+
       currentStorageUsed += netIncrease
       filesIndexed++
       activePaths.push(filePath)
@@ -309,13 +344,35 @@ export async function indexCodebase(
     
     if ((i + 1) % batchSize === 0) {
       batchNum++
+      log('codebase', 'Batch ' + batchNum + ': indexed ' + (i + 1) + '/' + files.length + ' files')
       console.error(`[codebase] Batch ${batchNum}: indexed ${i + 1}/${files.length} files`)
       await new Promise(resolve => setImmediate(resolve))
     }
   }
   
   store.bulkDeactivateExcept('codebase', activePaths)
+
+  const fileEdges = store.getFileEdges(projectHash)
+  const edges = fileEdges.map(e => ({ source: e.source_path, target: e.target_path }))
+  const newEdgeHash = computeEdgeSetHash(edges)
+  const oldEdgeHash = store.getEdgeSetHash(projectHash)
+
+  if (newEdgeHash !== oldEdgeHash) {
+    log('codebase', 'Computing PageRank for ' + edges.length + ' edges')
+    const pageRankScores = computePageRank(edges)
+    store.updateCentralityScores(projectHash, pageRankScores)
+
+    const clusters = louvainClustering(edges)
+    if (clusters.size > 0) {
+      log('codebase', 'Louvain clustering: ' + clusters.size + ' clusters')
+      store.updateClusterIds(projectHash, clusters)
+    }
+
+    store.setEdgeSetHash(projectHash, newEdgeHash)
+  }
+
   const finalStorageUsed = store.getCollectionStorageSize('codebase')
+  log('codebase', 'Index complete: ' + filesIndexed + ' indexed, ' + filesSkippedUnchanged + ' unchanged, ' + chunksCreated + ' chunks')
   return {
     filesScanned: files.length,
     filesIndexed,
@@ -365,6 +422,7 @@ export async function embedPendingCodebase(
     const texts = allChunks.map(c => c.text)
     const modelName = embedder.getModel?.() || 'unknown'
 
+    log('codebase', 'Embedding batch: ' + batch.length + ' docs, ' + allChunks.length + ' chunks')
     console.error(`[embed] Batch ${batch.length} docs, ${allChunks.length} chunks`)
     try {
       if (embedder.embedBatch && texts.length > 1) {
@@ -380,6 +438,7 @@ export async function embedPendingCodebase(
       }
       embedded += batch.length
     } catch (err) {
+      log('codebase', 'Batch embedding failed, falling back to sequential')
       console.warn('[embed] Batch failed, falling back to sequential:', err)
       const succeededHashes = new Set<string>()
       for (let i = 0; i < allChunks.length; i++) {
@@ -396,6 +455,7 @@ export async function embedPendingCodebase(
       for (const row of batch) {
         if (!succeededHashes.has(row.hash)) {
           failedHashes.add(row.hash)
+          log('codebase', 'All chunks failed for hash ' + row.hash.substring(0, 8))
           console.warn(`[embed] All chunks failed for ${row.path} (${row.hash.substring(0, 8)}…) — skipping, FTS still covers it`)
         }
       }

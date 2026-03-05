@@ -31,6 +31,10 @@ All memory operations use the `npx nano-brain` CLI via the Bash tool.
 - `--json` — Output as JSON
 - `--files` — Show file paths only
 - `--min-score=<n>` — Minimum score threshold
+- `--scope=all` — Search across all workspaces
+- `--tags=<comma-separated>` — Filter by tags (AND logic)
+- `--since=<date>` — Filter by date (ISO format)
+- `--until=<date>` — Filter by date (ISO format)
 
 ### Retrieval
 
@@ -49,22 +53,26 @@ All memory operations use the `npx nano-brain` CLI via the Bash tool.
 | `npx nano-brain harvest` | Harvest past AI sessions into searchable markdown |
 | `npx nano-brain embed` | Generate embeddings for unembedded chunks |
 | `npx nano-brain init --root=<path>` | Re-index a workspace |
+| `npx nano-brain write "content" [--supersedes=<path-or-docid>] [--tags=<tags>]` | Write to daily log |
+| `npx nano-brain focus <filepath>` | Show file dependencies, dependents, centrality, cluster |
+| `npx nano-brain graph-stats` | Show import graph statistics (nodes, edges, clusters, top centrality, cycles) |
+| `npx nano-brain tags` | List all tags with counts |
+| `npx nano-brain symbols [--type=<type>] [--pattern=<glob>] [--repo=<name>] [--operation=<op>]` | Query cross-repo symbols |
+| `npx nano-brain impact --type=<type> --pattern=<pattern>` | Cross-repo impact analysis |
 
 ### Writing Notes
 
-There is no CLI write command. To save a note, create a markdown file directly:
+Use the `write` command to save notes with optional tags and supersede old information:
 
 ```bash
-# Save a decision or insight
-cat > ~/.nano-brain/memory/$(date +%Y-%m-%d)-topic.md << 'EOF'
-## Summary
-- Decision: ...
-- Why: ...
-- Files: ...
-EOF
+# Save a decision with tags
+npx nano-brain write "Decision: Use Redis for session storage. Why: Better performance than DB." --tags=decision,redis
+
+# Supersede old information
+npx nano-brain write "Updated: Now using Redis Cluster" --supersedes=~/.nano-brain/memory/2026-03-01-redis.md --tags=decision,redis
 ```
 
-Then run `npx nano-brain update` to index the new file.
+Alternatively, create a markdown file directly and run `npx nano-brain update` to index it.
 
 ## When to Use Memory
 
@@ -98,6 +106,18 @@ Omit `-c` to search everything (recommended for most queries).
 | Exact code patterns, AST structure, precise matches | **grep, ast-grep, glob** |
 
 They complement each other. Use both.
+
+## MCP Tools
+
+Available via the nano-brain MCP server:
+
+| Tool | Purpose |
+|------|---------|
+| `memory_focus` | File dependency neighborhood (dependencies, dependents, centrality, cluster) |
+| `memory_graph_stats` | Import graph statistics (nodes, edges, clusters, top centrality, cycles) |
+| `memory_tags` | List all tags with counts |
+| `memory_symbols` | Query cross-repo symbols (Redis keys, API endpoints, DB tables, etc.) |
+| `memory_impact` | Cross-repo impact analysis (writers vs readers, publishers vs subscribers) |
 
 ## Troubleshooting
 
