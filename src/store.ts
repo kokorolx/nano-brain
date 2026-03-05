@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import type { Store, Document, SearchResult, IndexHealth, StoreSearchOptions } from './types.js';
+import type { VectorStore } from './vector-store.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -26,6 +27,7 @@ export function createStore(dbPath: string): Store {
   db.pragma('foreign_keys = ON');
   
   let vecAvailable = false;
+  let vectorStore: VectorStore | null = null;
   
   try {
     sqliteVec.load(db);
@@ -672,6 +674,72 @@ export function createStore(dbPath: string): Store {
         console.warn('Vector search failed:', err);
         return [];
       }
+    },
+    
+    setVectorStore(vs: VectorStore): void {
+      vectorStore = vs;
+    },
+    
+    async searchVecAsync(query: string, embedding: number[], options: StoreSearchOptions = {}): Promise<SearchResult[]> {
+      const { limit = 10, collection, projectHash, tags, since, until } = options;
+      
+      if (vectorStore) {
+        try {
+          const vecResults = await vectorStore.search(embedding, { limit, collection, projectHash });
+          if (vecResults.length === 0) return [];
+          
+          const results: SearchResult[] = [];
+          for (const vr of vecResults) {
+            const row = db.prepare(`
+              SELECT d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
+                     d.centrality, d.cluster_id, d.superseded_by, d.modified_at,
+                     substr(c.body, 1, 700) as snippet
+              FROM documents d
+              LEFT JOIN content c ON c.hash = d.hash
+              WHERE d.hash = ? AND d.active = 1
+              LIMIT 1
+            `).get(vr.hash) as Record<string, unknown> | undefined;
+            
+            if (!row) continue;
+            
+            if (collection && row.collection !== collection) continue;
+            if (projectHash && projectHash !== 'all' && row.project_hash !== projectHash && row.project_hash !== 'global') continue;
+            if (since && (row.modified_at as string) < since) continue;
+            if (until && (row.modified_at as string) > until) continue;
+            if (tags && tags.length > 0) {
+              const tagCount = (db.prepare(`
+                SELECT COUNT(DISTINCT tag) as cnt FROM document_tags 
+                WHERE document_id = ? AND tag IN (${tags.map(() => '?').join(',')})
+              `).get(row.id, ...tags.map(t => t.toLowerCase().trim())) as { cnt: number }).cnt;
+              if (tagCount < tags.length) continue;
+            }
+            
+            results.push({
+              id: String(row.id),
+              path: row.path as string,
+              collection: row.collection as string,
+              title: row.title as string,
+              snippet: (row.snippet as string) || '',
+              score: vr.score,
+              startLine: 0,
+              endLine: 0,
+              docid: (row.hash as string).substring(0, 6),
+              agent: row.agent as string | undefined,
+              projectHash: projectHash === 'all' ? (row.project_hash as string | undefined) : undefined,
+              centrality: row.centrality as number | undefined,
+              clusterId: row.cluster_id as number | undefined,
+              supersededBy: row.superseded_by as number | null | undefined,
+            });
+          }
+          
+          log('store', 'searchVecAsync(qdrant) query=' + query + ' results=' + results.length);
+          return results;
+        } catch (err) {
+          console.warn('Qdrant vector search failed, falling back to SQLite:', err);
+        }
+      }
+      
+      return this.searchVec(query, embedding, options);
     },
     
     getCachedResult(hash: string, projectHash: string = 'global'): string | null {

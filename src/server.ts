@@ -18,6 +18,7 @@ import { createReranker } from './reranker.js';
 import { startWatcher } from './watcher.js';
 import { parseStorageConfig } from './storage.js';
 import { indexCodebase, getCodebaseStats, embedPendingCodebase } from './codebase.js'
+import { createVectorStore, type VectorStore } from './vector-store.js'
 
 export interface ServerOptions {
   dbPath: string;
@@ -191,7 +192,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
             embedding = result.embedding;
             store.setQueryEmbeddingCache(query, embedding);
           }
-          const results = store.searchVec(query, embedding, searchOpts);
+          const results = await store.searchVecAsync(query, embedding, searchOpts);
           return {
             content: [
               {
@@ -914,6 +915,30 @@ export async function startServer(options: ServerOptions): Promise<void> {
   console.error(`[memory] Database: ${effectiveDbPath}`);
   log('server', 'Config path=' + finalConfigPath);
   const store = createStore(effectiveDbPath);
+  
+  let vectorStore: VectorStore | null = null;
+  if (config?.vector?.provider === 'qdrant') {
+    try {
+      vectorStore = createVectorStore(config.vector);
+      vectorStore.health().then((health) => {
+        log('server', 'vector provider=' + health.provider + ' ok=' + health.ok + ' vectors=' + health.vectorCount);
+        console.error(`[memory] Vector store: ${health.provider} (ok=${health.ok}, vectors=${health.vectorCount})`);
+      }).catch((err) => {
+        log('server', 'vector health check failed error=' + (err instanceof Error ? err.message : String(err)));
+        console.error(`[memory] Vector store health check failed:`, err);
+      });
+    } catch (err) {
+      log('server', 'vector store creation failed error=' + (err instanceof Error ? err.message : String(err)));
+      console.error(`[memory] Vector store creation failed:`, err);
+    }
+  } else {
+    log('server', 'vector provider=sqlite-vec (default)');
+    console.error(`[memory] Vector store: sqlite-vec (default)`);
+  }
+  
+  if (vectorStore) {
+    store.setVectorStore(vectorStore);
+  }
   
   let embedder: SearchProviders['embedder'] = null;
   let reranker: SearchProviders['reranker'] = null;

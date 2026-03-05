@@ -125,6 +125,15 @@ export function searchVec(
   return store.searchVec(query, embedding, options);
 }
 
+export async function searchVecAsync(
+  store: Store,
+  query: string,
+  embedding: number[],
+  options?: StoreSearchOptions
+): Promise<SearchResult[]> {
+  return store.searchVecAsync(query, embedding, options);
+}
+
 export function rrfFuse(
   resultSets: SearchResult[][],
   k: number = 60,
@@ -348,7 +357,7 @@ export async function hybridSearch(
           embedding = result.embedding;
           store.setQueryEmbeddingCache(q, embedding);
         }
-        vecResults = store.searchVec(q, embedding, searchOpts);
+        vecResults = await store.searchVecAsync(q, embedding, searchOpts);
       } catch {
       }
     }
