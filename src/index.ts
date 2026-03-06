@@ -163,6 +163,9 @@ nano-brain - Memory system with hybrid search
       --workspace=<path>  Migrate specific workspace only
       --batch-size=<n>    Vectors per batch (default: 500)
       --dry-run           Show counts without migrating
+      --activate          Switch to Qdrant provider after migration
+    activate        Switch config to use Qdrant as vector provider
+    cleanup         Drop SQLite vector tables (requires Qdrant active with vectors)
 Logging Config (~/.nano-brain/config.yml):
   logging:
     enabled: true               # enable file logging (or use NANO_BRAIN_LOG=1 env)
@@ -1333,7 +1336,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
   const subcommand = commandArgs[0];
 
   if (!subcommand) {
-    console.error('Missing qdrant subcommand (up, down, status, migrate)');
+    console.error('Missing qdrant subcommand (up, down, status, migrate, activate, cleanup)');
     process.exit(1);
   }
 
@@ -1418,6 +1421,19 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
     }
 
     case 'status': {
+      const config = loadCollectionConfig(globalOpts.configPath);
+      const vectorConfig = config?.vector;
+      const currentProvider = vectorConfig?.provider || 'sqlite-vec';
+
+      console.log('Qdrant Status');
+      console.log('═══════════════════════════════════════════════════');
+      if (currentProvider === 'qdrant') {
+        console.log(`Active provider: qdrant ✓`);
+      } else {
+        console.log(`Active provider: sqlite-vec (default)`);
+      }
+      console.log('');
+
       let containerStatus = 'unknown';
       try {
         const output = execSync(`docker compose -f "${composeTarget}" ps --format json`, { encoding: 'utf-8' });
@@ -1436,12 +1452,8 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         containerStatus = 'not running';
       }
 
-      console.log('Qdrant Status');
-      console.log('═══════════════════════════════════════════════════');
       console.log(`Container: ${containerStatus}`);
 
-      const config = loadCollectionConfig(globalOpts.configPath);
-      const vectorConfig = config?.vector;
       const qdrantUrl = vectorConfig?.url || 'http://localhost:6333';
       const resolvedUrl = resolveHostUrl(qdrantUrl);
 
@@ -1473,9 +1485,6 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         }
         console.log('   Run `npx nano-brain qdrant up` to start.');
       }
-
-      console.log('');
-      console.log(`Config provider: ${vectorConfig?.provider || 'sqlite-vec (default)'}`);
       break;
     }
 
@@ -1483,6 +1492,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       let workspaceFilter: string | undefined;
       let batchSize = 500;
       let dryRun = false;
+      let activateAfter = false;
 
       for (const arg of commandArgs.slice(1)) {
         if (arg.startsWith('--workspace=')) {
@@ -1491,6 +1501,8 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           batchSize = parseInt(arg.substring(13), 10);
         } else if (arg === '--dry-run') {
           dryRun = true;
+        } else if (arg === '--activate') {
+          activateAfter = true;
         }
       }
 
@@ -1650,13 +1662,186 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         console.log(`\n📊 Dry-run complete: ${totalVectors} vectors in ${dbCount} database(s)`);
       } else {
         console.log(`\n✅ Migrated ${totalVectors} vectors from ${dbCount} database(s) in ${elapsed}s`);
+
+        const currentProvider = config?.vector?.provider || 'sqlite-vec';
+        if (currentProvider !== 'qdrant') {
+          if (activateAfter) {
+            let updatedConfig = loadCollectionConfig(globalOpts.configPath);
+            if (!updatedConfig) {
+              updatedConfig = { collections: {} };
+            }
+            const newVectorConfig: VectorConfigSection = {
+              provider: 'qdrant',
+              url: vectorConfig?.url || 'http://localhost:6333',
+              collection: vectorConfig?.collection || 'nano-brain',
+            };
+            updatedConfig.vector = newVectorConfig;
+            saveCollectionConfig(globalOpts.configPath, updatedConfig);
+            console.log('\n✅ Switched to Qdrant provider');
+          } else {
+            console.log(`\nProvider is currently: ${currentProvider}`);
+            console.log('To use Qdrant for searches, run: npx nano-brain qdrant activate');
+            console.log('Or re-run with: npx nano-brain qdrant migrate --activate');
+          }
+        }
       }
+      break;
+    }
+
+    case 'activate': {
+      const config = loadCollectionConfig(globalOpts.configPath);
+      const vectorConfig = config?.vector;
+      const qdrantUrl = vectorConfig?.url || 'http://localhost:6333';
+      const resolvedUrl = resolveHostUrl(qdrantUrl);
+
+      try {
+        const healthRes = await fetch(`${resolvedUrl}/healthz`);
+        if (!healthRes.ok) {
+          throw new Error(`HTTP ${healthRes.status}`);
+        }
+      } catch {
+        console.error(`❌ Qdrant is not reachable at ${resolvedUrl}.`);
+        console.error('   Run `npx nano-brain qdrant up` first.');
+        process.exit(1);
+      }
+
+      let updatedConfig = loadCollectionConfig(globalOpts.configPath);
+      if (!updatedConfig) {
+        updatedConfig = { collections: {} };
+      }
+      const newVectorConfig: VectorConfigSection = {
+        provider: 'qdrant',
+        url: qdrantUrl,
+        collection: vectorConfig?.collection || 'nano-brain',
+      };
+      updatedConfig.vector = newVectorConfig;
+      saveCollectionConfig(globalOpts.configPath, updatedConfig);
+
+      console.log('✅ Switched to Qdrant provider');
+      console.log(`   URL: ${qdrantUrl}`);
+      console.log(`   Collection: ${newVectorConfig.collection}`);
+      break;
+    }
+
+    case 'cleanup': {
+      const config = loadCollectionConfig(globalOpts.configPath);
+      const vectorConfig = config?.vector;
+      const currentProvider = vectorConfig?.provider || 'sqlite-vec';
+
+      if (currentProvider !== 'qdrant') {
+        console.error('❌ Cannot cleanup: provider is not set to qdrant');
+        console.error(`   Current provider: ${currentProvider}`);
+        console.error('   Run `npx nano-brain qdrant activate` first.');
+        process.exit(1);
+      }
+
+      const qdrantUrl = vectorConfig?.url || 'http://localhost:6333';
+      const resolvedUrl = resolveHostUrl(qdrantUrl);
+
+      try {
+        const healthRes = await fetch(`${resolvedUrl}/healthz`);
+        if (!healthRes.ok) {
+          throw new Error(`HTTP ${healthRes.status}`);
+        }
+      } catch {
+        console.error(`❌ Qdrant is not reachable at ${resolvedUrl}.`);
+        console.error('   Cannot cleanup without verifying Qdrant has vectors.');
+        process.exit(1);
+      }
+
+      let pointsCount = 0;
+      try {
+        const collectionRes = await fetch(`${resolvedUrl}/collections/nano-brain`);
+        if (collectionRes.ok) {
+          const collectionData = await collectionRes.json();
+          const result = collectionData.result || collectionData;
+          pointsCount = result.points_count ?? result.vectors_count ?? 0;
+        }
+      } catch {
+        console.error('❌ Failed to check Qdrant collection');
+        process.exit(1);
+      }
+
+      if (pointsCount === 0) {
+        console.error('❌ Cannot cleanup: Qdrant collection has no vectors');
+        console.error('   Run `npx nano-brain qdrant migrate` first to migrate vectors.');
+        process.exit(1);
+      }
+
+      console.log(`Qdrant has ${pointsCount} vectors. Proceeding with SQLite cleanup...`);
+
+      const dataDir = DEFAULT_DB_DIR;
+      if (!fs.existsSync(dataDir)) {
+        console.log('No databases found in ' + dataDir);
+        return;
+      }
+
+      const sqliteFiles = fs.readdirSync(dataDir).filter(f => f.endsWith('.sqlite'));
+      if (sqliteFiles.length === 0) {
+        console.log('No SQLite databases found');
+        return;
+      }
+
+      const Database = (await import('better-sqlite3')).default;
+      const sqliteVec = await import('sqlite-vec');
+
+      let cleanedCount = 0;
+      let totalSpaceSaved = 0;
+
+      for (const sqliteFile of sqliteFiles) {
+        const dbPath = path.join(dataDir, sqliteFile);
+        const statBefore = fs.statSync(dbPath);
+        const db = new Database(dbPath);
+
+        try {
+          sqliteVec.load(db);
+        } catch {
+          console.log(`[${sqliteFile}] sqlite-vec not available, skipping`);
+          db.close();
+          continue;
+        }
+
+        let hasVectorTables = false;
+        try {
+          const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('vectors_vec', 'content_vectors')").all() as Array<{ name: string }>;
+          hasVectorTables = tables.length > 0;
+        } catch {
+          db.close();
+          continue;
+        }
+
+        if (!hasVectorTables) {
+          console.log(`[${sqliteFile}] no vector tables, skipping`);
+          db.close();
+          continue;
+        }
+
+        try {
+          db.exec('DROP TABLE IF EXISTS vectors_vec');
+          db.exec('DELETE FROM content_vectors');
+          db.exec('VACUUM');
+          cleanedCount++;
+
+          const statAfter = fs.statSync(dbPath);
+          const spaceSaved = statBefore.size - statAfter.size;
+          totalSpaceSaved += Math.max(0, spaceSaved);
+
+          console.log(`[${sqliteFile}] cleaned`);
+        } catch (err) {
+          console.error(`[${sqliteFile}] cleanup failed:`, err);
+        }
+
+        db.close();
+      }
+
+      const spaceMB = (totalSpaceSaved / (1024 * 1024)).toFixed(2);
+      console.log(`\n✅ Cleaned ${cleanedCount} database(s), ~${spaceMB} MB freed`);
       break;
     }
 
     default:
       console.error(`Unknown qdrant subcommand: ${subcommand}`);
-      console.error('Available: up, down, status, migrate');
+      console.error('Available: up, down, status, migrate, activate, cleanup');
       process.exit(1);
   }
 }
