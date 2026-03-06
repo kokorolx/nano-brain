@@ -13,6 +13,9 @@ export interface SearchResult {
   centrality?: number;
   clusterId?: number;
   supersededBy?: number | null;
+  symbols?: string[];
+  clusterLabel?: string;
+  flowCount?: number;
 }
 
 export interface Document {

@@ -135,6 +135,59 @@ export function createStore(dbPath: string): Store {
     );
     CREATE INDEX IF NOT EXISTS idx_symbols_type_pattern ON symbols(type, pattern);
     CREATE INDEX IF NOT EXISTS idx_symbols_repo ON symbols(repo);
+
+    CREATE TABLE IF NOT EXISTS code_symbols (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      start_line INTEGER NOT NULL,
+      end_line INTEGER NOT NULL,
+      exported INTEGER NOT NULL DEFAULT 0,
+      content_hash TEXT NOT NULL,
+      project_hash TEXT NOT NULL DEFAULT 'global',
+      cluster_id INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_code_symbols_file ON code_symbols(file_path, project_hash);
+    CREATE INDEX IF NOT EXISTS idx_code_symbols_name ON code_symbols(name, kind);
+    CREATE INDEX IF NOT EXISTS idx_code_symbols_project ON code_symbols(project_hash);
+
+    CREATE TABLE IF NOT EXISTS symbol_edges (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_id INTEGER NOT NULL,
+      target_id INTEGER NOT NULL,
+      edge_type TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 1.0,
+      project_hash TEXT NOT NULL DEFAULT 'global',
+      FOREIGN KEY (source_id) REFERENCES code_symbols(id) ON DELETE CASCADE,
+      FOREIGN KEY (target_id) REFERENCES code_symbols(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_symbol_edges_source ON symbol_edges(source_id);
+    CREATE INDEX IF NOT EXISTS idx_symbol_edges_target ON symbol_edges(target_id);
+    CREATE INDEX IF NOT EXISTS idx_symbol_edges_type ON symbol_edges(edge_type);
+
+    CREATE TABLE IF NOT EXISTS execution_flows (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      label TEXT NOT NULL,
+      flow_type TEXT NOT NULL,
+      entry_symbol_id INTEGER NOT NULL,
+      terminal_symbol_id INTEGER NOT NULL,
+      step_count INTEGER NOT NULL,
+      project_hash TEXT NOT NULL DEFAULT 'global',
+      FOREIGN KEY (entry_symbol_id) REFERENCES code_symbols(id) ON DELETE CASCADE,
+      FOREIGN KEY (terminal_symbol_id) REFERENCES code_symbols(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_execution_flows_project ON execution_flows(project_hash);
+
+    CREATE TABLE IF NOT EXISTS flow_steps (
+      flow_id INTEGER NOT NULL,
+      symbol_id INTEGER NOT NULL,
+      step_index INTEGER NOT NULL,
+      PRIMARY KEY (flow_id, step_index),
+      FOREIGN KEY (flow_id) REFERENCES execution_flows(id) ON DELETE CASCADE,
+      FOREIGN KEY (symbol_id) REFERENCES code_symbols(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_flow_steps_symbol ON flow_steps(symbol_id);
   `);
   
   const hasProjectHash = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'project_hash');

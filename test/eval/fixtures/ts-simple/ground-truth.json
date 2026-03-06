@@ -1,0 +1,176 @@
+{
+  "symbols": [
+    { "name": "Logger", "kind": "class", "filePath": "index.ts", "startLine": 21, "exported": true },
+    { "name": "Logger.constructor", "kind": "method", "filePath": "index.ts", "startLine": 24, "exported": false },
+    { "name": "Logger.log", "kind": "method", "filePath": "index.ts", "startLine": 28, "exported": false },
+    { "name": "Logger.error", "kind": "method", "filePath": "index.ts", "startLine": 32, "exported": false },
+    { "name": "globalLogger", "kind": "variable", "filePath": "index.ts", "startLine": 37, "exported": false },
+    { "name": "sanitizeString", "kind": "function", "filePath": "index.ts", "startLine": 39, "exported": false },
+    { "name": "validateInput", "kind": "function", "filePath": "index.ts", "startLine": 43, "exported": false },
+    { "name": "transformData", "kind": "function", "filePath": "index.ts", "startLine": 53, "exported": false },
+    { "name": "enrichData", "kind": "function", "filePath": "index.ts", "startLine": 60, "exported": false },
+    { "name": "processData", "kind": "function", "filePath": "index.ts", "startLine": 68, "exported": true },
+    { "name": "formatResponse", "kind": "function", "filePath": "index.ts", "startLine": 74, "exported": false },
+    { "name": "handleRequest", "kind": "function", "filePath": "index.ts", "startLine": 81, "exported": true },
+    { "name": "createMockRequest", "kind": "function", "filePath": "index.ts", "startLine": 87, "exported": false },
+    { "name": "initApp", "kind": "function", "filePath": "index.ts", "startLine": 94, "exported": true },
+    { "name": "processAsync", "kind": "function", "filePath": "index.ts", "startLine": 102, "exported": true }
+  ],
+  "edges": [
+    {
+      "source": "index.ts:Logger.error",
+      "target": "index.ts:Logger.log",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 }
+    },
+    {
+      "source": "index.ts:validateInput",
+      "target": "index.ts:Logger.error",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 },
+      "note": "globalLogger.error call"
+    },
+    {
+      "source": "index.ts:validateInput",
+      "target": "index.ts:sanitizeString",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 }
+    },
+    {
+      "source": "index.ts:enrichData",
+      "target": "index.ts:Logger.log",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 },
+      "note": "globalLogger.log call"
+    },
+    {
+      "source": "index.ts:processData",
+      "target": "index.ts:transformData",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 }
+    },
+    {
+      "source": "index.ts:processData",
+      "target": "index.ts:enrichData",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 }
+    },
+    {
+      "source": "index.ts:handleRequest",
+      "target": "index.ts:validateInput",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 }
+    },
+    {
+      "source": "index.ts:handleRequest",
+      "target": "index.ts:processData",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 }
+    },
+    {
+      "source": "index.ts:handleRequest",
+      "target": "index.ts:formatResponse",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 }
+    },
+    {
+      "source": "index.ts:initApp",
+      "target": "index.ts:Logger.constructor",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 },
+      "note": "new Logger() instantiation"
+    },
+    {
+      "source": "index.ts:initApp",
+      "target": "index.ts:Logger.log",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 },
+      "note": "logger.log calls (lines 96, 99)"
+    },
+    {
+      "source": "index.ts:initApp",
+      "target": "index.ts:createMockRequest",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 }
+    },
+    {
+      "source": "index.ts:initApp",
+      "target": "index.ts:handleRequest",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 }
+    },
+    {
+      "source": "index.ts:processAsync",
+      "target": "index.ts:Logger.log",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 },
+      "note": "globalLogger.log call"
+    },
+    {
+      "source": "index.ts:processAsync",
+      "target": "index.ts:processData",
+      "edgeType": "CALLS",
+      "expectedConfidence": { "min": 0.95, "max": 1.0 }
+    }
+  ],
+  "flows": [
+    {
+      "label": "initApp request handling chain",
+      "flowType": "intra_community",
+      "entrySymbol": "index.ts:initApp",
+      "terminalSymbol": "index.ts:formatResponse",
+      "expectedSteps": [
+        "index.ts:initApp",
+        "index.ts:handleRequest",
+        "index.ts:processData",
+        "index.ts:formatResponse"
+      ]
+    },
+    {
+      "label": "initApp validation chain",
+      "flowType": "intra_community",
+      "entrySymbol": "index.ts:initApp",
+      "terminalSymbol": "index.ts:sanitizeString",
+      "expectedSteps": [
+        "index.ts:initApp",
+        "index.ts:handleRequest",
+        "index.ts:validateInput",
+        "index.ts:sanitizeString"
+      ]
+    },
+    {
+      "label": "initApp data transformation chain",
+      "flowType": "intra_community",
+      "entrySymbol": "index.ts:initApp",
+      "terminalSymbol": "index.ts:transformData",
+      "expectedSteps": [
+        "index.ts:initApp",
+        "index.ts:handleRequest",
+        "index.ts:processData",
+        "index.ts:transformData"
+      ]
+    },
+    {
+      "label": "processAsync transformation chain",
+      "flowType": "intra_community",
+      "entrySymbol": "index.ts:processAsync",
+      "terminalSymbol": "index.ts:transformData",
+      "expectedSteps": [
+        "index.ts:processAsync",
+        "index.ts:processData",
+        "index.ts:transformData"
+      ]
+    },
+    {
+      "label": "processAsync enrichment chain",
+      "flowType": "intra_community",
+      "entrySymbol": "index.ts:processAsync",
+      "terminalSymbol": "index.ts:enrichData",
+      "expectedSteps": [
+        "index.ts:processAsync",
+        "index.ts:processData",
+        "index.ts:enrichData"
+      ]
+    }
+  ]
+}

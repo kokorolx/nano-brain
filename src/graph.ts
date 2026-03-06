@@ -1,6 +1,7 @@
 import * as path from 'path'
 import * as fs from 'fs'
 import * as crypto from 'crypto'
+import type Database from 'better-sqlite3'
 
 export type SupportedLanguage = 'js' | 'ts' | 'python' | 'ruby'
 
@@ -499,4 +500,209 @@ export function findCycles(
     if (a.length !== b.length) return a.length - b.length
     return a.join('\0').localeCompare(b.join('\0'))
   })
+}
+
+export function clusterSymbols(
+  db: Database.Database,
+  projectHash: string
+): { clusterCount: number; symbolsAssigned: number } {
+  const symbols = db.prepare(`
+    SELECT id, name, kind, file_path as filePath
+    FROM code_symbols
+    WHERE project_hash = ?
+  `).all(projectHash) as Array<{ id: number; name: string; kind: string; filePath: string }>
+
+  const callEdges = db.prepare(`
+    SELECT source_id, target_id
+    FROM symbol_edges
+    WHERE project_hash = ? AND edge_type = 'CALLS'
+  `).all(projectHash) as Array<{ source_id: number; target_id: number }>
+
+  if (symbols.length < 5 || callEdges.length === 0) {
+    return { clusterCount: 0, symbolsAssigned: 0 }
+  }
+
+  const edges = callEdges.map(e => ({
+    source: String(e.source_id),
+    target: String(e.target_id),
+  }))
+
+  const clusters = louvainClusteringSymbols(edges, symbols.length)
+
+  if (clusters.size === 0) {
+    return { clusterCount: 0, symbolsAssigned: 0 }
+  }
+
+  const updateStmt = db.prepare(`
+    UPDATE code_symbols SET cluster_id = ? WHERE id = ? AND project_hash = ?
+  `)
+
+  let symbolsAssigned = 0
+  for (const [symbolIdStr, clusterId] of clusters) {
+    const symbolId = parseInt(symbolIdStr, 10)
+    updateStmt.run(clusterId, symbolId, projectHash)
+    symbolsAssigned++
+  }
+
+  const uniqueClusters = new Set(clusters.values())
+  return { clusterCount: uniqueClusters.size, symbolsAssigned }
+}
+
+function louvainClusteringSymbols(
+  edges: Array<{ source: string; target: string }>,
+  nodeCount: number
+): Map<string, number> {
+  const nodes = new Set<string>()
+  for (const { source, target } of edges) {
+    nodes.add(source)
+    nodes.add(target)
+  }
+
+  if (nodes.size < 5) return new Map()
+
+  const nodeList = Array.from(nodes)
+  const nodeIndex = new Map<string, number>()
+  for (let i = 0; i < nodeList.length; i++) {
+    nodeIndex.set(nodeList[i], i)
+  }
+
+  const adj = new Map<number, Map<number, number>>()
+  const degree = new Array(nodeList.length).fill(0)
+  let totalWeight = 0
+
+  for (const { source, target } of edges) {
+    const i = nodeIndex.get(source)!
+    const j = nodeIndex.get(target)!
+    if (!adj.has(i)) adj.set(i, new Map())
+    if (!adj.has(j)) adj.set(j, new Map())
+    adj.get(i)!.set(j, (adj.get(i)!.get(j) ?? 0) + 1)
+    adj.get(j)!.set(i, (adj.get(j)!.get(i) ?? 0) + 1)
+    degree[i]++
+    degree[j]++
+    totalWeight++
+  }
+
+  const m2 = 2 * totalWeight
+  const community = new Array(nodeList.length).fill(0).map((_, i) => i)
+  const communitySum = [...degree]
+
+  let improved = true
+  while (improved) {
+    improved = false
+    for (let i = 0; i < nodeList.length; i++) {
+      const currentComm = community[i]
+      const neighbors = adj.get(i) ?? new Map()
+      const commWeights = new Map<number, number>()
+
+      for (const [j, w] of neighbors) {
+        const c = community[j]
+        commWeights.set(c, (commWeights.get(c) ?? 0) + w)
+      }
+
+      let bestComm = currentComm
+      let bestDelta = 0
+
+      const ki = degree[i]
+      const currentCommWeight = commWeights.get(currentComm) ?? 0
+      const currentSigma = communitySum[currentComm] - ki
+
+      for (const [c, kic] of commWeights) {
+        if (c === currentComm) continue
+        const sigma = communitySum[c]
+        const delta = (kic - currentCommWeight) / m2 - ki * (sigma - currentSigma) / (m2 * m2)
+        if (delta > bestDelta) {
+          bestDelta = delta
+          bestComm = c
+        }
+      }
+
+      if (bestComm !== currentComm) {
+        communitySum[currentComm] -= ki
+        communitySum[bestComm] += ki
+        community[i] = bestComm
+        improved = true
+      }
+    }
+  }
+
+  const uniqueComms = [...new Set(community)]
+  const commRemap = new Map<number, number>()
+  uniqueComms.forEach((c, idx) => commRemap.set(c, idx))
+
+  const result = new Map<string, number>()
+  for (let i = 0; i < nodeList.length; i++) {
+    result.set(nodeList[i], commRemap.get(community[i])!)
+  }
+
+  return result
+}
+
+export function getClusterLabels(
+  db: Database.Database,
+  projectHash: string
+): Map<number, string> {
+  const symbols = db.prepare(`
+    SELECT cluster_id, file_path, kind
+    FROM code_symbols
+    WHERE project_hash = ? AND cluster_id IS NOT NULL
+  `).all(projectHash) as Array<{ cluster_id: number; file_path: string; kind: string }>
+
+  const clusterData = new Map<number, Array<{ filePath: string; kind: string }>>()
+  for (const sym of symbols) {
+    if (!clusterData.has(sym.cluster_id)) {
+      clusterData.set(sym.cluster_id, [])
+    }
+    clusterData.get(sym.cluster_id)!.push({ filePath: sym.file_path, kind: sym.kind })
+  }
+
+  const labels = new Map<number, string>()
+
+  for (const [clusterId, members] of clusterData) {
+    const dirCounts = new Map<string, number>()
+    const kindCounts = new Map<string, number>()
+
+    for (const { filePath, kind } of members) {
+      const dir = path.dirname(filePath)
+      const dirName = path.basename(dir)
+      if (dirName && dirName !== '.') {
+        dirCounts.set(dirName, (dirCounts.get(dirName) ?? 0) + 1)
+      }
+      kindCounts.set(kind, (kindCounts.get(kind) ?? 0) + 1)
+    }
+
+    let dominantDir = ''
+    let maxDirCount = 0
+    for (const [dir, count] of dirCounts) {
+      if (count > maxDirCount) {
+        maxDirCount = count
+        dominantDir = dir
+      }
+    }
+
+    let dominantKind = ''
+    let maxKindCount = 0
+    for (const [kind, count] of kindCounts) {
+      if (count > maxKindCount) {
+        maxKindCount = count
+        dominantKind = kind
+      }
+    }
+
+    const dirDominance = maxDirCount / members.length
+
+    let label: string
+    if (dominantDir && dirDominance >= 0.5) {
+      label = dominantDir
+    } else if (dominantDir && dominantKind) {
+      label = `${dominantDir}-${dominantKind}s`
+    } else if (dominantKind) {
+      label = `cluster-${clusterId}-${dominantKind}s`
+    } else {
+      label = `cluster-${clusterId}`
+    }
+
+    labels.set(clusterId, label)
+  }
+
+  return labels
 }

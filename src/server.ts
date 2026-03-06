@@ -19,6 +19,8 @@ import { startWatcher } from './watcher.js';
 import { parseStorageConfig } from './storage.js';
 import { indexCodebase, getCodebaseStats, embedPendingCodebase } from './codebase.js'
 import { createVectorStore, type VectorStore } from './vector-store.js'
+import Database from 'better-sqlite3'
+import { SymbolGraph, type ContextResult, type ImpactResult, type DetectChangesResult } from './symbol-graph.js'
 
 export interface ServerOptions {
   dbPath: string;
@@ -39,6 +41,7 @@ export interface ServerDeps {
   workspaceRoot: string
   embeddingConfig?: EmbeddingConfig
   searchConfig?: SearchConfig
+  db?: Database.Database
 }
 
 export function formatSearchResults(results: SearchResult[]): string {
@@ -46,11 +49,23 @@ export function formatSearchResults(results: SearchResult[]): string {
     return 'No results found.';
   }
   
-  return results.map((r, i) => 
-    `### ${i + 1}. ${r.title} (${r.docid})\n` +
-    `**Path:** ${r.path} | **Score:** ${r.score.toFixed(3)} | **Lines:** ${r.startLine}-${r.endLine}\n\n` +
-    `${r.snippet}\n`
-  ).join('\n---\n\n');
+  return results.map((r, i) => {
+    let output = `### ${i + 1}. ${r.title} (${r.docid})\n` +
+      `**Path:** ${r.path} | **Score:** ${r.score.toFixed(3)} | **Lines:** ${r.startLine}-${r.endLine}\n`;
+    
+    if (r.symbols && r.symbols.length > 0) {
+      output += `**Symbols:** ${r.symbols.join(', ')}\n`;
+    }
+    if (r.clusterLabel) {
+      output += `**Cluster:** ${r.clusterLabel}\n`;
+    }
+    if (r.flowCount !== undefined && r.flowCount > 0) {
+      output += `**Flows:** ${r.flowCount}\n`;
+    }
+    
+    output += `\n${r.snippet}\n`;
+    return output;
+  }).join('\n---\n\n');
 }
 
 export function formatStatus(
@@ -245,7 +260,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       const parsedTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : undefined;
       const results = await hybridSearch(
         store,
-        { query, limit, collection, minScore, projectHash: effectiveWorkspace, tags: parsedTags, since, until, searchConfig: deps.searchConfig },
+        { query, limit, collection, minScore, projectHash: effectiveWorkspace, tags: parsedTags, since, until, searchConfig: deps.searchConfig, db: deps.db },
         providers
       );
       
@@ -822,6 +837,221 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       };
     }
   );
+
+  server.tool(
+    'code_context',
+    '360-degree view of a code symbol — callers, callees, cluster, flows, infrastructure connections',
+    {
+      name: z.string().describe('Symbol name (function, class, method, interface)'),
+      file_path: z.string().optional().describe('File path to disambiguate common names'),
+    },
+    async ({ name, file_path }) => {
+      log('mcp', 'code_context name="' + name + '" file_path="' + (file_path || '') + '"');
+
+      if (!deps.db) {
+        return {
+          content: [{ type: 'text', text: 'Symbol graph database not available.' }],
+          isError: true,
+        };
+      }
+
+      const graph = new SymbolGraph(deps.db);
+      const result = graph.handleContext({
+        name,
+        filePath: file_path,
+        projectHash: currentProjectHash,
+      });
+
+      if (!result.found && result.disambiguation) {
+        const lines = ['**Multiple symbols found. Please specify file_path:**', ''];
+        for (const s of result.disambiguation) {
+          lines.push(`- \`${s.name}\` (${s.kind}) in ${s.filePath}:${s.startLine}`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      if (!result.found) {
+        return { content: [{ type: 'text', text: `Symbol not found: ${name}` }] };
+      }
+
+      const lines: string[] = [];
+      const sym = result.symbol!;
+      lines.push(`## ${sym.name} (${sym.kind})`);
+      lines.push(`**File:** ${sym.filePath}:${sym.startLine}-${sym.endLine}`);
+      lines.push(`**Exported:** ${sym.exported ? 'Yes' : 'No'}`);
+      if (result.clusterLabel) {
+        lines.push(`**Cluster:** ${result.clusterLabel}`);
+      }
+      lines.push('');
+
+      if (result.incoming && result.incoming.length > 0) {
+        lines.push(`### Callers (${result.incoming.length})`);
+        for (const e of result.incoming) {
+          lines.push(`- ${e.name} (${e.kind}) — ${e.filePath} [${e.edgeType}, ${(e.confidence * 100).toFixed(0)}%]`);
+        }
+        lines.push('');
+      }
+
+      if (result.outgoing && result.outgoing.length > 0) {
+        lines.push(`### Callees (${result.outgoing.length})`);
+        for (const e of result.outgoing) {
+          lines.push(`- ${e.name} (${e.kind}) — ${e.filePath} [${e.edgeType}, ${(e.confidence * 100).toFixed(0)}%]`);
+        }
+        lines.push('');
+      }
+
+      if (result.flows && result.flows.length > 0) {
+        lines.push(`### Flows (${result.flows.length})`);
+        for (const f of result.flows) {
+          lines.push(`- ${f.label} (${f.flowType}) — step ${f.stepIndex}`);
+        }
+        lines.push('');
+      }
+
+      if (result.infrastructureSymbols && result.infrastructureSymbols.length > 0) {
+        lines.push(`### Infrastructure (${result.infrastructureSymbols.length})`);
+        for (const s of result.infrastructureSymbols) {
+          lines.push(`- [${s.type}] ${s.pattern} (${s.operation})`);
+        }
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    }
+  );
+
+  server.tool(
+    'code_impact',
+    'Analyze impact of changing a symbol — upstream/downstream dependencies, affected flows, risk level',
+    {
+      target: z.string().describe('Symbol name to analyze'),
+      direction: z.enum(['upstream', 'downstream']).describe('Direction: upstream (callers) or downstream (callees)'),
+      max_depth: z.number().optional().describe('Maximum traversal depth (default: 5)'),
+      min_confidence: z.number().optional().describe('Minimum edge confidence (0-1, default: 0)'),
+      file_path: z.string().optional().describe('File path to disambiguate common names'),
+    },
+    async ({ target, direction, max_depth, min_confidence, file_path }) => {
+      log('mcp', 'code_impact target="' + target + '" direction="' + direction + '"');
+
+      if (!deps.db) {
+        return {
+          content: [{ type: 'text', text: 'Symbol graph database not available.' }],
+          isError: true,
+        };
+      }
+
+      const graph = new SymbolGraph(deps.db);
+      const result = graph.handleImpact({
+        target,
+        direction,
+        maxDepth: max_depth,
+        minConfidence: min_confidence,
+        filePath: file_path,
+        projectHash: currentProjectHash,
+      });
+
+      if (!result.found && result.disambiguation) {
+        const lines = ['**Multiple symbols found. Please specify file_path:**', ''];
+        for (const s of result.disambiguation) {
+          lines.push(`- \`${s.name}\` (${s.kind}) in ${s.filePath}`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      if (!result.found) {
+        return { content: [{ type: 'text', text: `Symbol not found: ${target}` }] };
+      }
+
+      const lines: string[] = [];
+      const t = result.target!;
+      lines.push(`## Impact Analysis: ${t.name}`);
+      lines.push(`**Direction:** ${direction}`);
+      lines.push(`**Risk Level:** ${result.risk}`);
+      lines.push(`**Summary:** ${result.summary.directDeps} direct deps, ${result.summary.totalAffected} total affected, ${result.summary.flowsAffected} flows`);
+      lines.push('');
+
+      for (const [depth, deps] of Object.entries(result.byDepth)) {
+        if (deps.length > 0) {
+          lines.push(`### Depth ${depth} (${deps.length})`);
+          for (const d of deps) {
+            lines.push(`- ${d.name} (${d.kind}) — ${d.filePath} [${d.edgeType}]`);
+          }
+          lines.push('');
+        }
+      }
+
+      if (result.affectedFlows.length > 0) {
+        lines.push(`### Affected Flows (${result.affectedFlows.length})`);
+        for (const f of result.affectedFlows) {
+          lines.push(`- ${f.label} (${f.flowType}) — step ${f.stepIndex}`);
+        }
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    }
+  );
+
+  server.tool(
+    'code_detect_changes',
+    'Detect changed symbols and affected flows from git diff',
+    {
+      scope: z.enum(['unstaged', 'staged', 'all']).optional().describe('Git diff scope (default: all)'),
+    },
+    async ({ scope }) => {
+      log('mcp', 'code_detect_changes scope="' + (scope || 'all') + '"');
+
+      if (!deps.db) {
+        return {
+          content: [{ type: 'text', text: 'Symbol graph database not available.' }],
+          isError: true,
+        };
+      }
+
+      const graph = new SymbolGraph(deps.db);
+      const result = graph.handleDetectChanges({
+        scope,
+        workspaceRoot,
+        projectHash: currentProjectHash,
+      });
+
+      if (result.changedFiles.length === 0) {
+        return { content: [{ type: 'text', text: 'No changes detected.' }] };
+      }
+
+      const lines: string[] = [];
+      lines.push(`## Change Detection`);
+      lines.push(`**Risk Level:** ${result.riskLevel}`);
+      lines.push('');
+
+      lines.push(`### Changed Files (${result.changedFiles.length})`);
+      for (const f of result.changedFiles.slice(0, 20)) {
+        lines.push(`- ${f}`);
+      }
+      if (result.changedFiles.length > 20) {
+        lines.push(`... and ${result.changedFiles.length - 20} more`);
+      }
+      lines.push('');
+
+      if (result.changedSymbols.length > 0) {
+        lines.push(`### Changed Symbols (${result.changedSymbols.length})`);
+        for (const s of result.changedSymbols.slice(0, 30)) {
+          lines.push(`- ${s.name} (${s.kind}) — ${s.filePath}`);
+        }
+        if (result.changedSymbols.length > 30) {
+          lines.push(`... and ${result.changedSymbols.length - 30} more`);
+        }
+        lines.push('');
+      }
+
+      if (result.affectedFlows.length > 0) {
+        lines.push(`### Affected Flows (${result.affectedFlows.length})`);
+        for (const f of result.affectedFlows) {
+          lines.push(`- ${f.label} (${f.flowType})`);
+        }
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    }
+  );
   
   return server;
 }
@@ -915,6 +1145,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
   console.error(`[memory] Database: ${effectiveDbPath}`);
   log('server', 'Config path=' + finalConfigPath);
   const store = createStore(effectiveDbPath);
+  const symbolGraphDb = new Database(effectiveDbPath);
   
   let vectorStore: VectorStore | null = null;
   if (config?.vector?.provider === 'qdrant') {
@@ -967,6 +1198,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
     embeddingConfig: config?.embedding,
     workspaceRoot: resolvedWorkspaceRoot,
     searchConfig: parseSearchConfig(config?.search),
+    db: symbolGraphDb,
   };
   
   const server = createMcpServer(deps);
@@ -1010,6 +1242,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
       const currentPid = parseInt(fs.readFileSync(pidPath, 'utf-8').trim(), 10);
       if (currentPid === process.pid) removePidFile(pidPath);
     } catch { }
+    symbolGraphDb.close();
     store.close();
     process.exit(0);
   };

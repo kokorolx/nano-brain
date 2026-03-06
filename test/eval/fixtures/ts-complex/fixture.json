@@ -1,0 +1,4 @@
+{
+  "language": "typescript",
+  "description": "Multi-file TypeScript with classes, inheritance, re-exports, and cross-file calls"
+}

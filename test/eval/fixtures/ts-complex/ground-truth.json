@@ -1,0 +1,510 @@
+{
+  "symbols": [
+    {
+      "name": "generateId",
+      "kind": "function",
+      "filePath": "utils.ts",
+      "startLine": 1,
+      "exported": true
+    },
+    {
+      "name": "formatDate",
+      "kind": "function",
+      "filePath": "utils.ts",
+      "startLine": 5,
+      "exported": true
+    },
+    {
+      "name": "validateEmail",
+      "kind": "function",
+      "filePath": "utils.ts",
+      "startLine": 9,
+      "exported": true
+    },
+    {
+      "name": "createTimestamp",
+      "kind": "function",
+      "filePath": "utils.ts",
+      "startLine": 14,
+      "exported": true
+    },
+    {
+      "name": "sanitizeInput",
+      "kind": "function",
+      "filePath": "utils.ts",
+      "startLine": 18,
+      "exported": true
+    },
+    {
+      "name": "logMessage",
+      "kind": "function",
+      "filePath": "utils.ts",
+      "startLine": 22,
+      "exported": true
+    },
+    {
+      "name": "BaseService",
+      "kind": "class",
+      "filePath": "base-service.ts",
+      "startLine": 4,
+      "exported": true
+    },
+    {
+      "name": "BaseService.constructor",
+      "kind": "method",
+      "filePath": "base-service.ts",
+      "startLine": 8,
+      "exported": false
+    },
+    {
+      "name": "BaseService.log",
+      "kind": "method",
+      "filePath": "base-service.ts",
+      "startLine": 10,
+      "exported": false
+    },
+    {
+      "name": "BaseService.handleError",
+      "kind": "method",
+      "filePath": "base-service.ts",
+      "startLine": 18,
+      "exported": false
+    },
+    {
+      "name": "BaseService.getStatus",
+      "kind": "method",
+      "filePath": "base-service.ts",
+      "startLine": 25,
+      "exported": false
+    },
+    {
+      "name": "BaseService.setLogger",
+      "kind": "method",
+      "filePath": "base-service.ts",
+      "startLine": 29,
+      "exported": false
+    },
+    {
+      "name": "UserService",
+      "kind": "class",
+      "filePath": "user-service.ts",
+      "startLine": 5,
+      "exported": true
+    },
+    {
+      "name": "UserService.constructor",
+      "kind": "method",
+      "filePath": "user-service.ts",
+      "startLine": 8,
+      "exported": false
+    },
+    {
+      "name": "UserService.initialize",
+      "kind": "method",
+      "filePath": "user-service.ts",
+      "startLine": 12,
+      "exported": false
+    },
+    {
+      "name": "UserService.shutdown",
+      "kind": "method",
+      "filePath": "user-service.ts",
+      "startLine": 19,
+      "exported": false
+    },
+    {
+      "name": "UserService.doInitialize",
+      "kind": "method",
+      "filePath": "user-service.ts",
+      "startLine": 25,
+      "exported": false
+    },
+    {
+      "name": "UserService.doShutdown",
+      "kind": "method",
+      "filePath": "user-service.ts",
+      "startLine": 29,
+      "exported": false
+    },
+    {
+      "name": "UserService.createUser",
+      "kind": "method",
+      "filePath": "user-service.ts",
+      "startLine": 33,
+      "exported": false
+    },
+    {
+      "name": "UserService.getUser",
+      "kind": "method",
+      "filePath": "user-service.ts",
+      "startLine": 53,
+      "exported": false
+    },
+    {
+      "name": "UserService.listUsers",
+      "kind": "method",
+      "filePath": "user-service.ts",
+      "startLine": 57,
+      "exported": false
+    },
+    {
+      "name": "UserService.deleteUser",
+      "kind": "method",
+      "filePath": "user-service.ts",
+      "startLine": 61,
+      "exported": false
+    },
+    {
+      "name": "userService",
+      "kind": "variable",
+      "filePath": "api-handler.ts",
+      "startLine": 7,
+      "exported": false
+    },
+    {
+      "name": "initializeApi",
+      "kind": "function",
+      "filePath": "api-handler.ts",
+      "startLine": 9,
+      "exported": true
+    },
+    {
+      "name": "shutdownApi",
+      "kind": "function",
+      "filePath": "api-handler.ts",
+      "startLine": 13,
+      "exported": true
+    },
+    {
+      "name": "handleCreateUser",
+      "kind": "function",
+      "filePath": "api-handler.ts",
+      "startLine": 17,
+      "exported": true
+    },
+    {
+      "name": "handleGetUser",
+      "kind": "function",
+      "filePath": "api-handler.ts",
+      "startLine": 21,
+      "exported": true
+    },
+    {
+      "name": "handleListUsers",
+      "kind": "function",
+      "filePath": "api-handler.ts",
+      "startLine": 25,
+      "exported": true
+    },
+    {
+      "name": "handleDeleteUser",
+      "kind": "function",
+      "filePath": "api-handler.ts",
+      "startLine": 29,
+      "exported": true
+    },
+    {
+      "name": "validateUserInput",
+      "kind": "function",
+      "filePath": "api-handler.ts",
+      "startLine": 33,
+      "exported": true
+    },
+    {
+      "name": "formatUserResponse",
+      "kind": "function",
+      "filePath": "api-handler.ts",
+      "startLine": 47,
+      "exported": true
+    }
+  ],
+  "edges": [
+    {
+      "source": "user-service.ts:UserService",
+      "target": "base-service.ts:BaseService",
+      "edgeType": "EXTENDS"
+    },
+    {
+      "source": "utils.ts:logMessage",
+      "target": "utils.ts:formatDate",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "utils.ts:logMessage",
+      "target": "utils.ts:createTimestamp",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "base-service.ts:BaseService.log",
+      "target": "utils.ts:logMessage",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "base-service.ts:BaseService.handleError",
+      "target": "base-service.ts:BaseService.log",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "base-service.ts:BaseService.setLogger",
+      "target": "base-service.ts:BaseService.log",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "user-service.ts:UserService.initialize",
+      "target": "user-service.ts:UserService.doInitialize",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "user-service.ts:UserService.shutdown",
+      "target": "user-service.ts:UserService.doShutdown",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "user-service.ts:UserService.createUser",
+      "target": "utils.ts:sanitizeInput",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "user-service.ts:UserService.createUser",
+      "target": "utils.ts:validateEmail",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "user-service.ts:UserService.createUser",
+      "target": "utils.ts:generateId",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "user-service.ts:UserService.createUser",
+      "target": "utils.ts:createTimestamp",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "api-handler.ts:initializeApi",
+      "target": "user-service.ts:UserService.initialize",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "api-handler.ts:shutdownApi",
+      "target": "user-service.ts:UserService.shutdown",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "api-handler.ts:handleCreateUser",
+      "target": "user-service.ts:UserService.createUser",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "api-handler.ts:handleGetUser",
+      "target": "user-service.ts:UserService.getUser",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "api-handler.ts:handleListUsers",
+      "target": "user-service.ts:UserService.listUsers",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "api-handler.ts:handleDeleteUser",
+      "target": "user-service.ts:UserService.deleteUser",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "api-handler.ts:validateUserInput",
+      "target": "utils.ts:validateEmail",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "api-handler.ts:formatUserResponse",
+      "target": "utils.ts:formatDate",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    }
+  ],
+  "flows": [
+    {
+      "label": "initializeApi_flow",
+      "flowType": "cross_community",
+      "entrySymbol": "api-handler.ts:initializeApi",
+      "terminalSymbol": "user-service.ts:UserService.doInitialize",
+      "expectedSteps": [
+        "api-handler.ts:initializeApi",
+        "user-service.ts:UserService.initialize",
+        "user-service.ts:UserService.doInitialize"
+      ]
+    },
+    {
+      "label": "shutdownApi_flow",
+      "flowType": "cross_community",
+      "entrySymbol": "api-handler.ts:shutdownApi",
+      "terminalSymbol": "user-service.ts:UserService.doShutdown",
+      "expectedSteps": [
+        "api-handler.ts:shutdownApi",
+        "user-service.ts:UserService.shutdown",
+        "user-service.ts:UserService.doShutdown"
+      ]
+    },
+    {
+      "label": "handleCreateUser_flow",
+      "flowType": "cross_community",
+      "entrySymbol": "api-handler.ts:handleCreateUser",
+      "terminalSymbol": "utils.ts:createTimestamp",
+      "expectedSteps": [
+        "api-handler.ts:handleCreateUser",
+        "user-service.ts:UserService.createUser",
+        "utils.ts:sanitizeInput",
+        "utils.ts:validateEmail",
+        "utils.ts:generateId",
+        "utils.ts:createTimestamp"
+      ]
+    },
+    {
+      "label": "handleGetUser_flow",
+      "flowType": "cross_community",
+      "entrySymbol": "api-handler.ts:handleGetUser",
+      "terminalSymbol": "user-service.ts:UserService.getUser",
+      "expectedSteps": [
+        "api-handler.ts:handleGetUser",
+        "user-service.ts:UserService.getUser"
+      ]
+    },
+    {
+      "label": "handleListUsers_flow",
+      "flowType": "cross_community",
+      "entrySymbol": "api-handler.ts:handleListUsers",
+      "terminalSymbol": "user-service.ts:UserService.listUsers",
+      "expectedSteps": [
+        "api-handler.ts:handleListUsers",
+        "user-service.ts:UserService.listUsers"
+      ]
+    },
+    {
+      "label": "handleDeleteUser_flow",
+      "flowType": "cross_community",
+      "entrySymbol": "api-handler.ts:handleDeleteUser",
+      "terminalSymbol": "user-service.ts:UserService.deleteUser",
+      "expectedSteps": [
+        "api-handler.ts:handleDeleteUser",
+        "user-service.ts:UserService.deleteUser"
+      ]
+    },
+    {
+      "label": "validateUserInput_flow",
+      "flowType": "cross_community",
+      "entrySymbol": "api-handler.ts:validateUserInput",
+      "terminalSymbol": "utils.ts:validateEmail",
+      "expectedSteps": [
+        "api-handler.ts:validateUserInput",
+        "utils.ts:validateEmail"
+      ]
+    },
+    {
+      "label": "formatUserResponse_flow",
+      "flowType": "cross_community",
+      "entrySymbol": "api-handler.ts:formatUserResponse",
+      "terminalSymbol": "utils.ts:formatDate",
+      "expectedSteps": [
+        "api-handler.ts:formatUserResponse",
+        "utils.ts:formatDate"
+      ]
+    },
+    {
+      "label": "logMessage_flow",
+      "flowType": "intra_community",
+      "entrySymbol": "utils.ts:logMessage",
+      "terminalSymbol": "utils.ts:createTimestamp",
+      "expectedSteps": [
+        "utils.ts:logMessage",
+        "utils.ts:formatDate",
+        "utils.ts:createTimestamp"
+      ]
+    },
+    {
+      "label": "baseService_log_flow",
+      "flowType": "cross_community",
+      "entrySymbol": "base-service.ts:BaseService.log",
+      "terminalSymbol": "utils.ts:createTimestamp",
+      "expectedSteps": [
+        "base-service.ts:BaseService.log",
+        "utils.ts:logMessage",
+        "utils.ts:formatDate",
+        "utils.ts:createTimestamp"
+      ]
+    }
+  ]
+}

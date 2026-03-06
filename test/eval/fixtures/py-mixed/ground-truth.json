@@ -1,0 +1,257 @@
+{
+  "symbols": [
+    {
+      "name": "format_name",
+      "kind": "function",
+      "exported": true,
+      "filePath": "utils.py",
+      "startLine": 1
+    },
+    {
+      "name": "_sanitize",
+      "kind": "function",
+      "exported": false,
+      "filePath": "utils.py",
+      "startLine": 6
+    },
+    {
+      "name": "log_action",
+      "kind": "function",
+      "exported": true,
+      "filePath": "utils.py",
+      "startLine": 10
+    },
+    {
+      "name": "BaseService",
+      "kind": "class",
+      "exported": true,
+      "filePath": "service.py",
+      "startLine": 4
+    },
+    {
+      "name": "BaseService.__init__",
+      "kind": "method",
+      "exported": true,
+      "filePath": "service.py",
+      "startLine": 5
+    },
+    {
+      "name": "BaseService._validate",
+      "kind": "method",
+      "exported": false,
+      "filePath": "service.py",
+      "startLine": 8
+    },
+    {
+      "name": "UserService",
+      "kind": "class",
+      "exported": true,
+      "filePath": "service.py",
+      "startLine": 12
+    },
+    {
+      "name": "UserService.__init__",
+      "kind": "method",
+      "exported": true,
+      "filePath": "service.py",
+      "startLine": 13
+    },
+    {
+      "name": "UserService.get_user",
+      "kind": "method",
+      "exported": true,
+      "filePath": "service.py",
+      "startLine": 17
+    },
+    {
+      "name": "UserService.create_user",
+      "kind": "method",
+      "exported": true,
+      "filePath": "service.py",
+      "startLine": 23
+    },
+    {
+      "name": "logged",
+      "kind": "function",
+      "exported": true,
+      "filePath": "main.py",
+      "startLine": 5
+    },
+    {
+      "name": "wrapper",
+      "kind": "function",
+      "exported": true,
+      "filePath": "main.py",
+      "startLine": 6
+    },
+    {
+      "name": "_setup",
+      "kind": "function",
+      "exported": false,
+      "filePath": "main.py",
+      "startLine": 12
+    },
+    {
+      "name": "run_app",
+      "kind": "function",
+      "exported": true,
+      "filePath": "main.py",
+      "startLine": 18
+    },
+    {
+      "name": "process_request",
+      "kind": "function",
+      "exported": true,
+      "filePath": "main.py",
+      "startLine": 25
+    }
+  ],
+  "edges": [
+    {
+      "source": "utils.py:format_name",
+      "target": "utils.py:_sanitize",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "utils.py:log_action",
+      "target": "utils.py:_sanitize",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "main.py:run_app",
+      "target": "main.py:_setup",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "main.py:process_request",
+      "target": "main.py:_setup",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "main.py:process_request",
+      "target": "main.py:run_app",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    },
+    {
+      "source": "service.py:UserService.get_user",
+      "target": "utils.py:format_name",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "service.py:UserService.create_user",
+      "target": "utils.py:log_action",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "main.py:_setup",
+      "target": "utils.py:log_action",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "main.py:_setup",
+      "target": "service.py:UserService",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "main.py:process_request",
+      "target": "utils.py:log_action",
+      "edgeType": "CALLS",
+      "expectedConfidence": {
+        "min": 0.8,
+        "max": 0.8
+      }
+    },
+    {
+      "source": "service.py:UserService",
+      "target": "service.py:BaseService",
+      "edgeType": "EXTENDS",
+      "expectedConfidence": {
+        "min": 1.0,
+        "max": 1.0
+      }
+    }
+  ],
+  "flows": [
+    {
+      "label": "process_request_to_sanitize",
+      "flowType": "cross_community",
+      "entrySymbol": "main.py:process_request",
+      "terminalSymbol": "utils.py:_sanitize",
+      "expectedSteps": [
+        "main.py:process_request",
+        "utils.py:log_action",
+        "utils.py:_sanitize"
+      ]
+    },
+    {
+      "label": "run_app_setup_flow",
+      "flowType": "cross_community",
+      "entrySymbol": "main.py:run_app",
+      "terminalSymbol": "utils.py:_sanitize",
+      "expectedSteps": [
+        "main.py:run_app",
+        "main.py:_setup",
+        "utils.py:log_action",
+        "utils.py:_sanitize"
+      ]
+    },
+    {
+      "label": "create_user_logging",
+      "flowType": "cross_community",
+      "entrySymbol": "service.py:UserService.create_user",
+      "terminalSymbol": "utils.py:_sanitize",
+      "expectedSteps": [
+        "service.py:UserService.create_user",
+        "utils.py:log_action",
+        "utils.py:_sanitize"
+      ]
+    },
+    {
+      "label": "get_user_formatting",
+      "flowType": "cross_community",
+      "entrySymbol": "service.py:UserService.get_user",
+      "terminalSymbol": "utils.py:_sanitize",
+      "expectedSteps": [
+        "service.py:UserService.get_user",
+        "utils.py:format_name",
+        "utils.py:_sanitize"
+      ]
+    }
+  ]
+}

@@ -2,6 +2,8 @@ import type { SearchResult, Store, StoreSearchOptions, SearchConfig } from './ty
 import { DEFAULT_SEARCH_CONFIG } from './types.js';
 import { computeHash } from './store.js';
 import { log } from './logger.js';
+import type Database from 'better-sqlite3';
+import { getClusterLabels } from './graph.js';
 
 export interface SearchOptions {
   query: string;
@@ -25,6 +27,7 @@ export interface HybridSearchOptions {
   since?: string;
   until?: string;
   searchConfig?: SearchConfig;
+  db?: Database.Database;
 }
 
 export interface SearchProviders {
@@ -279,6 +282,66 @@ function cacheHash(prefix: string, ...parts: string[]): string {
   return computeHash(prefix + ':' + parts.join(':'));
 }
 
+function enrichResultWithSymbols(
+  result: SearchResult,
+  db: Database.Database,
+  projectHash: string,
+  clusterLabels: Map<number, string>
+): SearchResult {
+  const symbolsStmt = db.prepare(`
+    SELECT id, name, cluster_id
+    FROM code_symbols
+    WHERE file_path = ? AND project_hash = ?
+  `);
+  const symbols = symbolsStmt.all(result.path, projectHash) as Array<{
+    id: number;
+    name: string;
+    cluster_id: number | null;
+  }>;
+
+  if (symbols.length === 0) {
+    return result;
+  }
+
+  const symbolNames = symbols.map(s => s.name);
+
+  const clusterCounts = new Map<number, number>();
+  for (const s of symbols) {
+    if (s.cluster_id !== null) {
+      clusterCounts.set(s.cluster_id, (clusterCounts.get(s.cluster_id) ?? 0) + 1);
+    }
+  }
+  let dominantClusterId: number | null = null;
+  let maxCount = 0;
+  for (const [clusterId, count] of clusterCounts) {
+    if (count > maxCount) {
+      maxCount = count;
+      dominantClusterId = clusterId;
+    }
+  }
+  const clusterLabel = dominantClusterId !== null ? clusterLabels.get(dominantClusterId) : undefined;
+
+  const symbolIds = symbols.map(s => s.id);
+  let flowCount = 0;
+  if (symbolIds.length > 0) {
+    const placeholders = symbolIds.map(() => '?').join(',');
+    const flowStmt = db.prepare(`
+      SELECT COUNT(DISTINCT flow_id) as count
+      FROM flow_steps
+      WHERE symbol_id IN (${placeholders})
+    `);
+    const flowResult = flowStmt.get(...symbolIds) as { count: number };
+    flowCount = flowResult.count;
+  }
+
+  return {
+    ...result,
+    symbols: symbolNames,
+    clusterLabel,
+    flowCount: flowCount > 0 ? flowCount : undefined,
+  };
+}
+
 export async function hybridSearch(
   store: Store,
   options: HybridSearchOptions,
@@ -294,6 +357,7 @@ export async function hybridSearch(
     since,
     until,
     searchConfig,
+    db,
   } = options;
   
   const config = searchConfig ?? DEFAULT_SEARCH_CONFIG;
@@ -449,10 +513,17 @@ export async function hybridSearch(
   const final = filtered.slice(0, limit);
   log('search', 'hybridSearch final=' + final.length);
   
-  return final.map(r => ({
+  let results = final.map(r => ({
     ...r,
     snippet: formatSnippet(r.snippet, 700),
   }));
+
+  if (db && projectHash) {
+    const clusterLabels = getClusterLabels(db, projectHash);
+    results = results.map(r => enrichResultWithSymbols(r, db, projectHash, clusterLabels));
+  }
+
+  return results;
 }
 
 export async function search(

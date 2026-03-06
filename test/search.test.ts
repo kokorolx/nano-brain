@@ -28,6 +28,7 @@ function createMockStore(ftsResults: SearchResult[], vecResults: SearchResult[])
   return {
     searchFTS: vi.fn().mockReturnValue(ftsResults),
     searchVec: vi.fn().mockReturnValue(vecResults),
+    searchVecAsync: vi.fn().mockResolvedValue(vecResults),
     getCachedResult: vi.fn().mockReturnValue(null),
     setCachedResult: vi.fn(),
     getQueryEmbeddingCache: vi.fn().mockReturnValue(null),
@@ -527,7 +528,7 @@ describe('Search Pipeline', () => {
       );
       
       expect(embedder.embed).toHaveBeenCalledWith('test query');
-      expect(store.searchVec).toHaveBeenCalled();
+      expect(store.searchVecAsync).toHaveBeenCalled();
     });
     
     it('should handle embedder errors gracefully', async () => {

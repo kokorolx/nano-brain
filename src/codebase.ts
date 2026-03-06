@@ -1,10 +1,23 @@
 import type { Store, CodebaseConfig, CodebaseIndexResult } from './types.js'
+import type BetterSqlite3 from 'better-sqlite3'
 import { computeHash } from './store.js'
 import { chunkSourceCode, chunkMarkdown } from './chunker.js'
 import { parseSize } from './storage.js'
-import { parseImports, detectLanguage, computePageRank, louvainClustering, computeEdgeSetHash } from './graph.js'
+import { parseImports, detectLanguage, computePageRank, louvainClustering, computeEdgeSetHash, clusterSymbols, type SupportedLanguage } from './graph.js'
 import { extractSymbols } from './symbols.js'
-import { log } from './logger.js';
+import { log } from './logger.js'
+import { SymbolGraph } from './symbol-graph.js'
+import {
+  isTreeSitterAvailable,
+  waitForInit,
+  parseSymbols,
+  resolveCallEdges,
+  resolveHeritageEdges,
+  type SymbolTable,
+  type CodeSymbol,
+  type SymbolEdge,
+} from './treesitter.js'
+import { detectAndStoreFlows } from './flow-detection.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import fg from 'fast-glob'
@@ -256,7 +269,8 @@ export async function indexCodebase(
   workspaceRoot: string,
   config: CodebaseConfig,
   projectHash: string,
-  _embedder?: { embed(text: string): Promise<{ embedding: number[] }> } | null
+  _embedder?: { embed(text: string): Promise<{ embedding: number[] }> } | null,
+  db?: BetterSqlite3.Database
 ): Promise<CodebaseIndexResult> {
   log('codebase', 'Starting codebase scan: ' + workspaceRoot)
   const { files, skippedTooLarge } = await scanCodebaseFiles(workspaceRoot, config)
@@ -271,6 +285,7 @@ export async function indexCodebase(
   let filesSkippedBudget = 0
   let chunksCreated = 0
   const activePaths: string[] = []
+  const scannedFiles: Array<{ path: string; content: string }> = []
   let batchNum = 0
   
   for (let i = 0; i < files.length; i++) {
@@ -283,6 +298,7 @@ export async function indexCodebase(
       if (existingDoc && existingDoc.hash === hash) {
         filesSkippedUnchanged++
         activePaths.push(filePath)
+        scannedFiles.push({ path: filePath, content })
         continue
       }
       const existingSize = existingDoc ? Buffer.byteLength(store.getDocumentBody(existingDoc.hash) ?? '', 'utf-8') : 0
@@ -338,6 +354,7 @@ export async function indexCodebase(
       currentStorageUsed += netIncrease
       filesIndexed++
       activePaths.push(filePath)
+      scannedFiles.push({ path: filePath, content })
     } catch {
       continue
     }
@@ -369,6 +386,24 @@ export async function indexCodebase(
     }
 
     store.setEdgeSetHash(projectHash, newEdgeHash)
+  }
+
+  if (db && isTreeSitterAvailable()) {
+    log('codebase', 'Running symbol graph indexing')
+    const symbolResult = await indexSymbolGraph(db, workspaceRoot, projectHash, scannedFiles)
+    log('codebase', `Symbol graph: ${symbolResult.symbolsIndexed} symbols, ${symbolResult.edgesCreated} edges`)
+
+    if (symbolResult.edgesCreated > 0) {
+      const clusterResult = clusterSymbols(db, projectHash)
+      if (clusterResult.clusterCount > 0) {
+        log('codebase', `Symbol clustering: ${clusterResult.clusterCount} clusters, ${clusterResult.symbolsAssigned} symbols assigned`)
+      }
+    }
+
+    const flowResult = detectAndStoreFlows(db, projectHash)
+    if (flowResult.flowsDetected > 0) {
+      log('codebase', `Flow detection: ${flowResult.flowsDetected} flows from ${flowResult.entryPointsFound} entry points`)
+    }
   }
 
   const finalStorageUsed = store.getCollectionStorageSize('codebase')
@@ -497,4 +532,166 @@ export function getCodebaseStats(
     storageUsed,
     maxSize: effectiveMaxSize,
   }
+}
+
+export interface SymbolGraphIndexResult {
+  symbolsIndexed: number
+  edgesCreated: number
+  filesProcessed: number
+  filesSkipped: number
+}
+
+export async function indexSymbolGraph(
+  db: BetterSqlite3.Database,
+  workspaceRoot: string,
+  projectHash: string,
+  files: Array<{ path: string; content: string }>,
+  options?: { force?: boolean }
+): Promise<SymbolGraphIndexResult> {
+  await waitForInit()
+
+  if (!isTreeSitterAvailable()) {
+    log('symbol-graph', 'Tree-sitter not available, skipping symbol graph indexing')
+    return { symbolsIndexed: 0, edgesCreated: 0, filesProcessed: 0, filesSkipped: files.length }
+  }
+
+  const graph = new SymbolGraph(db)
+  let symbolsIndexed = 0
+  let edgesCreated = 0
+  let filesProcessed = 0
+  let filesSkipped = 0
+
+  const allSymbols: Array<{ symbol: CodeSymbol; id: number; contentHash: string }> = []
+  const fileSymbolMap = new Map<string, Array<{ symbol: CodeSymbol; id: number }>>()
+
+  for (const file of files) {
+    const language = detectLanguage(file.path) as SupportedLanguage | null
+    if (!language || (language !== 'ts' && language !== 'js' && language !== 'python')) {
+      filesSkipped++
+      continue
+    }
+
+    const contentHash = computeHash(file.content)
+    const existingHash = graph.getFileContentHash(file.path, projectHash)
+
+    if (!options?.force && existingHash === contentHash) {
+      filesSkipped++
+      const existingSymbols = graph.getSymbolByName('', projectHash, file.path)
+      continue
+    }
+
+    graph.deleteSymbolsForFile(file.path, projectHash)
+
+    const symbols = await parseSymbols(file.path, file.content, language)
+    const fileSymbols: Array<{ symbol: CodeSymbol; id: number }> = []
+
+    for (const symbol of symbols) {
+      const id = graph.insertSymbol({
+        name: symbol.name,
+        kind: symbol.kind,
+        filePath: symbol.filePath,
+        startLine: symbol.startLine,
+        endLine: symbol.endLine,
+        exported: symbol.exported,
+        contentHash,
+        projectHash,
+      })
+      symbolsIndexed++
+      allSymbols.push({ symbol, id, contentHash })
+      fileSymbols.push({ symbol, id })
+    }
+
+    fileSymbolMap.set(file.path, fileSymbols)
+    filesProcessed++
+  }
+
+  const symbolTable: SymbolTable = new Map()
+  for (const { symbol } of allSymbols) {
+    const existing = symbolTable.get(symbol.name) || []
+    existing.push({ filePath: symbol.filePath, kind: symbol.kind })
+    symbolTable.set(symbol.name, existing)
+  }
+
+  const symbolIdMap = new Map<string, number>()
+  for (const { symbol, id } of allSymbols) {
+    const key = `${symbol.filePath}:${symbol.name}:${symbol.kind}`
+    symbolIdMap.set(key, id)
+  }
+
+  for (const file of files) {
+    const language = detectLanguage(file.path) as SupportedLanguage | null
+    if (!language || (language !== 'ts' && language !== 'js' && language !== 'python')) {
+      continue
+    }
+
+    const fileSymbols = fileSymbolMap.get(file.path)
+    if (!fileSymbols) continue
+
+    const callEdges = await resolveCallEdges(file.path, file.content, language, symbolTable)
+    const heritageEdges = await resolveHeritageEdges(file.path, file.content, language, symbolTable)
+    const allEdges: SymbolEdge[] = [...callEdges, ...heritageEdges]
+
+    for (const edge of allEdges) {
+      const sourceSymbols = fileSymbols.filter(s => 
+        s.symbol.startLine <= getLineForCall(edge, file.content) && 
+        s.symbol.endLine >= getLineForCall(edge, file.content)
+      )
+      
+      let sourceId: number | undefined
+      if (sourceSymbols.length > 0) {
+        sourceId = sourceSymbols[sourceSymbols.length - 1].id
+      } else if (fileSymbols.length > 0) {
+        sourceId = fileSymbols[0].id
+      }
+
+      if (!sourceId) continue
+
+      let targetId: number | undefined
+      if (edge.targetFilePath) {
+        const targetKey = `${edge.targetFilePath}:${edge.targetName}:function`
+        targetId = symbolIdMap.get(targetKey)
+        if (!targetId) {
+          const classKey = `${edge.targetFilePath}:${edge.targetName}:class`
+          targetId = symbolIdMap.get(classKey)
+        }
+        if (!targetId) {
+          const methodKey = `${edge.targetFilePath}:${edge.targetName}:method`
+          targetId = symbolIdMap.get(methodKey)
+        }
+        if (!targetId) {
+          const interfaceKey = `${edge.targetFilePath}:${edge.targetName}:interface`
+          targetId = symbolIdMap.get(interfaceKey)
+        }
+      }
+
+      if (!targetId) {
+        const candidates = symbolTable.get(edge.targetName)
+        if (candidates && candidates.length > 0) {
+          for (const candidate of candidates) {
+            const key = `${candidate.filePath}:${edge.targetName}:${candidate.kind}`
+            targetId = symbolIdMap.get(key)
+            if (targetId) break
+          }
+        }
+      }
+
+      if (targetId && sourceId !== targetId) {
+        graph.insertEdge({
+          sourceId,
+          targetId,
+          edgeType: edge.edgeType,
+          confidence: edge.confidence,
+          projectHash,
+        })
+        edgesCreated++
+      }
+    }
+  }
+
+  log('symbol-graph', `Indexed ${symbolsIndexed} symbols, ${edgesCreated} edges from ${filesProcessed} files`)
+  return { symbolsIndexed, edgesCreated, filesProcessed, filesSkipped }
+}
+
+function getLineForCall(edge: SymbolEdge, _content: string): number {
+  return 1
 }
