@@ -310,6 +310,9 @@ export async function indexCodebase(
         }
         continue
       }
+      if (existingDoc) {
+        store.cleanupVectorsForHash(existingDoc.hash)
+      }
       store.insertContent(hash, content)
       const chunks = chunkSourceCode(content, hash, filePath, workspaceRoot)
       chunksCreated += chunks.length
@@ -427,6 +430,7 @@ export async function embedPendingCodebase(
   projectHash?: string
 ): Promise<number> {
   const maxChars = embedder.getMaxChars?.() ?? 6000
+  const vectorStore = store.getVectorStore?.() ?? null
   let embedded = 0
   const failedHashes = new Set<string>()
   while (true) {
@@ -463,12 +467,12 @@ export async function embedPendingCodebase(
       if (embedder.embedBatch && texts.length > 1) {
         const results = await embedder.embedBatch(texts)
         for (let i = 0; i < allChunks.length; i++) {
-          store.insertEmbedding(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, results[i].embedding, modelName)
+          store.insertEmbedding(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, results[i].embedding, modelName, vectorStore ?? undefined)
         }
       } else {
         for (let i = 0; i < allChunks.length; i++) {
           const result = await embedder.embed(texts[i])
-          store.insertEmbedding(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, result.embedding, result.model || modelName)
+          store.insertEmbedding(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, result.embedding, result.model || modelName, vectorStore ?? undefined)
         }
       }
       embedded += batch.length
@@ -479,7 +483,7 @@ export async function embedPendingCodebase(
       for (let i = 0; i < allChunks.length; i++) {
         try {
           const result = await embedder.embed(texts[i])
-          store.insertEmbedding(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, result.embedding, result.model || modelName)
+          store.insertEmbedding(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, result.embedding, result.model || modelName, vectorStore ?? undefined)
           succeededHashes.add(allChunks[i].hash)
         } catch {
           console.warn(`[embed] Skipping chunk ${allChunks[i].hash}:${allChunks[i].seq}`)

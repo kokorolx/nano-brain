@@ -76,8 +76,11 @@ export function startWatcher(options: WatcherOptions): Watcher {
   let watcher: FSWatcher | null = null;
   let harvestCycleCount = 0;
   const watchedPaths = new Set<string>();
-  let embeddingInterval: NodeJS.Timeout | null = null;
+  let embeddingTimeout: NodeJS.Timeout | null = null;
   let isEmbedding = false;
+  let consecutiveEmptyCycles = 0;
+  let consecutiveFailures = 0;
+  let currentEmbedInterval = embedIntervalMs;
 
   const handleFileChange = (filePath: string) => {
     if (stopped) return
@@ -296,21 +299,42 @@ export function startWatcher(options: WatcherOptions): Watcher {
     }, sessionPollMs);
 
     if (embedder) {
-      embeddingInterval = setInterval(async () => {
-        if (stopped || isEmbedding) return;
-        isEmbedding = true;
-        try {
-          const count = await embedPendingCodebase(store, embedder, 50, projectHash);
-          if (count > 0) {
-            log('watcher', 'Embedding cycle: ' + count + ' document(s) embedded')
-            console.log(`[embed] Embedded ${count} document(s)`);
+      const scheduleNextEmbedCycle = () => {
+        if (stopped) return;
+        embeddingTimeout = setTimeout(async () => {
+          if (stopped || isEmbedding) {
+            scheduleNextEmbedCycle();
+            return;
           }
-        } catch (err) {
-          console.warn('[embed] Embedding cycle failed:', err);
-        } finally {
-          isEmbedding = false;
-        }
-      }, embedIntervalMs);
+          isEmbedding = true;
+          try {
+            const count = await embedPendingCodebase(store, embedder, 50, projectHash);
+            if (count > 0) {
+              log('watcher', 'Embedding cycle: ' + count + ' document(s) embedded')
+              console.log(`[embed] Embedded ${count} document(s)`);
+              consecutiveEmptyCycles = 0;
+              currentEmbedInterval = embedIntervalMs;
+            } else {
+              consecutiveEmptyCycles++;
+              if (consecutiveEmptyCycles >= 3) {
+                currentEmbedInterval = Math.min(currentEmbedInterval * 1.5, 300000);
+              }
+            }
+            consecutiveFailures = 0;
+          } catch (err) {
+            consecutiveFailures++;
+            if (consecutiveFailures >= 5) {
+              console.warn(`[embed] WARNING: ${consecutiveFailures} consecutive embedding failures. Check embedding provider configuration. Last error:`, err);
+            } else {
+              console.warn('[embed] Embedding cycle failed:', err);
+            }
+          } finally {
+            isEmbedding = false;
+            scheduleNextEmbedCycle();
+          }
+        }, currentEmbedInterval);
+      };
+      scheduleNextEmbedCycle();
     }
   };
 
@@ -355,9 +379,9 @@ export function startWatcher(options: WatcherOptions): Watcher {
         sessionPollInterval = null;
       }
 
-      if (embeddingInterval) {
-        clearInterval(embeddingInterval);
-        embeddingInterval = null;
+      if (embeddingTimeout) {
+        clearTimeout(embeddingTimeout);
+        embeddingTimeout = null;
       }
       
       if (watcher) {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createStore, computeHash, indexDocument, extractProjectHashFromPath } from '../src/store.js';
 import type { Store } from '../src/types.js';
 import Database from 'better-sqlite3';
@@ -864,6 +864,311 @@ describe('Store', () => {
       const result = store.clearWorkspace('nonexistent_workspace');
       expect(result.documentsDeleted).toBe(0);
       expect(result.embeddingsDeleted).toBe(0);
+    });
+  });
+
+  describe('Qdrant migration features', () => {
+    describe('getVectorStore/setVectorStore', () => {
+      it('should return null when no vector store is set', () => {
+        expect(store.getVectorStore()).toBeNull();
+      });
+
+      it('should set and get vector store correctly', () => {
+        const mockVectorStore = {
+          upsert: async () => {},
+          batchUpsert: async () => {},
+          search: async () => [],
+          delete: async () => {},
+          deleteByHash: async () => {},
+          health: async () => ({ ok: true, provider: 'mock', vectorCount: 0 }),
+          close: async () => {},
+        };
+        store.setVectorStore(mockVectorStore as unknown as import('../src/vector-store.js').VectorStore);
+        expect(store.getVectorStore()).toBe(mockVectorStore);
+      });
+    });
+
+    describe('insertEmbedding with external vector store', () => {
+      it('should route to external vector store when non-SqliteVecStore is provided', async () => {
+        const body = '# Test Content';
+        const hash = computeHash(body);
+        store.insertContent(hash, body);
+        store.insertDocument({
+          collection: 'test',
+          path: 'test/doc.md',
+          title: 'Test',
+          hash,
+          createdAt: new Date().toISOString(),
+          modifiedAt: new Date().toISOString(),
+          active: true,
+        });
+
+        const mockVectorStore = {
+          upsert: vi.fn().mockResolvedValue(undefined),
+          batchUpsert: vi.fn().mockResolvedValue(undefined),
+          search: vi.fn().mockResolvedValue([]),
+          delete: vi.fn().mockResolvedValue(undefined),
+          deleteByHash: vi.fn().mockResolvedValue(undefined),
+          health: vi.fn().mockResolvedValue({ ok: true, provider: 'mock', vectorCount: 0 }),
+          close: vi.fn().mockResolvedValue(undefined),
+        };
+
+        const embedding = new Array(768).fill(0.1);
+        store.insertEmbedding(hash, 0, 0, embedding, 'test-model', mockVectorStore as unknown as import('../src/vector-store.js').VectorStore);
+
+        await vi.waitFor(() => expect(mockVectorStore.upsert).toHaveBeenCalled());
+        expect(mockVectorStore.upsert).toHaveBeenCalledWith({
+          id: `${hash}:0`,
+          embedding,
+          metadata: { hash, seq: 0, pos: 0, model: 'test-model' },
+        });
+      });
+
+      it('should fall back to sqlite-vec when no externalVectorStore is provided', () => {
+        const body = '# Fallback Content';
+        const hash = computeHash(body);
+        store.insertContent(hash, body);
+        store.insertDocument({
+          collection: 'test',
+          path: 'test/fallback.md',
+          title: 'Fallback',
+          hash,
+          createdAt: new Date().toISOString(),
+          modifiedAt: new Date().toISOString(),
+          active: true,
+        });
+
+        const embedding = new Array(768).fill(0.2);
+        store.insertEmbedding(hash, 0, 0, embedding, 'test-model');
+
+        const db = new Database(dbPath);
+        const row = db.prepare('SELECT * FROM content_vectors WHERE hash = ?').get(hash);
+        expect(row).toBeDefined();
+        db.close();
+      });
+
+      it('should always write content_vectors tracking row regardless of vector store', async () => {
+        const body = '# Tracking Test';
+        const hash = computeHash(body);
+        store.insertContent(hash, body);
+        store.insertDocument({
+          collection: 'test',
+          path: 'test/tracking.md',
+          title: 'Tracking',
+          hash,
+          createdAt: new Date().toISOString(),
+          modifiedAt: new Date().toISOString(),
+          active: true,
+        });
+
+        const mockVectorStore = {
+          upsert: vi.fn().mockResolvedValue(undefined),
+          batchUpsert: vi.fn().mockResolvedValue(undefined),
+          search: vi.fn().mockResolvedValue([]),
+          delete: vi.fn().mockResolvedValue(undefined),
+          deleteByHash: vi.fn().mockResolvedValue(undefined),
+          health: vi.fn().mockResolvedValue({ ok: true, provider: 'mock', vectorCount: 0 }),
+          close: vi.fn().mockResolvedValue(undefined),
+        };
+
+        const embedding = new Array(768).fill(0.3);
+        store.insertEmbedding(hash, 0, 0, embedding, 'test-model', mockVectorStore as unknown as import('../src/vector-store.js').VectorStore);
+
+        const db = new Database(dbPath);
+        const row = db.prepare('SELECT * FROM content_vectors WHERE hash = ?').get(hash);
+        expect(row).toBeDefined();
+        db.close();
+      });
+    });
+
+    describe('cleanupVectorsForHash', () => {
+      it('should call vectorStore.deleteByHash fire-and-forget when vectorStore is set', async () => {
+        const mockVectorStore = {
+          upsert: vi.fn().mockResolvedValue(undefined),
+          batchUpsert: vi.fn().mockResolvedValue(undefined),
+          search: vi.fn().mockResolvedValue([]),
+          delete: vi.fn().mockResolvedValue(undefined),
+          deleteByHash: vi.fn().mockResolvedValue(undefined),
+          health: vi.fn().mockResolvedValue({ ok: true, provider: 'mock', vectorCount: 0 }),
+          close: vi.fn().mockResolvedValue(undefined),
+        };
+
+        store.setVectorStore(mockVectorStore as unknown as import('../src/vector-store.js').VectorStore);
+        store.cleanupVectorsForHash('abc123');
+
+        await vi.waitFor(() => expect(mockVectorStore.deleteByHash).toHaveBeenCalled());
+        expect(mockVectorStore.deleteByHash).toHaveBeenCalledWith('abc123');
+      });
+
+      it('should not throw when no vectorStore is set', () => {
+        expect(() => store.cleanupVectorsForHash('abc123')).not.toThrow();
+      });
+    });
+
+    describe('cleanOrphanedEmbeddings with vectorStore', () => {
+      it('should collect orphan hashes before delete and call vectorStore.deleteByHash', async () => {
+        const body = '# Orphan Content';
+        const hash = computeHash(body);
+        store.insertContent(hash, body);
+        const docId = store.insertDocument({
+          collection: 'test',
+          path: 'test/orphan.md',
+          title: 'Orphan',
+          hash,
+          createdAt: new Date().toISOString(),
+          modifiedAt: new Date().toISOString(),
+          active: true,
+        });
+
+        const embedding = new Array(768).fill(0.4);
+        store.insertEmbedding(hash, 0, 0, embedding, 'test-model');
+
+        store.deactivateDocument('test', 'test/orphan.md');
+
+        const mockVectorStore = {
+          upsert: vi.fn().mockResolvedValue(undefined),
+          batchUpsert: vi.fn().mockResolvedValue(undefined),
+          search: vi.fn().mockResolvedValue([]),
+          delete: vi.fn().mockResolvedValue(undefined),
+          deleteByHash: vi.fn().mockResolvedValue(undefined),
+          health: vi.fn().mockResolvedValue({ ok: true, provider: 'mock', vectorCount: 0 }),
+          close: vi.fn().mockResolvedValue(undefined),
+        };
+
+        store.setVectorStore(mockVectorStore as unknown as import('../src/vector-store.js').VectorStore);
+        const deleted = store.cleanOrphanedEmbeddings();
+
+        expect(deleted).toBeGreaterThan(0);
+        await vi.waitFor(() => expect(mockVectorStore.deleteByHash).toHaveBeenCalled());
+        expect(mockVectorStore.deleteByHash).toHaveBeenCalledWith(hash);
+      });
+    });
+
+    describe('bulkDeactivateExcept with vectorStore', () => {
+      it('should compute before/after hash diff and delete orphaned vectors', async () => {
+        const body1 = '# Keep Content';
+        const hash1 = computeHash(body1);
+        store.insertContent(hash1, body1);
+        store.insertDocument({
+          collection: 'bulk-test',
+          path: 'keep.md',
+          title: 'Keep',
+          hash: hash1,
+          createdAt: new Date().toISOString(),
+          modifiedAt: new Date().toISOString(),
+          active: true,
+        });
+
+        const body2 = '# Remove Content';
+        const hash2 = computeHash(body2);
+        store.insertContent(hash2, body2);
+        store.insertDocument({
+          collection: 'bulk-test',
+          path: 'remove.md',
+          title: 'Remove',
+          hash: hash2,
+          createdAt: new Date().toISOString(),
+          modifiedAt: new Date().toISOString(),
+          active: true,
+        });
+
+        const mockVectorStore = {
+          upsert: vi.fn().mockResolvedValue(undefined),
+          batchUpsert: vi.fn().mockResolvedValue(undefined),
+          search: vi.fn().mockResolvedValue([]),
+          delete: vi.fn().mockResolvedValue(undefined),
+          deleteByHash: vi.fn().mockResolvedValue(undefined),
+          health: vi.fn().mockResolvedValue({ ok: true, provider: 'mock', vectorCount: 0 }),
+          close: vi.fn().mockResolvedValue(undefined),
+        };
+
+        store.setVectorStore(mockVectorStore as unknown as import('../src/vector-store.js').VectorStore);
+        const deactivated = store.bulkDeactivateExcept('bulk-test', ['keep.md']);
+
+        expect(deactivated).toBe(1);
+        await vi.waitFor(() => expect(mockVectorStore.deleteByHash).toHaveBeenCalled());
+        expect(mockVectorStore.deleteByHash).toHaveBeenCalledWith(hash2);
+        expect(mockVectorStore.deleteByHash).not.toHaveBeenCalledWith(hash1);
+      });
+    });
+
+    describe('new indexes', () => {
+      it('should create idx_symbols_file_project index after createStore()', () => {
+        const db = new Database(dbPath);
+        const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_symbols_file_project'").all();
+        expect(indexes.length).toBe(1);
+        db.close();
+      });
+
+      it('should create idx_documents_modified index after createStore()', () => {
+        const db = new Database(dbPath);
+        const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_documents_modified'").all();
+        expect(indexes.length).toBe(1);
+        db.close();
+      });
+    });
+
+    describe('getHashesNeedingEmbedding', () => {
+      it('should respect LIMIT param', () => {
+        for (let i = 0; i < 5; i++) {
+          const body = `# Content ${i}`;
+          const hash = computeHash(body);
+          store.insertContent(hash, body);
+          store.insertDocument({
+            collection: 'limit-test',
+            path: `doc${i}.md`,
+            title: `Doc ${i}`,
+            hash,
+            createdAt: new Date().toISOString(),
+            modifiedAt: new Date().toISOString(),
+            active: true,
+          });
+        }
+
+        const limited = store.getHashesNeedingEmbedding(undefined, 2);
+        expect(limited.length).toBe(2);
+
+        const all = store.getHashesNeedingEmbedding(undefined, 100);
+        expect(all.length).toBe(5);
+      });
+
+      it('should filter by projectHash when provided', () => {
+        const body1 = '# Project A Content';
+        const hash1 = computeHash(body1);
+        store.insertContent(hash1, body1);
+        store.insertDocument({
+          collection: 'project-test',
+          path: 'a.md',
+          title: 'A',
+          hash: hash1,
+          createdAt: new Date().toISOString(),
+          modifiedAt: new Date().toISOString(),
+          active: true,
+          projectHash: 'project_a',
+        });
+
+        const body2 = '# Project B Content';
+        const hash2 = computeHash(body2);
+        store.insertContent(hash2, body2);
+        store.insertDocument({
+          collection: 'project-test',
+          path: 'b.md',
+          title: 'B',
+          hash: hash2,
+          createdAt: new Date().toISOString(),
+          modifiedAt: new Date().toISOString(),
+          active: true,
+          projectHash: 'project_b',
+        });
+
+        const projectA = store.getHashesNeedingEmbedding('project_a');
+        expect(projectA.length).toBe(1);
+        expect(projectA[0].hash).toBe(hash1);
+
+        const projectB = store.getHashesNeedingEmbedding('project_b');
+        expect(projectB.length).toBe(1);
+        expect(projectB[0].hash).toBe(hash2);
+      });
     });
   });
 

@@ -1147,13 +1147,33 @@ export async function startServer(options: ServerOptions): Promise<void> {
   const store = createStore(effectiveDbPath);
   const symbolGraphDb = new Database(effectiveDbPath);
   
+  const validateInterval = (value: number | undefined, name: string, defaultVal: number): number => {
+    if (value === undefined) return defaultVal;
+    if (value <= 0 || value > 3600) {
+      console.error(`[memory] Warning: intervals.${name}=${value} invalid (must be 1-3600), using default ${defaultVal}`);
+      return defaultVal;
+    }
+    return value;
+  };
+  const validatedIntervals = config?.intervals ? {
+    embed: validateInterval(config.intervals.embed, 'embed', 60),
+    sessionPoll: validateInterval(config.intervals.sessionPoll, 'sessionPoll', 120),
+    reindexPoll: validateInterval(config.intervals.reindexPoll, 'reindexPoll', 120),
+  } : undefined;
+  
   let vectorStore: VectorStore | null = null;
+  const configuredDimensions = config?.vector?.dimensions;
   if (config?.vector?.provider === 'qdrant') {
     try {
       vectorStore = createVectorStore(config.vector);
       vectorStore.health().then((health) => {
         log('server', 'vector provider=' + health.provider + ' ok=' + health.ok + ' vectors=' + health.vectorCount);
         console.error(`[memory] Vector store: ${health.provider} (ok=${health.ok}, vectors=${health.vectorCount})`);
+        if (health.dimensions && configuredDimensions && health.dimensions !== configuredDimensions) {
+          console.error(`[memory] FATAL: Vector dimension mismatch! Configured=${configuredDimensions}, Qdrant collection=${health.dimensions}`);
+          console.error(`[memory] Either update config.yml vector.dimensions or recreate the Qdrant collection.`);
+          process.exit(1);
+        }
       }).catch((err) => {
         log('server', 'vector health check failed error=' + (err instanceof Error ? err.message : String(err)));
         console.error(`[memory] Vector store health check failed:`, err);
@@ -1215,9 +1235,9 @@ export async function startServer(options: ServerOptions): Promise<void> {
       collections,
       embedder: providers.embedder,
       debounceMs: watcherConfig?.debounceMs ?? 2000,
-      pollIntervalMs: watcherConfig?.pollIntervalMs ?? 120000,
-      sessionPollMs: watcherConfig?.sessionPollMs ?? 120000,
-      embedIntervalMs: watcherConfig?.embedIntervalMs ?? 60000,
+      pollIntervalMs: validatedIntervals?.reindexPoll ? validatedIntervals.reindexPoll * 1000 : (watcherConfig?.pollIntervalMs ?? 120000),
+      sessionPollMs: validatedIntervals?.sessionPoll ? validatedIntervals.sessionPoll * 1000 : (watcherConfig?.sessionPollMs ?? 120000),
+      embedIntervalMs: validatedIntervals?.embed ? validatedIntervals.embed * 1000 : (watcherConfig?.embedIntervalMs ?? 60000),
       sessionStorageDir: path.join(homeDir, '.local/share/opencode/storage'),
       outputDir: path.join(outputDir, 'sessions'),
       storageConfig,

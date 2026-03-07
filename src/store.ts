@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import type { Store, Document, SearchResult, IndexHealth, StoreSearchOptions } from './types.js';
-import type { VectorStore } from './vector-store.js';
+import type { VectorStore, VectorPoint } from './vector-store.js';
+import { SqliteVecStore } from './providers/sqlite-vec.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -135,6 +136,8 @@ export function createStore(dbPath: string): Store {
     );
     CREATE INDEX IF NOT EXISTS idx_symbols_type_pattern ON symbols(type, pattern);
     CREATE INDEX IF NOT EXISTS idx_symbols_repo ON symbols(repo);
+    CREATE INDEX IF NOT EXISTS idx_symbols_file_project ON symbols(file_path, project_hash);
+    CREATE INDEX IF NOT EXISTS idx_documents_modified ON documents(modified_at) WHERE active = 1;
 
     CREATE TABLE IF NOT EXISTS code_symbols (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -286,10 +289,7 @@ export function createStore(dbPath: string): Store {
     UPDATE documents SET active = 0 WHERE collection = ? AND path = ?
   `);
   
-  const bulkDeactivateExceptStmt = db.prepare(`
-    UPDATE documents SET active = 0 
-    WHERE collection = ? AND path NOT IN (SELECT value FROM json_each(?))
-  `);
+
   
   const searchFTSStmt = db.prepare(`
     SELECT 
@@ -378,6 +378,7 @@ export function createStore(dbPath: string): Store {
     JOIN documents d ON d.hash = c.hash AND d.active = 1
     LEFT JOIN content_vectors cv ON cv.hash = c.hash
     WHERE cv.hash IS NULL
+    LIMIT ?
   `);
 
   const getHashesNeedingEmbeddingByWorkspaceStmt = db.prepare(`
@@ -386,6 +387,7 @@ export function createStore(dbPath: string): Store {
     JOIN documents d ON d.hash = c.hash AND d.active = 1
     LEFT JOIN content_vectors cv ON cv.hash = c.hash
     WHERE cv.hash IS NULL AND d.project_hash IN (?, 'global')
+    LIMIT ?
   `);
   const getNextHashNeedingEmbeddingStmt = db.prepare(`
     SELECT c.hash, c.body, d.path
@@ -515,30 +517,67 @@ export function createStore(dbPath: string): Store {
     },
     
     bulkDeactivateExcept(collection: string, activePaths: string[]): number {
-      const result = bulkDeactivateExceptStmt.run(collection, JSON.stringify(activePaths));
+      const beforeHashes = new Set<string>();
+      if (vectorStore) {
+        const rows = db.prepare('SELECT DISTINCT hash FROM documents WHERE collection = ? AND active = 1').all(collection) as Array<{ hash: string }>;
+        for (const r of rows) beforeHashes.add(r.hash);
+      }
+      
+      db.exec('CREATE TEMP TABLE IF NOT EXISTS _active_paths(path TEXT PRIMARY KEY)');
+      db.exec('DELETE FROM _active_paths');
+      const insertPath = db.prepare('INSERT OR IGNORE INTO _active_paths(path) VALUES(?)');
+      const insertMany = db.transaction((paths: string[]) => {
+        for (const p of paths) insertPath.run(p);
+      });
+      insertMany(activePaths);
+      const updateStmt = db.prepare('UPDATE documents SET active = 0 WHERE collection = ? AND path NOT IN (SELECT path FROM _active_paths)');
+      const result = updateStmt.run(collection);
+      db.exec('DROP TABLE IF EXISTS _active_paths');
+      
+      if (vectorStore && beforeHashes.size > 0) {
+        const afterRows = db.prepare('SELECT DISTINCT hash FROM documents WHERE collection = ? AND active = 1').all(collection) as Array<{ hash: string }>;
+        const afterHashes = new Set(afterRows.map(r => r.hash));
+        for (const hash of beforeHashes) {
+          if (!afterHashes.has(hash)) {
+            vectorStore.deleteByHash(hash).catch(err => {
+              log('store', 'bulkDeactivateExcept vector cleanup failed hash=' + hash.substring(0, 8));
+              console.warn('[store] Failed to cleanup vector:', err);
+            });
+          }
+        }
+      }
+      
       return result.changes;
     },
     
-    insertEmbedding(hash: string, seq: number, pos: number, embedding: number[], model: string) {
+    insertEmbedding(hash: string, seq: number, pos: number, embedding: number[], model: string, externalVectorStore?: VectorStore) {
       log('store', 'insertEmbedding hash=' + hash.substring(0, 8) + ' seq=' + seq);
       insertEmbeddingStmt.run(hash, seq, pos, model);
       
-      if (vecAvailable) {
+      const useExternalStore = externalVectorStore && !(externalVectorStore instanceof SqliteVecStore);
+      
+      if (useExternalStore) {
+        const point: VectorPoint = {
+          id: `${hash}:${seq}`,
+          embedding,
+          metadata: { hash, seq, pos, model },
+        };
+        externalVectorStore.upsert(point).catch((err) => {
+          log('store', 'insertEmbedding external vector store upsert failed hash=' + hash.substring(0, 8));
+          console.warn(`[store] External vector store upsert failed for ${hash.substring(0, 8)}:${seq}, will retry on next embedding cycle:`, err);
+        });
+      } else if (vecAvailable) {
         try {
           const hashSeq = `${hash}:${seq}`;
-          // sqlite-vec virtual tables don't support INSERT OR REPLACE,
-          // so delete first then insert to handle re-embedding
           try {
             db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`).run(hashSeq);
           } catch {
-            // Ignore if row doesn't exist
           }
           const insertVecStmt = db.prepare(`
             INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)
           `);
           insertVecStmt.run(hashSeq, new Float32Array(embedding));
         } catch (err) {
-          // Silently ignore duplicate key errors (vector already exists)
           const msg = err instanceof Error ? err.message : String(err);
           if (!msg.includes('UNIQUE constraint')) {
             log('store', 'insertEmbedding vector insert failed hash=' + hash.substring(0, 8));
@@ -733,6 +772,19 @@ export function createStore(dbPath: string): Store {
       vectorStore = vs;
     },
     
+    getVectorStore(): VectorStore | null {
+      return vectorStore;
+    },
+    
+    cleanupVectorsForHash(hash: string): void {
+      if (vectorStore) {
+        vectorStore.deleteByHash(hash).catch(err => {
+          log('store', 'cleanupVectorsForHash failed hash=' + hash.substring(0, 8));
+          console.warn('[store] Failed to cleanup vectors for hash:', err);
+        });
+      }
+    },
+    
     async searchVecAsync(query: string, embedding: number[], options: StoreSearchOptions = {}): Promise<SearchResult[]> {
       const { limit = 10, collection, projectHash, tags, since, until } = options;
       
@@ -828,7 +880,7 @@ export function createStore(dbPath: string): Store {
       const docCount = (getDocumentCountStmt.get() as { count: number }).count;
       const embeddedCount = (getEmbeddedCountStmt.get() as { count: number }).count;
       const collections = getCollectionStatsStmt.all() as Array<{ name: string; documentCount: number; path: string }>;
-      const pending = (getHashesNeedingEmbeddingStmt.all() as unknown[]).length;
+      const pending = (getHashesNeedingEmbeddingStmt.all(1000000) as unknown[]).length;
       const workspaceStats = this.getWorkspaceStats();
       
       let dbSize = 0;
@@ -850,11 +902,12 @@ export function createStore(dbPath: string): Store {
       };
     },
     
-    getHashesNeedingEmbedding(projectHash?: string): Array<{ hash: string; body: string; path: string }> {
+    getHashesNeedingEmbedding(projectHash?: string, limit?: number): Array<{ hash: string; body: string; path: string }> {
+      const effectiveLimit = limit ?? 1000000;
       if (projectHash && projectHash !== 'all') {
-        return getHashesNeedingEmbeddingByWorkspaceStmt.all(projectHash) as Array<{ hash: string; body: string; path: string }>;
+        return getHashesNeedingEmbeddingByWorkspaceStmt.all(projectHash, effectiveLimit) as Array<{ hash: string; body: string; path: string }>;
       }
-      return getHashesNeedingEmbeddingStmt.all() as Array<{ hash: string; body: string; path: string }>;
+      return getHashesNeedingEmbeddingStmt.all(effectiveLimit) as Array<{ hash: string; body: string; path: string }>;
     },
 
     getNextHashNeedingEmbedding(projectHash?: string): { hash: string; body: string; path: string } | null {
@@ -928,6 +981,13 @@ export function createStore(dbPath: string): Store {
     cleanOrphanedEmbeddings(): number {
       let totalDeleted = 0;
       
+      let orphanedHashes: string[] = [];
+      if (vectorStore) {
+        orphanedHashes = (db.prepare(`
+          SELECT DISTINCT hash FROM content_vectors WHERE hash NOT IN (SELECT DISTINCT hash FROM documents WHERE active = 1)
+        `).all() as Array<{ hash: string }>).map(r => r.hash);
+      }
+      
       const deleteContentVectorsStmt = db.prepare(`
         DELETE FROM content_vectors WHERE hash NOT IN (SELECT DISTINCT hash FROM documents WHERE active = 1)
       `);
@@ -943,6 +1003,16 @@ export function createStore(dbPath: string): Store {
           totalDeleted += vecResult.changes;
         } catch {
         }
+      }
+      
+      if (vectorStore && orphanedHashes.length > 0) {
+        for (const hash of orphanedHashes) {
+          vectorStore.deleteByHash(hash).catch(err => {
+            log('store', 'cleanOrphanedEmbeddings vector cleanup failed hash=' + hash.substring(0, 8));
+            console.warn('[store] Failed to cleanup orphaned vector:', err);
+          });
+        }
+        log('store', 'cleanOrphanedEmbeddings queued ' + orphanedHashes.length + ' vector store deletes');
       }
       
       log('store', 'cleanOrphanedEmbeddings deleted=' + totalDeleted);
@@ -1267,6 +1337,10 @@ export function indexDocument(
   const existingDoc = store.findDocument(filePath);
   if (existingDoc && existingDoc.hash === hash) {
     return { hash, chunks: 0, skipped: true };
+  }
+  
+  if (existingDoc && existingDoc.hash !== hash) {
+    store.cleanupVectorsForHash(existingDoc.hash);
   }
   
   store.insertContent(hash, content);

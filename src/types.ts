@@ -85,6 +85,11 @@ export interface CollectionConfig {
     collection?: string
     dimensions?: number
   }
+  intervals?: {
+    embed?: number
+    sessionPoll?: number
+    reindexPoll?: number
+  }
 }
 
 export interface CodebaseConfig {
@@ -255,13 +260,14 @@ export interface Store {
   
   insertContent(hash: string, body: string): void;
   
-  insertEmbedding(hash: string, seq: number, pos: number, embedding: number[], model: string): void;
+  insertEmbedding(hash: string, seq: number, pos: number, embedding: number[], model: string, vectorStore?: import('./vector-store.js').VectorStore): void;
   ensureVecTable(dimensions: number): void;
   
   searchFTS(query: string, options?: StoreSearchOptions): SearchResult[];
   searchVec(query: string, embedding: number[], options?: StoreSearchOptions): SearchResult[];
   searchVecAsync(query: string, embedding: number[], options?: StoreSearchOptions): Promise<SearchResult[]>;
   setVectorStore(vs: import('./vector-store.js').VectorStore): void;
+  getVectorStore(): import('./vector-store.js').VectorStore | null;
   
   getCachedResult(hash: string, projectHash?: string): string | null;
   setCachedResult(hash: string, result: string, projectHash?: string, type?: string): void;
@@ -273,7 +279,7 @@ export interface Store {
   clearQueryEmbeddingCache(): void;
   
   getIndexHealth(): IndexHealth;
-  getHashesNeedingEmbedding(projectHash?: string): Array<{ hash: string; body: string; path: string }>;
+  getHashesNeedingEmbedding(projectHash?: string, limit?: number): Array<{ hash: string; body: string; path: string }>;
   getNextHashNeedingEmbedding(projectHash?: string): { hash: string; body: string; path: string } | null;
   getWorkspaceStats(): Array<{ projectHash: string; count: number }>;
   
@@ -347,4 +353,6 @@ export interface Store {
     filePath: string;
     lineNumber: number;
   }>;
+
+  cleanupVectorsForHash(hash: string): void;
 }

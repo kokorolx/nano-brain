@@ -66,6 +66,15 @@ describe('Watcher', () => {
       insertTags: vi.fn(),
       getDocumentTags: vi.fn().mockReturnValue([]),
       listAllTags: vi.fn().mockReturnValue([]),
+      getVectorStore: vi.fn().mockReturnValue(null),
+      setVectorStore: vi.fn(),
+      cleanupVectorsForHash: vi.fn(),
+      searchVecAsync: vi.fn().mockResolvedValue([]),
+      getFileDependencies: vi.fn().mockReturnValue([]),
+      getFileDependents: vi.fn().mockReturnValue([]),
+      getDocumentCentrality: vi.fn().mockReturnValue(null),
+      getClusterMembers: vi.fn().mockReturnValue([]),
+      getGraphStats: vi.fn().mockReturnValue({ nodeCount: 0, edgeCount: 0, clusterCount: 0, topCentrality: [] }),
     } as unknown as Store;
 
     collections = [
@@ -619,10 +628,10 @@ describe('Watcher', () => {
         embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
       };
 
-      // embedPendingCodebase calls getNextHashNeedingEmbedding in a loop
-      vi.mocked(mockStore.getNextHashNeedingEmbedding)
-        .mockReturnValueOnce({ hash: 'abc123', body: 'Content to embed', path: testFile })
-        .mockReturnValue(null);
+      // embedPendingCodebase calls getHashesNeedingEmbedding in a loop
+      vi.mocked(mockStore.getHashesNeedingEmbedding)
+        .mockReturnValueOnce([{ hash: 'abc123', body: 'Content to embed', path: testFile }])
+        .mockReturnValue([]);
 
       const watcher = startWatcher({
         store: mockStore,
@@ -734,6 +743,292 @@ describe('Watcher', () => {
 
       expect(testCall).toBeDefined();
       expect((testCall![0] as { projectHash?: string }).projectHash).toBe('mywkspace123');
+
+      watcher.stop();
+    });
+  });
+
+  describe('adaptive embedding backoff', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('should increase embedding interval after 3 consecutive empty cycles (×1.5 multiplier)', async () => {
+      const mockEmbedder = {
+        embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
+      };
+
+      vi.mocked(mockStore.getHashesNeedingEmbedding).mockReturnValue([]);
+      vi.mocked(mockStore.getNextHashNeedingEmbedding).mockReturnValue(null);
+
+      const watcher = startWatcher({
+        store: mockStore,
+        collections,
+        embedder: mockEmbedder,
+        embedIntervalMs: 1000,
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1500);
+
+      watcher.stop();
+    });
+
+    it('should cap interval at 300000ms (5 minutes)', async () => {
+      const mockEmbedder = {
+        embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
+      };
+
+      vi.mocked(mockStore.getHashesNeedingEmbedding).mockReturnValue([]);
+      vi.mocked(mockStore.getNextHashNeedingEmbedding).mockReturnValue(null);
+
+      const watcher = startWatcher({
+        store: mockStore,
+        collections,
+        embedder: mockEmbedder,
+        embedIntervalMs: 200000,
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      for (let i = 0; i < 10; i++) {
+        await vi.advanceTimersByTimeAsync(300000);
+      }
+
+      watcher.stop();
+    });
+
+    it('should snap back to base interval when work is detected (count > 0)', async () => {
+      const mockEmbedder = {
+        embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
+      };
+
+      vi.mocked(mockStore.getHashesNeedingEmbedding)
+        .mockReturnValueOnce([])
+        .mockReturnValueOnce([])
+        .mockReturnValueOnce([])
+        .mockReturnValueOnce([{ hash: 'abc123', body: 'Content', path: '/test.md' }])
+        .mockReturnValue([]);
+      vi.mocked(mockStore.getNextHashNeedingEmbedding)
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce({ hash: 'abc123', body: 'Content', path: '/test.md' })
+        .mockReturnValue(null);
+
+      const watcher = startWatcher({
+        store: mockStore,
+        collections,
+        embedder: mockEmbedder,
+        embedIntervalMs: 1000,
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1500);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      watcher.stop();
+    });
+
+    it('should reset consecutiveEmptyCycles when work is detected', async () => {
+      const mockEmbedder = {
+        embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
+      };
+
+      vi.mocked(mockStore.getHashesNeedingEmbedding)
+        .mockReturnValueOnce([])
+        .mockReturnValueOnce([])
+        .mockReturnValueOnce([{ hash: 'abc123', body: 'Content', path: '/test.md' }])
+        .mockReturnValue([]);
+      vi.mocked(mockStore.getNextHashNeedingEmbedding)
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce({ hash: 'abc123', body: 'Content', path: '/test.md' })
+        .mockReturnValue(null);
+
+      const watcher = startWatcher({
+        store: mockStore,
+        collections,
+        embedder: mockEmbedder,
+        embedIntervalMs: 1000,
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      watcher.stop();
+    });
+
+    it('should increment consecutiveFailures on error', async () => {
+      const mockEmbedder = {
+        embed: vi.fn().mockRejectedValue(new Error('Embedding failed')),
+      };
+
+      vi.mocked(mockStore.getHashesNeedingEmbedding).mockReturnValue([
+        { hash: 'abc123', body: 'Content', path: '/test.md' },
+      ]);
+      vi.mocked(mockStore.getNextHashNeedingEmbedding).mockReturnValue({
+        hash: 'abc123',
+        body: 'Content',
+        path: '/test.md',
+      });
+
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const watcher = startWatcher({
+        store: mockStore,
+        collections,
+        embedder: mockEmbedder,
+        embedIntervalMs: 1000,
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('[embed]'),
+        expect.any(Error)
+      );
+
+      watcher.stop();
+      consoleWarnSpy.mockRestore();
+    });
+
+    it('should log warning after 5 consecutive failures', async () => {
+      const mockEmbedder = {
+        embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
+      };
+
+      vi.mocked(mockStore.getHashesNeedingEmbedding).mockImplementation(() => {
+        throw new Error('Database connection failed');
+      });
+
+      const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const watcher = startWatcher({
+        store: mockStore,
+        collections,
+        embedder: mockEmbedder,
+        embedIntervalMs: 10,
+      });
+
+      for (let i = 0; i < 60; i++) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      const warningCalls = consoleWarnSpy.mock.calls.filter(
+        call => typeof call[0] === 'string' && call[0].includes('WARNING') && call[0].includes('consecutive embedding failures')
+      );
+      expect(warningCalls.length).toBeGreaterThan(0);
+
+      watcher.stop();
+      consoleWarnSpy.mockRestore();
+    });
+  });
+
+  describe('embedIntervalMs validation behavior', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('should use provided embedIntervalMs when valid', async () => {
+      const mockEmbedder = {
+        embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
+      };
+
+      vi.mocked(mockStore.getHashesNeedingEmbedding).mockReturnValue([]);
+      vi.mocked(mockStore.getNextHashNeedingEmbedding).mockReturnValue(null);
+
+      const watcher = startWatcher({
+        store: mockStore,
+        collections,
+        embedder: mockEmbedder,
+        embedIntervalMs: 2000,
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(2000);
+
+      watcher.stop();
+    });
+
+    it('should use default embedIntervalMs (60000) when not provided', async () => {
+      const mockEmbedder = {
+        embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
+      };
+
+      vi.mocked(mockStore.getHashesNeedingEmbedding).mockReturnValue([]);
+      vi.mocked(mockStore.getNextHashNeedingEmbedding).mockReturnValue(null);
+
+      const watcher = startWatcher({
+        store: mockStore,
+        collections,
+        embedder: mockEmbedder,
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(60000);
+
+      watcher.stop();
+    });
+
+    it('should handle very small embedIntervalMs values', async () => {
+      const mockEmbedder = {
+        embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
+      };
+
+      vi.mocked(mockStore.getHashesNeedingEmbedding).mockReturnValue([]);
+      vi.mocked(mockStore.getNextHashNeedingEmbedding).mockReturnValue(null);
+
+      const watcher = startWatcher({
+        store: mockStore,
+        collections,
+        embedder: mockEmbedder,
+        embedIntervalMs: 100,
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(100);
+
+      watcher.stop();
+    });
+
+    it('should handle large embedIntervalMs values', async () => {
+      const mockEmbedder = {
+        embed: vi.fn().mockResolvedValue({ embedding: new Array(768).fill(0.1), model: 'test-model' }),
+      };
+
+      vi.mocked(mockStore.getHashesNeedingEmbedding).mockReturnValue([]);
+      vi.mocked(mockStore.getNextHashNeedingEmbedding).mockReturnValue(null);
+
+      const watcher = startWatcher({
+        store: mockStore,
+        collections,
+        embedder: mockEmbedder,
+        embedIntervalMs: 300000,
+      });
+
+      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(300000);
 
       watcher.stop();
     });

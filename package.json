@@ -1,6 +1,6 @@
 {
   "name": "nano-brain",
-  "version": "2026.3.5",
+  "version": "2026.3.6-beta.0",
   "type": "module",
   "bin": {
     "nano-brain": "./bin/cli.js"
