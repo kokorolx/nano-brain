@@ -16,7 +16,7 @@ import { findCycles } from './graph.js';
 import { createStore, extractProjectHashFromPath, resolveWorkspaceDbPath } from './store.js';
 import { log, initLogger } from './logger.js';
 import { loadCollectionConfig, getCollections, scanCollectionFiles, getWorkspaceConfig } from './collections.js';
-import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth } from './embeddings.js';
+import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth, checkOpenAIHealth } from './embeddings.js';
 import { createReranker } from './reranker.js';
 import { startWatcher } from './watcher.js';
 import { parseStorageConfig } from './storage.js';
@@ -512,7 +512,10 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       const provider = embeddingConfig?.provider || 'ollama'
       let embeddingHealth: { provider: string; url: string; model: string; reachable: boolean; models?: string[]; error?: string } | undefined
       
-      if (provider !== 'local') {
+      if (provider === 'openai' && embeddingConfig?.apiKey) {
+        const openaiHealth = await checkOpenAIHealth(ollamaUrl, embeddingConfig.apiKey, ollamaModel)
+        embeddingHealth = { provider, url: ollamaUrl, model: ollamaModel, ...openaiHealth }
+      } else if (provider !== 'local') {
         const ollamaHealth = await checkOllamaHealth(ollamaUrl)
         embeddingHealth = { provider, url: ollamaUrl, model: ollamaModel, ...ollamaHealth }
       } else {

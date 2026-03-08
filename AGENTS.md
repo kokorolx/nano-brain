@@ -19,11 +19,6 @@ All commands use the CLI via Bash tool:
 
 ### Session Workflow
 
-**Start of session:** Check memory for relevant past context before exploring the codebase.
-```
-npx nano-brain query "what have we done regarding {current task topic}"
-```
-
 **End of session:** Save key decisions, patterns discovered, and debugging insights.
 ```bash
 cat > ~/.nano-brain/memory/$(date +%Y-%m-%d)-summary.md << 'EOF'
