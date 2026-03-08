@@ -569,7 +569,7 @@ export function createStore(dbPath: string): Store {
     },
     
     insertEmbeddingLocal(hash: string, seq: number, pos: number, model: string, filePath?: string) {
-      const pathSuffix = filePath ? ' path=' + filePath.replace(/.*\//, '') : '';
+      const pathSuffix = filePath ? ' path=' + filePath : '';
       log('store', 'insertEmbeddingLocal hash=' + hash.substring(0, 8) + ' seq=' + seq + pathSuffix, 'debug');
       insertEmbeddingStmt.run(hash, seq, pos, model);
     },

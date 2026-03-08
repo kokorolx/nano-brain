@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026.3.20] - 2026-03-08
+
+### Fixed
+
+- **Truncated file path in embedding logs**: `insertEmbeddingLocal` now logs the full file path instead of just the filename.
+
 ## [2026.3.19] - 2026-03-08
 
 ### Added
