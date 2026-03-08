@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026.3.19] - 2026-03-08
+
+### Added
+
+- **`reset` command**: `nano-brain reset --confirm` deletes ALL nano-brain data in one shot — SQLite databases, harvested session markdown files, and Qdrant `nano-brain` collection. Requires `--confirm` flag to prevent accidental data loss. `--dry-run` previews what would be deleted without deleting. Qdrant cleanup is best-effort (skipped if unreachable).
+
 ## [2026.3.18] - 2026-03-08
 
 ### Fixed

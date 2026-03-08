@@ -142,6 +142,9 @@ nano-brain - Memory system with hybrid search
     --type=<type>   Symbol type (required)
     --pattern=<pat> Pattern to analyze (required)
     --json          Output as JSON
+  reset             Delete ALL nano-brain data (databases, sessions, Qdrant vectors)
+    --confirm       Required to actually delete (safety flag)
+    --dry-run       Preview what would be deleted without deleting
   rm <workspace>    Remove a workspace and all its data
     --list          List all known workspaces
     --dry-run       Preview what would be deleted without deleting
@@ -2351,6 +2354,96 @@ export function resolveWorkspaceIdentifier(
   throw new Error(`No workspace found matching "${identifier}". Run "nano-brain rm --list" to see available workspaces.`);
 }
 
+async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  log('cli', 'reset command invoked');
+  const confirm = commandArgs.includes('--confirm');
+  const dryRun = commandArgs.includes('--dry-run');
+
+  if (!confirm && !dryRun) {
+    console.error('⚠️  This will permanently delete ALL nano-brain data.');
+    console.error('   Run with --confirm to proceed, or --dry-run to preview.');
+    process.exit(1);
+  }
+
+  const dataDir = DEFAULT_DB_DIR;
+  const sessionsDir = DEFAULT_OUTPUT_DIR;
+
+  let sqliteFiles: string[] = [];
+  if (fs.existsSync(dataDir)) {
+    sqliteFiles = fs.readdirSync(dataDir).filter(f => f.endsWith('.sqlite'));
+  }
+
+  const sessionsExist = fs.existsSync(sessionsDir);
+
+  const config = loadCollectionConfig(globalOpts.configPath);
+  const vectorConfig = config?.vector;
+  const qdrantUrl = resolveHostUrl(vectorConfig?.url || 'http://localhost:6333');
+  let qdrantReachable = false;
+  let qdrantPointsCount = 0;
+
+  try {
+    const healthRes = await fetch(`${qdrantUrl}/healthz`);
+    if (healthRes.ok) {
+      qdrantReachable = true;
+      const collectionRes = await fetch(`${qdrantUrl}/collections/nano-brain`);
+      if (collectionRes.ok) {
+        const data = await collectionRes.json();
+        const result = data.result || data;
+        qdrantPointsCount = result.points_count ?? result.vectors_count ?? 0;
+      }
+    }
+  } catch {
+    qdrantReachable = false;
+  }
+
+  if (dryRun) {
+    console.log('Dry run — would delete:');
+    console.log('');
+    console.log(`  SQLite databases:    ${sqliteFiles.length} files in ${dataDir}`);
+    console.log(`  Harvested sessions:  ${sessionsExist ? sessionsDir : '(not found)'}`);
+    if (qdrantReachable) {
+      console.log(`  Qdrant collection:   nano-brain (${qdrantPointsCount} vectors)`);
+    } else {
+      console.log(`  Qdrant collection:   (not reachable at ${qdrantUrl})`);
+    }
+    return;
+  }
+
+  for (const file of sqliteFiles) {
+    fs.unlinkSync(path.join(dataDir, file));
+  }
+  if (sqliteFiles.length > 0) {
+    console.log(`🗑️  Deleted ${sqliteFiles.length} database files from ${dataDir}`);
+  } else {
+    console.log(`ℹ️  No database files found in ${dataDir}`);
+  }
+
+  if (sessionsExist) {
+    fs.rmSync(sessionsDir, { recursive: true, force: true });
+    console.log(`🗑️  Deleted harvested sessions from ${sessionsDir}`);
+  } else {
+    console.log(`ℹ️  No harvested sessions directory found`);
+  }
+
+  if (qdrantReachable) {
+    try {
+      const deleteRes = await fetch(`${qdrantUrl}/collections/nano-brain`, { method: 'DELETE' });
+      if (deleteRes.ok) {
+        console.log(`🗑️  Deleted Qdrant collection 'nano-brain' (${qdrantPointsCount} vectors)`);
+      } else {
+        console.warn(`⚠️  Failed to delete Qdrant collection: HTTP ${deleteRes.status}`);
+      }
+    } catch (err) {
+      console.warn(`⚠️  Failed to delete Qdrant collection: ${err}`);
+    }
+  } else {
+    console.log(`ℹ️  Qdrant not reachable at ${qdrantUrl} — skipping vector cleanup`);
+  }
+
+  console.log('');
+  console.log('✅ Reset complete.');
+}
+
 async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   log('cli', 'rm command invoked');
   const config = loadCollectionConfig(globalOpts.configPath);
@@ -2631,6 +2724,8 @@ async function main() {
       return handleLogs(commandArgs);
     case 'qdrant':
       return handleQdrant(globalOpts, commandArgs);
+    case 'reset':
+      return handleReset(globalOpts, commandArgs);
     case 'rm':
       return handleRm(globalOpts, commandArgs);
     default:
