@@ -9,6 +9,10 @@
 - **`/health` endpoint**: Returns server status, uptime, and active session counts for SSE and Streamable HTTP clients.
 - **`--host` flag for `mcp` command**: Control bind address (default `127.0.0.1`, use `0.0.0.0` for remote access).
 
+### Notes
+
+- **OpenCode config**: Use `"type": "remote"` with `"url": "http://host.docker.internal:3100/mcp"` for remote mode. The `"type": "sse"` config type is deprecated in OpenCode.
+
 ### Fixed
 
 - **`--http` and `--port` flags ignored**: `handleMcp()` parsed these flags but never passed them to `startServer()`. Now correctly wired.

@@ -4,7 +4,7 @@ Persistent memory system for AI coding agents. Hybrid search (BM25 + vector + LL
 
 ## What It Does
 
-An MCP server that gives AI coding agents persistent memory across sessions. Indexes markdown documents, past sessions, and daily logs into a searchable SQLite database with FTS5 and vector embeddings. Provides 10 MCP tools for search, retrieval, and memory management using a sophisticated hybrid search pipeline with query expansion, RRF fusion, and neural reranking.
+An MCP server that gives AI coding agents persistent memory across sessions. Indexes markdown documents, past sessions, and daily logs into a searchable SQLite database with FTS5 and vector embeddings. Provides 17+ MCP tools for search, retrieval, and memory management using a sophisticated hybrid search pipeline with query expansion, RRF fusion, and neural reranking. Runs as local stdio or remote SSE server for Docker/container environments.
 
 Inspired by [QMD](https://github.com/tobi/qmd) and [OpenClaw](https://github.com/openclaw/openclaw).
 
@@ -103,6 +103,14 @@ Heading-aware markdown chunking that respects document structure:
 | `memory_status` | Index health, collections, model status |
 | `memory_index_codebase` | Index codebase files in current workspace |
 | `memory_update` | Trigger reindex of all collections |
+| `memory_focus` | File dependency context (imports/exports, centrality, cluster) |
+| `memory_graph_stats` | Dependency graph overview with cycle detection |
+| `memory_symbols` | Cross-repo symbol query (Redis keys, PubSub, MySQL tables, API endpoints) |
+| `memory_impact` | Cross-repo impact analysis (writers vs readers) |
+| `memory_tags` | List all tags with document counts |
+| `code_context` | 360° view of a code symbol (callers, callees, flows) |
+| `code_impact` | Change impact analysis (upstream/downstream dependencies) |
+| `code_detect_changes` | Map git diff to affected symbols |
 
 ## Installation
 ```bash
@@ -126,6 +134,19 @@ Add to your AI agent's MCP config (e.g. `~/.config/opencode/opencode.json`):
     "nano-brain": {
       "type": "local",
       "command": ["npx", "nano-brain", "mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+For remote mode (e.g., running on host while AI agent runs in Docker):
+```json
+{
+  "mcp": {
+    "nano-brain": {
+      "type": "remote",
+      "url": "http://host.docker.internal:3100/mcp",
       "enabled": true
     }
   }
@@ -178,16 +199,27 @@ embedding:
 # Setup
 nano-brain init               # Full initialization (config, index, embed, AGENTS.md)
 nano-brain init --root=/path  # Initialize for specific project
+
 # MCP server
-nano-brain mcp              # Start MCP server (stdio)
-nano-brain mcp --http       # Start MCP server (HTTP, port 8282)
+nano-brain mcp                                      # Start MCP server (stdio)
+nano-brain mcp --http --port=3100 --host=0.0.0.0   # Start MCP server (HTTP/SSE)
+
+# Remote server
+nano-brain serve              # Start SSE server as background daemon (port 3100)
+nano-brain serve status       # Check if server is running
+nano-brain serve stop         # Stop the daemon
+nano-brain serve --foreground # Run in foreground (for debugging)
+nano-brain serve --port=8080  # Custom port
+
 # Index management
 nano-brain status           # Show index health
 nano-brain update           # Reindex all collections
+
 # Search
 nano-brain search "query"   # BM25 search
 nano-brain vsearch "query"  # Vector search
 nano-brain query "query"    # Hybrid search
+
 # Collections
 nano-brain collection add <name> <path>     # Add collection
 nano-brain collection remove <name>         # Remove collection
@@ -199,7 +231,7 @@ nano-brain collection list                  # List collections
 ```
 src/
 ├── index.ts          # CLI entry point
-├── server.ts         # MCP server (10 tools, stdio/HTTP)
+├── server.ts         # MCP server (17+ tools, stdio/HTTP/SSE)
 ├── store.ts          # SQLite storage (FTS5 + sqlite-vec)
 ├── search.ts         # Hybrid search pipeline (RRF, reranking, blending)
 ├── chunker.ts        # Heading-aware markdown chunking
@@ -214,7 +246,7 @@ bin/
 └── cli.js            # CLI wrapper
 
 test/
-└── *.test.ts         # 428 tests (vitest)
+└── *.test.ts         # 739 tests (vitest)
 SKILL.md              # AI agent routing instructions (auto-loaded by OpenCode)
 AGENTS_SNIPPET.md     # Optional project-level AGENTS.md managed block
 ```
@@ -223,20 +255,19 @@ AGENTS_SNIPPET.md     # Optional project-level AGENTS.md managed block
 
 - **TypeScript + Node.js** (via tsx)
 - **better-sqlite3** + **sqlite-vec** for storage
-- **@modelcontextprotocol/sdk** for MCP server
-- **node-llama-cpp** for GGUF model inference
+- **@modelcontextprotocol/sdk** for MCP server (stdio/HTTP/SSE transports)
 - **chokidar** for file watching
-- **vitest** for testing (428 tests)
+- **vitest** for testing (739 tests)
 
 ## Models
 
-All models are GGUF format, loaded on-demand:
+Embeddings use Ollama API by default (nomic-embed-text via `http://localhost:11434`). Query expansion and reranking use local GGUF models as fallback:
 
-- **Embeddings:** nomic-embed-text-v1.5 (~270MB)
-- **Reranker:** bge-reranker-v2-m3 (~1.1GB)
-- **Query Expansion:** qmd-query-expansion-1.7B (~1GB)
+- **Embeddings:** Ollama API (primary) or nomic-embed-text-v1.5 GGUF (~270MB, fallback)
+- **Reranker:** bge-reranker-v2-m3 (~1.1GB, GGUF)
+- **Query Expansion:** qmd-query-expansion-1.7B (~1GB, GGUF)
 
-Models are downloaded automatically on first use to `~/.nano-brain/models/`.
+GGUF models are downloaded automatically on first use to `~/.nano-brain/models/`.
 
 ## How nano-brain Compares
 
