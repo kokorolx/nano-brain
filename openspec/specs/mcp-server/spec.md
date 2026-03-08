@@ -57,13 +57,19 @@ The `memory_search`, `memory_vsearch`, and `memory_query` MCP tools SHALL accept
 - **THEN** results are filtered to `project_hash = 'abc123def456'` and `project_hash = 'global'`
 
 ### Requirement: memory_status reports storage usage
-The `memory_status` tool SHALL report per-workspace document counts and total storage size, in addition to existing health information.
+The `memory_status` MCP tool SHALL return vector store health, token usage metrics, and per-workspace storage info in addition to the existing index health, collection info, and model status.
 
-#### Scenario: memory_status with workspace data
-- **WHEN** `memory_status` is called after documents from multiple workspaces are indexed
-- **THEN** the response includes a breakdown of document counts per workspace (projectHash)
-- **THEN** the response includes total storage size (DB + sessions directory)
-- **THEN** the response includes storage limit configuration (maxSize, retention, minFreeDisk)
+#### Scenario: Status with Qdrant vector store
+- **WHEN** `memory_status` is called and Qdrant is the active vector provider
+- **THEN** the response SHALL include a "Vector Store" section with provider, connectivity status, vector count, and dimensions
+
+#### Scenario: Status with token usage data
+- **WHEN** `memory_status` is called and token_usage table has data
+- **THEN** the response SHALL include a "Token Usage" section with per-model token counts and request counts
+
+#### Scenario: Status with no vector store or token data
+- **WHEN** `memory_status` is called with sqlite-vec (default) and no token usage recorded
+- **THEN** the response SHALL include vector store section showing sqlite-vec as built-in, and omit the token usage section
 
 ### Requirement: Search tool parameter schema includes workspace
 The MCP tool registration for `memory_search`, `memory_vsearch`, and `memory_query` SHALL include `workspace` in their input schema as an optional string parameter with description explaining the scoping behavior.

@@ -21,7 +21,7 @@ import { createReranker } from './reranker.js';
 import { startWatcher } from './watcher.js';
 import { parseStorageConfig } from './storage.js';
 import { indexCodebase, getCodebaseStats, embedPendingCodebase } from './codebase.js'
-import { createVectorStore, type VectorStore } from './vector-store.js'
+import { createVectorStore, type VectorStore, type VectorStoreHealth } from './vector-store.js'
 import Database from 'better-sqlite3'
 import { SymbolGraph, type ContextResult, type ImpactResult, type DetectChangesResult } from './symbol-graph.js'
 
@@ -75,7 +75,9 @@ export function formatSearchResults(results: SearchResult[]): string {
 export function formatStatus(
   health: IndexHealth,
   codebaseStats?: { enabled: boolean; documents: number; chunks: number; extensions: string[]; excludeCount: number; storageUsed: number; maxSize: number },
-  embeddingHealth?: { provider: string; url: string; model: string; reachable: boolean; models?: string[]; error?: string }
+  embeddingHealth?: { provider: string; url: string; model: string; reachable: boolean; models?: string[]; error?: string },
+  vectorHealth?: VectorStoreHealth | null,
+  tokenUsage?: Array<{ model: string; totalTokens: number; requestCount: number; lastUpdated: string }> | null
 ): string {
   const lines = [
     `📊 **Memory Index Status**`,
@@ -114,6 +116,27 @@ export function formatStatus(
     lines.push(`  - Storage: ${usedMB}MB / ${maxMB}MB`)
     lines.push(`  - Extensions: ${codebaseStats.extensions.join(', ')}`)
     lines.push(`  - Exclude patterns: ${codebaseStats.excludeCount}`)
+  }
+  if (vectorHealth) {
+    lines.push(``)
+    lines.push(`**Vector Store:**`)
+    lines.push(`  - Provider: ${vectorHealth.provider}`)
+    if (vectorHealth.ok) {
+      lines.push(`  - Status: ✅ connected (${vectorHealth.vectorCount.toLocaleString()} vectors${vectorHealth.dimensions ? `, ${vectorHealth.dimensions} dims` : ''})`)
+    } else {
+      lines.push(`  - Status: ❌ unreachable (${vectorHealth.error || 'unknown'})`)
+    }
+  } else if (vectorHealth === null) {
+    lines.push(``)
+    lines.push(`**Vector Store:**`)
+    lines.push(`  - Provider: sqlite-vec (built-in)`)
+  }
+  if (tokenUsage && tokenUsage.length > 0) {
+    lines.push(``)
+    lines.push(`**Token Usage:**`)
+    for (const usage of tokenUsage) {
+      lines.push(`  - ${usage.model}: ${usage.totalTokens.toLocaleString()} tokens (${usage.requestCount.toLocaleString()} requests)`)
+    }
   }
   if (health.workspaceStats && health.workspaceStats.length > 0) {
     lines.push(``)
@@ -487,11 +510,26 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       } else {
         embeddingHealth = { provider, url: 'n/a', model: ollamaModel, reachable: true }
       }
+      let vectorHealth: VectorStoreHealth | null = null
+      const vs = store.getVectorStore()
+      if (vs) {
+        try {
+          vectorHealth = await Promise.race([
+            vs.health(),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+          ])
+        } catch (err) {
+          vectorHealth = { ok: false, provider: 'unknown', vectorCount: 0, error: err instanceof Error ? err.message : String(err) }
+        }
+      }
+
+      const tokenUsage = store.getTokenUsage()
+
       return {
         content: [
           {
             type: 'text',
-            text: formatStatus(health, codebaseStats, embeddingHealth),
+            text: formatStatus(health, codebaseStats, embeddingHealth, vectorHealth, tokenUsage.length > 0 ? tokenUsage : null),
           },
         ],
       }
@@ -1381,7 +1419,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
   setupSingletonGuard(pidPath, store, () => { if (watcher) watcher.stop(); });
   
   Promise.all([
-    createEmbeddingProvider({ embeddingConfig: config?.embedding })
+    createEmbeddingProvider({ embeddingConfig: config?.embedding, onTokenUsage: (model, tokens) => store.recordTokenUsage(model, tokens) })
       .then((loadedEmbedder) => {
         providers.embedder = loadedEmbedder;
         store.modelStatus.embedding = loadedEmbedder ? loadedEmbedder.getModel() : 'missing';
@@ -1440,7 +1478,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
       try {
         const health = await checkOllamaHealth(ollamaUrl);
         if (health.reachable) {
-          const newProvider = await createEmbeddingProvider({ embeddingConfig: { provider: 'ollama', url: ollamaUrl, model: ollamaModel } });
+          const newProvider = await createEmbeddingProvider({ embeddingConfig: { provider: 'ollama', url: ollamaUrl, model: ollamaModel }, onTokenUsage: (model, tokens) => store.recordTokenUsage(model, tokens) });
           if (newProvider) {
             const oldProvider = providers.embedder;
             providers.embedder = newProvider;

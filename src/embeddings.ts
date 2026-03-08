@@ -16,6 +16,7 @@ export interface EmbeddingProvider {
 
 export interface EmbeddingProviderOptions {
   embeddingConfig?: EmbeddingConfig;
+  onTokenUsage?: (model: string, tokens: number) => void;
 }
 
 function formatQueryPrompt(query: string): string {
@@ -206,13 +207,15 @@ class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
   private maxChars: number;
   private requestTimestamps: number[] = [];
   private rpmLimit: number;
+  private onTokenUsage?: (model: string, tokens: number) => void;
 
-  constructor(baseUrl: string, model: string, apiKey: string, maxChars?: number, rpmLimit?: number) {
+  constructor(baseUrl: string, model: string, apiKey: string, maxChars?: number, rpmLimit?: number, onTokenUsage?: (model: string, tokens: number) => void) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.model = model;
     this.apiKey = apiKey;
     this.maxChars = maxChars ?? 8000;
     this.rpmLimit = rpmLimit ?? 40;
+    this.onTokenUsage = onTokenUsage;
   }
 
   private truncate(text: string): string {
@@ -284,6 +287,9 @@ class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
       throw new Error('OpenAI-compatible embed failed: missing embedding');
     }
     this.setDimensions(embedding);
+    if (data.usage?.total_tokens && this.onTokenUsage) {
+      try { this.onTokenUsage(this.model, data.usage.total_tokens); } catch { /* ignore */ }
+    }
     return {
       embedding,
       model: this.model,
@@ -321,6 +327,9 @@ class OpenAICompatibleEmbeddingProvider implements EmbeddingProvider {
         input_type: 'document',
       }, 120000);
 
+      if (data.usage?.total_tokens && this.onTokenUsage) {
+        try { this.onTokenUsage(this.model, data.usage.total_tokens); } catch { /* ignore */ }
+      }
       const batchResults = new Map<number, EmbeddingResult>();
       for (const item of data.data) {
         const embedding = item.embedding;
@@ -385,7 +394,7 @@ export async function createEmbeddingProvider(
     }
 
     try {
-      const provider = new OpenAICompatibleEmbeddingProvider(url, model, apiKey, config.maxChars, config.rpmLimit);
+      const provider = new OpenAICompatibleEmbeddingProvider(url, model, apiKey, config.maxChars, config.rpmLimit, options?.onTokenUsage);
       await provider.embed('test');
       log('embedding', 'createEmbeddingProvider selected=openai model=' + model);
       console.error(`[embedding] Using OpenAI-compatible provider: ${model} at ${url} (${provider.getRpmLimit()} rpm)`);

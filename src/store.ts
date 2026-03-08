@@ -191,6 +191,13 @@ export function createStore(dbPath: string): Store {
       FOREIGN KEY (symbol_id) REFERENCES code_symbols(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_flow_steps_symbol ON flow_steps(symbol_id);
+
+    CREATE TABLE IF NOT EXISTS token_usage (
+      model TEXT PRIMARY KEY,
+      total_tokens INTEGER NOT NULL DEFAULT 0,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      last_updated TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
   
   const hasProjectHash = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'project_hash');
@@ -439,6 +446,17 @@ export function createStore(dbPath: string): Store {
   const supersedeDocumentStmt = db.prepare(`
     UPDATE documents SET superseded_by = ? WHERE id = ?
   `);
+
+  const recordTokenUsageStmt = db.prepare(`
+    INSERT INTO token_usage (model, total_tokens, request_count, last_updated)
+    VALUES (?, ?, 1, datetime('now'))
+    ON CONFLICT(model) DO UPDATE SET
+      total_tokens = total_tokens + excluded.total_tokens,
+      request_count = request_count + 1,
+      last_updated = datetime('now')
+  `);
+
+  const getTokenUsageStmt = db.prepare(`SELECT model, total_tokens as totalTokens, request_count as requestCount, last_updated as lastUpdated FROM token_usage ORDER BY total_tokens DESC`);
   
   return {
     modelStatus: {
@@ -550,8 +568,9 @@ export function createStore(dbPath: string): Store {
       return result.changes;
     },
     
-    insertEmbeddingLocal(hash: string, seq: number, pos: number, model: string) {
-      log('store', 'insertEmbeddingLocal hash=' + hash.substring(0, 8) + ' seq=' + seq);
+    insertEmbeddingLocal(hash: string, seq: number, pos: number, model: string, filePath?: string) {
+      const pathSuffix = filePath ? ' path=' + filePath.replace(/.*\//, '') : '';
+      log('store', 'insertEmbeddingLocal hash=' + hash.substring(0, 8) + ' seq=' + seq + pathSuffix);
       insertEmbeddingStmt.run(hash, seq, pos, model);
     },
 
@@ -1383,6 +1402,26 @@ export function createStore(dbPath: string): Store {
         filePath: string;
         lineNumber: number;
       }>;
+    },
+
+    recordTokenUsage(model: string, tokens: number) {
+      try {
+        recordTokenUsageStmt.run(model, tokens);
+      } catch (err) {
+        console.warn('[store] Failed to record token usage:', err instanceof Error ? err.message : String(err));
+      }
+    },
+
+    getTokenUsage() {
+      return getTokenUsageStmt.all() as Array<{ model: string; totalTokens: number; requestCount: number; lastUpdated: string }>;
+    },
+
+    getSqliteVecCount(): number {
+      if (!vecAvailable) return 0;
+      try {
+        const row = db.prepare('SELECT COUNT(*) as count FROM vectors_vec').get() as { count: number };
+        return row.count;
+      } catch { return 0; }
     },
   };
 }

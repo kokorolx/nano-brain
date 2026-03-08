@@ -1,5 +1,5 @@
 import { startServer } from './server.js';
-import { createStore, computeHash, indexDocument, extractProjectHashFromPath } from './store.js';
+import { createStore, computeHash, indexDocument, extractProjectHashFromPath, resolveWorkspaceDbPath } from './store.js';
 import { loadCollectionConfig, addCollection, removeCollection, renameCollection, listCollections, getCollections, scanCollectionFiles, saveCollectionConfig, getWorkspaceConfig, removeWorkspaceConfig } from './collections.js';
 import { harvestSessions } from './harvester.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth, checkOpenAIHealth } from './embeddings.js';
@@ -11,7 +11,7 @@ import { resolveHostUrl } from './host.js';
 import { QdrantVecStore } from './providers/qdrant.js';
 import { createVectorStore } from './vector-store.js';
 import type { SearchResult, CollectionConfig, Store } from './types.js';
-import type { VectorPoint } from './vector-store.js';
+import type { VectorPoint, VectorStoreHealth } from './vector-store.js';
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -452,6 +452,57 @@ function formatBytes(bytes: number): string {
   return `${mb.toFixed(1)} MB`;
 }
 
+async function getVectorStoreHealth(config: ReturnType<typeof loadCollectionConfig>): Promise<VectorStoreHealth | null> {
+  const vectorConfig = config?.vector;
+  if (!vectorConfig || vectorConfig.provider !== 'qdrant') return null;
+
+  try {
+    const vectorStore = createVectorStore(vectorConfig);
+    const health = await Promise.race([
+      vectorStore.health(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+    ]);
+    await vectorStore.close();
+    return health;
+  } catch (err) {
+    return {
+      ok: false,
+      provider: vectorConfig.provider || 'unknown',
+      vectorCount: 0,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function printVectorStoreSection(vectorHealth: VectorStoreHealth | null, sqliteVecCount?: number): void {
+  console.log('Vector Store:');
+  if (vectorHealth) {
+    console.log(`  Provider:   ${vectorHealth.provider}`);
+    if (vectorHealth.ok) {
+      console.log(`  Status:     ✅ connected`);
+      console.log(`  Vectors:    ${vectorHealth.vectorCount.toLocaleString()}`);
+      if (vectorHealth.dimensions) {
+        console.log(`  Dimensions: ${vectorHealth.dimensions}`);
+      }
+    } else {
+      console.log(`  Status:     ❌ unreachable (${vectorHealth.error || 'unknown'})`);
+    }
+  } else {
+    console.log(`  Provider:   sqlite-vec (built-in)`);
+    console.log(`  Vectors:    ${(sqliteVecCount ?? 0).toLocaleString()}`);
+  }
+  console.log('');
+}
+
+function printTokenUsageSection(tokenUsage: Array<{ model: string; totalTokens: number; requestCount: number; lastUpdated: string }>): void {
+  if (tokenUsage.length === 0) return;
+  console.log('Token Usage:');
+  for (const usage of tokenUsage) {
+    console.log(`  ${usage.model.padEnd(25)} ${usage.totalTokens.toLocaleString()} tokens (${usage.requestCount.toLocaleString()} requests)`);
+  }
+  console.log('');
+}
+
 async function printEmbeddingServerStatus(config: ReturnType<typeof loadCollectionConfig>): Promise<void> {
   const embeddingConfig = config?.embedding;
   const url = embeddingConfig?.url || detectOllamaUrl();
@@ -557,6 +608,34 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
     console.log('');
 
     await printEmbeddingServerStatus(config);
+    console.log('');
+
+    const vectorHealth = await getVectorStoreHealth(config);
+    printVectorStoreSection(vectorHealth);
+
+    const allTokenUsage = new Map<string, { totalTokens: number; requestCount: number; lastUpdated: string }>();
+    for (const dbFile of dbFiles) {
+      try {
+        const readDb = new Database(dbFile, { readonly: true });
+        try {
+          const rows = readDb.prepare('SELECT model, total_tokens as totalTokens, request_count as requestCount, last_updated as lastUpdated FROM token_usage').all() as Array<{ model: string; totalTokens: number; requestCount: number; lastUpdated: string }>;
+          for (const row of rows) {
+            const existing = allTokenUsage.get(row.model);
+            if (existing) {
+              existing.totalTokens += row.totalTokens;
+              existing.requestCount += row.requestCount;
+              if (row.lastUpdated > existing.lastUpdated) existing.lastUpdated = row.lastUpdated;
+            } else {
+              allTokenUsage.set(row.model, { totalTokens: row.totalTokens, requestCount: row.requestCount, lastUpdated: row.lastUpdated });
+            }
+          }
+        } catch { /* token_usage table may not exist in older DBs */ }
+        readDb.close();
+      } catch { /* ignore */ }
+    }
+    const aggregatedUsage = [...allTokenUsage.entries()].map(([model, data]) => ({ model, ...data })).sort((a, b) => b.totalTokens - a.totalTokens);
+    printTokenUsageSection(aggregatedUsage);
+
     return;
   }
 
@@ -608,6 +687,11 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
 
   await printEmbeddingServerStatus(config);
   console.log('');
+
+  const vectorHealth = await getVectorStoreHealth(config);
+  printVectorStoreSection(vectorHealth, vectorHealth ? undefined : store.getSqliteVecCount());
+
+  printTokenUsageSection(store.getTokenUsage());
 
   console.log('Models:');
   console.log(`  Embedding: ${health.modelStatus.embedding}`);
@@ -2365,6 +2449,25 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
       if (workspacePath && config?.workspaces?.[workspacePath]) {
         console.log(`  config entry:     ${workspacePath}`);
       }
+      if (workspacePath && config?.collections) {
+        const normalizedWs = workspacePath.replace(/\/$/, '');
+        const affectedCollections = Object.entries(config.collections)
+          .filter(([, coll]) => {
+            const collPath = coll.path.startsWith('~') ? coll.path.replace('~', os.homedir()) : coll.path;
+            return collPath.startsWith(normalizedWs + '/') || collPath === normalizedWs;
+          })
+          .map(([name]) => name);
+        if (affectedCollections.length > 0) {
+          console.log(`  collections:      ${affectedCollections.join(', ')}`);
+        }
+      }
+      if (workspacePath) {
+        const dataDir = path.dirname(globalOpts.dbPath);
+        const wsDbPath = resolveWorkspaceDbPath(dataDir, workspacePath);
+        if (fs.existsSync(wsDbPath)) {
+          console.log(`  database file:    ${path.basename(wsDbPath)}`);
+        }
+      }
       console.log('');
       console.log('Run without --dry-run to execute.');
       db.close();
@@ -2377,6 +2480,22 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
     let configRemoved = false;
     if (workspacePath) {
       configRemoved = removeWorkspaceConfig(globalOpts.configPath, workspacePath);
+    }
+
+    let collectionsRemoved = 0;
+    if (workspacePath && config?.collections) {
+      const normalizedWs = workspacePath.replace(/\/$/, '');
+      const toRemove: string[] = [];
+      for (const [name, coll] of Object.entries(config.collections)) {
+        const collPath = coll.path.startsWith('~') ? coll.path.replace('~', os.homedir()) : coll.path;
+        if (collPath.startsWith(normalizedWs + '/') || collPath === normalizedWs) {
+          toRemove.push(name);
+        }
+      }
+      for (const name of toRemove) {
+        removeCollection(globalOpts.configPath, name);
+        collectionsRemoved++;
+      }
     }
 
     const totalDeleted = result.documentsDeleted + result.embeddingsDeleted + result.contentDeleted
@@ -2397,6 +2516,9 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
     if (configRemoved) {
       console.log(`  config entry:     ${workspacePath}`);
     }
+    if (collectionsRemoved > 0) {
+      console.log(`  collections:      ${collectionsRemoved} removed`);
+    }
     console.log(`  total rows:       ${totalDeleted}`);
 
     const db = new Database(globalOpts.dbPath, { readonly: true });
@@ -2414,6 +2536,29 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
       console.log('✅ Verified: zero rows remain for this workspace.');
     } else {
       console.log(`⚠️  Warning: ${remaining} rows still found for ${projectHash}. Partial removal.`);
+    }
+
+    if (workspacePath) {
+      const dataDir = path.dirname(globalOpts.dbPath);
+      const wsDbPath = resolveWorkspaceDbPath(dataDir, workspacePath);
+      if (fs.existsSync(wsDbPath) && wsDbPath !== globalOpts.dbPath) {
+        try {
+          const wsDb = new Database(wsDbPath, { readonly: true });
+          let wsRemaining = 0;
+          try {
+            wsRemaining = (wsDb.prepare('SELECT COUNT(*) as count FROM documents WHERE active = 1').get() as { count: number }).count;
+          } catch { /* ignore */ }
+          wsDb.close();
+          if (wsRemaining === 0) {
+            fs.unlinkSync(wsDbPath);
+            try { fs.unlinkSync(wsDbPath + '-wal'); } catch { /* ignore */ }
+            try { fs.unlinkSync(wsDbPath + '-shm'); } catch { /* ignore */ }
+            console.log(`  database file:    ${path.basename(wsDbPath)} deleted`);
+          }
+        } catch {
+          console.warn(`  ⚠️  Could not clean up database file: ${path.basename(wsDbPath)}`);
+        }
+      }
     }
   } catch (err) {
     console.error((err as Error).message);

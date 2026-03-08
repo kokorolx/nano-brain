@@ -465,7 +465,7 @@ export async function embedPendingCodebase(
     if (batch.length === 0) break
 
     const maxChunksPerBatch = 200
-    const allChunks: Array<{ hash: string; seq: number; pos: number; text: string }> = []
+    const allChunks: Array<{ hash: string; seq: number; pos: number; text: string; path: string }> = []
     const emptyBodyHashes: string[] = []
     for (const row of batch) {
       const chunks = chunkMarkdown(row.body, row.hash)
@@ -480,6 +480,7 @@ export async function embedPendingCodebase(
           seq: chunk.seq,
           pos: chunk.pos,
           text: chunk.text.length > maxChars ? chunk.text.substring(0, maxChars) : chunk.text,
+          path: row.path,
         })
       }
       if (allChunks.length >= maxChunksPerBatch) break
@@ -544,7 +545,7 @@ export async function embedPendingCodebase(
 
       // Step 3: Record in SQLite content_vectors (no external store — already handled above)
       for (let i = 0; i < allChunks.length; i++) {
-        store.insertEmbeddingLocal(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, modelName)
+        store.insertEmbeddingLocal(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, modelName, allChunks[i].path)
       }
 
       embedded += batch.length
@@ -570,7 +571,7 @@ export async function embedPendingCodebase(
             }
           }
 
-          store.insertEmbeddingLocal(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, result.model || modelName)
+          store.insertEmbeddingLocal(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, result.model || modelName, allChunks[i].path)
           succeededHashes.add(allChunks[i].hash)
         } catch {
           console.warn(`[embed] Skipping chunk ${allChunks[i].hash}:${allChunks[i].seq}`)
