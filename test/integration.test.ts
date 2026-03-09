@@ -8,7 +8,7 @@ import type { Store } from '../src/types.js';
 
 describe('FTS5 Query Sanitization', () => {
   it('wraps normal query in quotes', () => {
-    expect(sanitizeFTS5Query('hello world')).toBe('"hello world"');
+    expect(sanitizeFTS5Query('hello world')).toBe('"hello" OR "world"');
   });
 
   it('preserves hyphenated words', () => {
@@ -16,15 +16,15 @@ describe('FTS5 Query Sanitization', () => {
   });
 
   it('escapes internal double quotes', () => {
-    expect(sanitizeFTS5Query('hello "world"')).toBe('"hello ""world"""');
+    expect(sanitizeFTS5Query('hello "world"')).toBe('"hello" OR """world"""');
   });
 
   it('neutralizes FTS5 operators', () => {
-    expect(sanitizeFTS5Query('AND OR NOT')).toBe('"AND OR NOT"');
+    expect(sanitizeFTS5Query('AND OR NOT')).toBe('"AND" OR "OR" OR "NOT"');
   });
 
   it('neutralizes FTS5 column names', () => {
-    expect(sanitizeFTS5Query('filepath: test')).toBe('"filepath: test"');
+    expect(sanitizeFTS5Query('filepath: test')).toBe('"filepath:" OR "test"');
   });
 
   it('returns empty string for empty input', () => {
@@ -33,6 +33,16 @@ describe('FTS5 Query Sanitization', () => {
 
   it('returns empty string for whitespace-only input', () => {
     expect(sanitizeFTS5Query('   ')).toBe('');
+  });
+
+  it('splits multi-word code identifier query', () => {
+    expect(sanitizeFTS5Query('instantSellPriceAdjustPercent config')).toBe(
+      '"instantSellPriceAdjustPercent" OR "config"'
+    );
+  });
+
+  it('collapses extra whitespace', () => {
+    expect(sanitizeFTS5Query('  hello   world  ')).toBe('"hello" OR "world"');
   });
 });
 

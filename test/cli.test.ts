@@ -379,3 +379,123 @@ describe('resolveWorkspaceIdentifier', () => {
     expect(() => resolveWorkspaceIdentifier('nonexistent', config, store)).toThrow(/No workspace found/);
   });
 });
+
+describe('showHelp includes new commands', () => {
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleLogSpy.mockRestore();
+  });
+
+  it('should include context command in help', () => {
+    showHelp();
+    const output = consoleLogSpy.mock.calls[0][0] as string;
+    expect(output).toContain('context <name>');
+    expect(output).toContain('360° view of a code symbol');
+  });
+
+  it('should include code-impact command in help', () => {
+    showHelp();
+    const output = consoleLogSpy.mock.calls[0][0] as string;
+    expect(output).toContain('code-impact <name>');
+    expect(output).toContain('Analyze impact of changing a symbol');
+  });
+
+  it('should include detect-changes command in help', () => {
+    showHelp();
+    const output = consoleLogSpy.mock.calls[0][0] as string;
+    expect(output).toContain('detect-changes');
+    expect(output).toContain('Map git changes to affected symbols');
+  });
+
+  it('should include reindex command in help', () => {
+    showHelp();
+    const output = consoleLogSpy.mock.calls[0][0] as string;
+    expect(output).toContain('reindex');
+    expect(output).toContain('Re-index codebase files');
+  });
+
+  it('should include all code intelligence command options', () => {
+    showHelp();
+    const output = consoleLogSpy.mock.calls[0][0] as string;
+    expect(output).toContain('--file=<path>');
+    expect(output).toContain('--direction=<d>');
+    expect(output).toContain('--max-depth=<n>');
+    expect(output).toContain('--min-confidence=<n>');
+    expect(output).toContain('--scope=<s>');
+  });
+});
+
+describe('Command Dispatch - New Commands', () => {
+  it('should identify context command with args', () => {
+    const args = ['context', 'myFunction', '--file=/path/to/file.ts'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('context');
+    expect(result.remaining.slice(1)).toEqual(['myFunction', '--file=/path/to/file.ts']);
+  });
+
+  it('should identify code-impact command with args', () => {
+    const args = ['code-impact', 'MyClass', '--direction=upstream', '--max-depth=3'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('code-impact');
+    expect(result.remaining.slice(1)).toEqual(['MyClass', '--direction=upstream', '--max-depth=3']);
+  });
+
+  it('should identify detect-changes command with scope', () => {
+    const args = ['detect-changes', '--scope=staged', '--json'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('detect-changes');
+    expect(result.remaining.slice(1)).toEqual(['--scope=staged', '--json']);
+  });
+
+  it('should identify reindex command with root', () => {
+    const args = ['reindex', '--root=/path/to/workspace'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('reindex');
+    expect(result.remaining.slice(1)).toEqual(['--root=/path/to/workspace']);
+  });
+
+  it('should handle context command with json output', () => {
+    const args = ['context', 'processPayment', '--json'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('context');
+    expect(result.remaining).toContain('--json');
+  });
+
+  it('should handle code-impact with all options', () => {
+    const args = ['code-impact', 'DatabaseClient', '--direction=downstream', '--max-depth=10', '--min-confidence=0.5', '--file=/src/db.ts', '--json'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('code-impact');
+    expect(result.remaining).toContain('--direction=downstream');
+    expect(result.remaining).toContain('--max-depth=10');
+    expect(result.remaining).toContain('--min-confidence=0.5');
+    expect(result.remaining).toContain('--file=/src/db.ts');
+    expect(result.remaining).toContain('--json');
+  });
+
+  it('should handle detect-changes with default scope', () => {
+    const args = ['detect-changes'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('detect-changes');
+    expect(result.remaining).toHaveLength(1);
+  });
+
+  it('should handle reindex without options', () => {
+    const args = ['reindex'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('reindex');
+    expect(result.remaining).toHaveLength(1);
+  });
+});

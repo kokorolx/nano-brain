@@ -12,8 +12,11 @@ import { log } from './logger.js';
 export function sanitizeFTS5Query(query: string): string {
   const trimmed = query.trim();
   if (!trimmed) return '';
-  const escaped = trimmed.replace(/"/g, '""');
-  return `"${escaped}"`;
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return '';
+  const quotedTokens = tokens.map((token) => `"${token.replace(/"/g, '""')}"`);
+  if (quotedTokens.length === 1) return quotedTokens[0];
+  return quotedTokens.join(' OR ');
 }
 
 export function createStore(dbPath: string): Store {

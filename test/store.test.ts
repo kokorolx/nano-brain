@@ -1540,7 +1540,7 @@ describe('Store', () => {
     });
 
     it('should handle multiple quotes', () => {
-      expect(sanitizeFTS5Query('"a" "b"')).toBe('"""a"" ""b"""');
+      expect(sanitizeFTS5Query('"a" "b"')).toBe('"""a""" OR """b"""');
     });
 
     it('should trim whitespace', () => {
@@ -1553,7 +1553,7 @@ describe('Store', () => {
     });
 
     it('should handle special FTS5 characters', () => {
-      expect(sanitizeFTS5Query('test AND OR NOT')).toBe('"test AND OR NOT"');
+      expect(sanitizeFTS5Query('test AND OR NOT')).toBe('"test" OR "AND" OR "OR" OR "NOT"');
     });
 
     it('should preserve newlines and tabs within quotes', () => {
@@ -1573,8 +1573,8 @@ describe('Store', () => {
     it('should prevent FTS5 query injection via quotes', () => {
       const malicious = 'test" OR "1"="1';
       const result = sanitizeFTS5Query(malicious);
-      expect(result).toBe('"test"" OR ""1""=""1"');
-      // The entire result is wrapped in quotes, preventing FTS5 operator interpretation
-      // AND/OR/NOT operators within the quoted string are treated as literal text
+      expect(result).toBe('"test""" OR "OR" OR """1""=""1"');
+      // Each token is individually quoted, preventing FTS5 operator interpretation
+      // Internal quotes are escaped with "" within each token's quotes
     });
   });

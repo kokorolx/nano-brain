@@ -440,6 +440,10 @@ export async function indexCodebase(
     if (flowResult.flowsDetected > 0) {
       log('codebase', `Flow detection: ${flowResult.flowsDetected} flows from ${flowResult.entryPointsFound} entry points`)
     }
+  } else if (!db && isTreeSitterAvailable()) {
+    log('codebase', 'WARNING: db parameter not provided — symbol graph indexing skipped. Pass db to indexCodebase() to enable code intelligence.')
+  } else if (db && !isTreeSitterAvailable()) {
+    log('codebase', 'WARNING: tree-sitter not available — symbol graph indexing skipped. Install tree-sitter-wasms to enable code intelligence.')
   }
 
   const finalStorageUsed = store.getCollectionStorageSize('codebase')

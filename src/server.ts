@@ -31,6 +31,7 @@ export interface ServerOptions {
   httpPort?: number;
   httpHost?: string;
   daemon?: boolean;
+  root?: string;
 }
 
 export interface ServerDeps {
@@ -664,7 +665,8 @@ export function createMcpServer(deps: ServerDeps): McpServer {
             effectiveRoot,
             configToUse,
             effectiveProjectHash,
-            providers.embedder
+            providers.embedder,
+            deps.db
           )
           console.error(`[codebase] Indexing complete: ${result.filesScanned} scanned, ${result.filesIndexed} indexed, ${result.filesSkippedUnchanged} unchanged`)
           if (providers.embedder) {
@@ -1416,7 +1418,7 @@ function setupSingletonGuard(pidPath: string, store: Store, stopWatcher: () => v
 }
 
 export async function startServer(options: ServerOptions): Promise<void> {
-  const { dbPath, configPath, httpPort, httpHost = '127.0.0.1', daemon } = options;
+  const { dbPath, configPath, httpPort, httpHost = '127.0.0.1', daemon, root } = options;
   
   const homeDir = os.homedir();
   const nanoBrainHome = path.join(homeDir, '.nano-brain');
@@ -1431,11 +1433,20 @@ export async function startServer(options: ServerOptions): Promise<void> {
   const storageConfig = parseStorageConfig(config?.storage);
   let resolvedWorkspaceRoot: string;
   if (daemon && config?.workspaces && Object.keys(config.workspaces).length > 0) {
-    resolvedWorkspaceRoot = Object.keys(config.workspaces)[0];
-    log('server', 'Daemon mode: using first configured workspace as primary');
-    console.error(`[memory] Daemon mode: primary workspace = ${resolvedWorkspaceRoot}`);
+    const configuredWorkspaces = Object.keys(config.workspaces);
+    const cwd = root || process.cwd();
+    const cwdMatch = configuredWorkspaces.find(ws => cwd === ws || cwd.startsWith(ws + '/'));
+    if (cwdMatch) {
+      resolvedWorkspaceRoot = cwdMatch;
+      log('server', 'Daemon mode: cwd matches configured workspace');
+      console.error(`[memory] Daemon mode: workspace from cwd = ${resolvedWorkspaceRoot}`);
+    } else {
+      resolvedWorkspaceRoot = configuredWorkspaces[0];
+      log('server', 'Daemon mode: cwd does not match any workspace, using first configured');
+      console.error(`[memory] Daemon mode: primary workspace = ${resolvedWorkspaceRoot}`);
+    }
   } else {
-    resolvedWorkspaceRoot = process.cwd();
+    resolvedWorkspaceRoot = root || process.cwd();
   }
   const wsConfig = getWorkspaceConfig(config, resolvedWorkspaceRoot);
   const resolvedCodebaseConfig = wsConfig.codebase;
@@ -1540,6 +1551,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
       store,
       collections,
       embedder: providers.embedder,
+      db: symbolGraphDb,
       debounceMs: watcherConfig?.debounceMs ?? 2000,
       pollIntervalMs: validatedIntervals?.reindexPoll ? validatedIntervals.reindexPoll * 1000 : (watcherConfig?.pollIntervalMs ?? 120000),
       sessionPollMs: validatedIntervals?.sessionPoll ? validatedIntervals.sessionPoll * 1000 : (watcherConfig?.sessionPollMs ?? 120000),

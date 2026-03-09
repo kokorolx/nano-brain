@@ -13,6 +13,16 @@ export function validateFilePath(filePath: string): void {
   }
 }
 
+export function splitIdentifier(name: string): string[] {
+  return name
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(/\s+/)
+    .map(s => s.toLowerCase())
+    .filter(s => s.length > 0)
+}
+
 export interface SymbolRecord {
   id: number
   name: string
@@ -182,6 +192,48 @@ export class SymbolGraph {
     `)
     const row = stmt.get(filePath, projectHash) as { content_hash: string } | undefined
     return row?.content_hash ?? null
+  }
+
+  searchByName(pattern: string, projectHash: string, limit: number = 20): SymbolRecord[] {
+    const stmt = this.db.prepare(`
+      SELECT id, name, kind, file_path as filePath, start_line as startLine, end_line as endLine,
+             exported, cluster_id as clusterId
+      FROM code_symbols
+      WHERE project_hash = ? AND LOWER(name) LIKE ?
+    `)
+    const likePattern = `%${pattern.toLowerCase()}%`
+    const candidates = stmt.all(projectHash, likePattern) as SymbolRecord[]
+
+    if (candidates.length === 0) return []
+
+    const patternTokens = splitIdentifier(pattern)
+    if (patternTokens.length === 0) return candidates.slice(0, limit)
+
+    const scored = candidates.map(candidate => {
+      const candidateTokens = splitIdentifier(candidate.name)
+      let score = 0
+
+      if (candidate.name.toLowerCase() === pattern.toLowerCase()) {
+        score = 3
+      } else {
+        const matchCount = patternTokens.filter(pt =>
+          candidateTokens.some(ct => ct.includes(pt) || pt.includes(ct))
+        ).length
+        if (matchCount === patternTokens.length) {
+          score = 2
+        } else if (matchCount > 0) {
+          score = matchCount / patternTokens.length
+        }
+      }
+
+      return { candidate, score }
+    })
+
+    return scored
+      .filter(s => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(s => s.candidate)
   }
 
   handleContext(params: {

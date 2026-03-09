@@ -10,7 +10,8 @@ import {
   parseMessages,
   harvestSessions,
   loadHarvestState,
-  saveHarvestState
+  saveHarvestState,
+  getMessageDirMtime
 } from '../src/harvester.js';
 import type { HarvestedSession } from '../src/types.js';
 
@@ -694,5 +695,339 @@ describe('harvestSessions', () => {
 
     expect(result).toHaveLength(2);
     expect(result.map(s => s.sessionId).sort()).toEqual([sessionId1, sessionId2].sort());
+  });
+});
+
+describe('harvestSessions incremental', () => {
+  let tmpDir: string;
+  let outputDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `harvester-incr-test-${Date.now()}`);
+    outputDir = join(tmpDir, 'output');
+    mkdirSync(tmpDir, { recursive: true });
+    mkdirSync(outputDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpDir)) {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  function createSessionFixture(opts: {
+    tmpDir: string;
+    projectHash: string;
+    sessionId: string;
+    slug: string;
+    title: string;
+    directory: string;
+    messages: Array<{ id: string; role: string; agent?: string; created: number; text: string }>;
+  }) {
+    const sessionDir = join(opts.tmpDir, 'session', opts.projectHash);
+    mkdirSync(sessionDir, { recursive: true });
+    writeFileSync(
+      join(sessionDir, `${opts.sessionId}.json`),
+      JSON.stringify({
+        id: opts.sessionId,
+        slug: opts.slug,
+        title: opts.title,
+        projectID: opts.projectHash,
+        directory: opts.directory,
+        time: { created: 1770106366269, updated: 1770106366269 }
+      })
+    );
+
+    for (const msg of opts.messages) {
+      const messageDir = join(opts.tmpDir, 'message', opts.sessionId);
+      mkdirSync(messageDir, { recursive: true });
+      writeFileSync(
+        join(messageDir, `${msg.id}.json`),
+        JSON.stringify({
+          id: msg.id,
+          sessionID: opts.sessionId,
+          role: msg.role,
+          agent: msg.agent,
+          time: { created: msg.created }
+        })
+      );
+
+      const partDir = join(opts.tmpDir, 'part', msg.id);
+      mkdirSync(partDir, { recursive: true });
+      writeFileSync(
+        join(partDir, `prt_${msg.id.replace('msg_', '')}.json`),
+        JSON.stringify({
+          id: `prt_${msg.id.replace('msg_', '')}`,
+          type: 'text',
+          text: msg.text
+        })
+      );
+    }
+  }
+
+  it('harvests new messages when session file mtime unchanged', async () => {
+    const stateFile = join(tmpDir, 'state.json');
+    const sessionId = 'ses_incr1';
+    const projectHash = 'proj_incr1';
+
+    createSessionFixture({
+      tmpDir,
+      projectHash,
+      sessionId,
+      slug: 'incremental-test',
+      title: 'Incremental Test',
+      directory: '/test/project',
+      messages: [
+        { id: 'msg_001', role: 'user', created: 1770106366200, text: 'First message' }
+      ]
+    });
+
+    await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+
+    const messageDir = join(tmpDir, 'message', sessionId);
+    writeFileSync(
+      join(messageDir, 'msg_002.json'),
+      JSON.stringify({
+        id: 'msg_002',
+        sessionID: sessionId,
+        role: 'assistant',
+        agent: 'sisyphus',
+        time: { created: 1770106366300 }
+      })
+    );
+
+    const partDir = join(tmpDir, 'part', 'msg_002');
+    mkdirSync(partDir, { recursive: true });
+    writeFileSync(
+      join(partDir, 'prt_002.json'),
+      JSON.stringify({
+        id: 'prt_002',
+        type: 'text',
+        text: 'Second message'
+      })
+    );
+
+    const result = await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+
+    expect(result).toHaveLength(1);
+
+    const state = loadHarvestState(stateFile);
+    expect(state[`${sessionId}.json`].messageCount).toBe(2);
+
+    const outputPath = getOutputPath(outputDir, '/test/project', '2026-02-03', 'incremental-test');
+    const content = readFileSync(outputPath, 'utf-8');
+    expect(content).toContain('First message');
+    expect(content).toContain('Second message');
+  });
+
+  it('skips truly unchanged sessions', async () => {
+    const stateFile = join(tmpDir, 'state.json');
+    const sessionId = 'ses_unchanged';
+    const projectHash = 'proj_unchanged';
+
+    createSessionFixture({
+      tmpDir,
+      projectHash,
+      sessionId,
+      slug: 'unchanged-test',
+      title: 'Unchanged Test',
+      directory: '/test/unchanged',
+      messages: [
+        { id: 'msg_001', role: 'user', created: 1770106366200, text: 'Only message' }
+      ]
+    });
+
+    const result1 = await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+    expect(result1).toHaveLength(1);
+
+    const result2 = await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+    expect(result2).toEqual([]);
+  });
+
+  it('persists messageCount in state', async () => {
+    const stateFile = join(tmpDir, 'state.json');
+    const sessionId = 'ses_count';
+    const projectHash = 'proj_count';
+
+    createSessionFixture({
+      tmpDir,
+      projectHash,
+      sessionId,
+      slug: 'count-test',
+      title: 'Count Test',
+      directory: '/test/count',
+      messages: [
+        { id: 'msg_001', role: 'user', created: 1770106366200, text: 'Message 1' },
+        { id: 'msg_002', role: 'assistant', agent: 'sisyphus', created: 1770106366300, text: 'Message 2' },
+        { id: 'msg_003', role: 'user', created: 1770106366400, text: 'Message 3' }
+      ]
+    });
+
+    await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+
+    const state = loadHarvestState(stateFile);
+    expect(state[`${sessionId}.json`].messageCount).toBe(3);
+  });
+
+  it('re-harvests when state entry lacks messageCount (migration)', async () => {
+    const stateFile = join(tmpDir, 'state.json');
+    const sessionId = 'ses_migrate';
+    const projectHash = 'proj_migrate';
+
+    createSessionFixture({
+      tmpDir,
+      projectHash,
+      sessionId,
+      slug: 'migrate-test',
+      title: 'Migration Test',
+      directory: '/test/migrate',
+      messages: [
+        { id: 'msg_001', role: 'user', created: 1770106366200, text: 'Message 1' },
+        { id: 'msg_002', role: 'assistant', created: 1770106366300, text: 'Message 2' },
+        { id: 'msg_003', role: 'user', created: 1770106366400, text: 'Message 3' },
+        { id: 'msg_004', role: 'assistant', created: 1770106366500, text: 'Message 4' },
+        { id: 'msg_005', role: 'user', created: 1770106366600, text: 'Message 5' }
+      ]
+    });
+
+    saveHarvestState(stateFile, {
+      [`${sessionId}.json`]: { mtime: 9999999999999 }
+    });
+
+    const result = await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+
+    expect(result).toHaveLength(1);
+
+    const state = loadHarvestState(stateFile);
+    expect(state[`${sessionId}.json`].messageCount).toBe(5);
+  });
+
+  it('incremental append adds only new messages', async () => {
+    const stateFile = join(tmpDir, 'state.json');
+    const sessionId = 'ses_append';
+    const projectHash = 'proj_append';
+
+    createSessionFixture({
+      tmpDir,
+      projectHash,
+      sessionId,
+      slug: 'append-test',
+      title: 'Append Test',
+      directory: '/test/append',
+      messages: [
+        { id: 'msg_001', role: 'user', created: 1770106366200, text: 'Message 1' },
+        { id: 'msg_002', role: 'assistant', agent: 'sisyphus', created: 1770106366300, text: 'Message 2' }
+      ]
+    });
+
+    await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+
+    const messageDir = join(tmpDir, 'message', sessionId);
+    writeFileSync(
+      join(messageDir, 'msg_003.json'),
+      JSON.stringify({
+        id: 'msg_003',
+        sessionID: sessionId,
+        role: 'user',
+        time: { created: 1770106366400 }
+      })
+    );
+    writeFileSync(
+      join(messageDir, 'msg_004.json'),
+      JSON.stringify({
+        id: 'msg_004',
+        sessionID: sessionId,
+        role: 'assistant',
+        agent: 'sisyphus',
+        time: { created: 1770106366500 }
+      })
+    );
+
+    const partDir3 = join(tmpDir, 'part', 'msg_003');
+    mkdirSync(partDir3, { recursive: true });
+    writeFileSync(
+      join(partDir3, 'prt_003.json'),
+      JSON.stringify({ id: 'prt_003', type: 'text', text: 'Message 3' })
+    );
+
+    const partDir4 = join(tmpDir, 'part', 'msg_004');
+    mkdirSync(partDir4, { recursive: true });
+    writeFileSync(
+      join(partDir4, 'prt_004.json'),
+      JSON.stringify({ id: 'prt_004', type: 'text', text: 'Message 4' })
+    );
+
+    const result = await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].messages).toHaveLength(2);
+    expect(result[0].messages[0].text).toBe('Message 3');
+    expect(result[0].messages[1].text).toBe('Message 4');
+
+    const outputPath = getOutputPath(outputDir, '/test/append', '2026-02-03', 'append-test');
+    const content = readFileSync(outputPath, 'utf-8');
+    expect(content).toContain('Message 1');
+    expect(content).toContain('Message 2');
+    expect(content).toContain('Message 3');
+    expect(content).toContain('Message 4');
+  });
+
+  it('retry logic increments and eventually skips', async () => {
+    const stateFile = join(tmpDir, 'state.json');
+    const sessionId = 'ses_retry';
+    const projectHash = 'proj_retry';
+
+    createSessionFixture({
+      tmpDir,
+      projectHash,
+      sessionId,
+      slug: 'retry-test',
+      title: 'Retry Test',
+      directory: '/test/retry',
+      messages: [
+        { id: 'msg_001', role: 'user', created: 1770106366200, text: 'Retry message' }
+      ]
+    });
+
+    saveHarvestState(stateFile, {
+      [`${sessionId}.json`]: { mtime: 9999999999999, messageCount: 1, retries: 2 }
+    });
+
+    await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+    const state = loadHarvestState(stateFile);
+    expect(state[`${sessionId}.json`].retries).toBe(3);
+    expect(state[`${sessionId}.json`].skipped).toBe(true);
+
+    const result = await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+    expect(result).toEqual([]);
+  });
+
+  it('permanently skipped sessions stay skipped', async () => {
+    const stateFile = join(tmpDir, 'state.json');
+    const sessionId = 'ses_skipped';
+    const projectHash = 'proj_skipped';
+
+    createSessionFixture({
+      tmpDir,
+      projectHash,
+      sessionId,
+      slug: 'skipped-test',
+      title: 'Skipped Test',
+      directory: '/test/skipped',
+      messages: [
+        { id: 'msg_001', role: 'user', created: 1770106366200, text: 'Skipped message' }
+      ]
+    });
+
+    saveHarvestState(stateFile, {
+      [`${sessionId}.json`]: { mtime: 0, skipped: true }
+    });
+
+    const result = await harvestSessions({ sessionDir: tmpDir, outputDir, stateFile });
+
+    expect(result).toEqual([]);
+
+    const outputPath = getOutputPath(outputDir, '/test/skipped', '2026-02-04', 'skipped-test');
+    expect(existsSync(outputPath)).toBe(false);
   });
 });

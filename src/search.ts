@@ -4,6 +4,7 @@ import { computeHash } from './store.js';
 import { log } from './logger.js';
 import type Database from 'better-sqlite3';
 import { getClusterLabels } from './graph.js';
+import { SymbolGraph } from './symbol-graph.js';
 
 export interface SearchOptions {
   query: string;
@@ -446,6 +447,44 @@ export async function hybridSearch(
     }
   }
   log('search', 'hybridSearch fts=' + totalFts + ' vec=' + totalVec);
+
+  if (db && projectHash) {
+    const symbolGraph = new SymbolGraph(db);
+    for (let i = 0; i < queries.length; i++) {
+      const q = queries[i];
+      const isOriginal = i === 0;
+      const weight = isOriginal ? 2 : config.expansion.weight;
+
+      const symbolMatches = symbolGraph.searchByName(q, projectHash, topK);
+
+      const symbolResults: SearchResult[] = [];
+      for (const sym of symbolMatches) {
+        const doc = store.findDocument(sym.filePath);
+        if (doc) {
+          const body = store.getDocumentBody(doc.hash);
+          const lines = body?.split('\n') ?? [];
+          const snippetLines = lines.slice(Math.max(0, sym.startLine - 1), sym.endLine);
+          const snippet = snippetLines.join('\n');
+          symbolResults.push({
+            id: String(doc.id),
+            path: sym.filePath,
+            snippet: snippet || sym.name,
+            score: 0,
+            collection: doc.collection,
+            title: doc.title,
+            startLine: sym.startLine,
+            endLine: sym.endLine,
+            docid: doc.hash.substring(0, 6),
+          });
+        }
+      }
+
+      if (symbolResults.length > 0) {
+        allResultSets.push(symbolResults);
+        weights.push(weight);
+      }
+    }
+  }
   
   const originalFtsResults = allResultSets[0] || [];
   

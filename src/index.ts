@@ -9,6 +9,8 @@ import { indexCodebase, embedPendingCodebase, getCodebaseStats } from './codebas
 import { findCycles } from './graph.js';
 import { handleBench } from './bench.js';
 import { resolveHostUrl } from './host.js';
+import { SymbolGraph } from './symbol-graph.js';
+import { isTreeSitterAvailable } from './treesitter.js';
 import { QdrantVecStore } from './providers/qdrant.js';
 import { createVectorStore } from './vector-store.js';
 import type { SearchResult, CollectionConfig, Store } from './types.js';
@@ -35,6 +37,7 @@ const DEFAULT_DB_DIR = path.join(NANO_BRAIN_HOME, 'data');
 const DEFAULT_CONFIG = path.join(NANO_BRAIN_HOME, 'config.yml');
 const DEFAULT_OUTPUT_DIR = path.join(NANO_BRAIN_HOME, 'sessions');
 const DEFAULT_MEMORY_DIR = path.join(NANO_BRAIN_HOME, 'memory');
+const DEFAULT_LOGS_DIR = path.join(NANO_BRAIN_HOME, 'logs');
 
 export interface GlobalOptions {
   dbPath: string;
@@ -143,9 +146,29 @@ nano-brain - Memory system with hybrid search
     --type=<type>   Symbol type (required)
     --pattern=<pat> Pattern to analyze (required)
     --json          Output as JSON
-  reset             Delete ALL nano-brain data (databases, sessions, Qdrant vectors)
+  context <name>    360° view of a code symbol (callers, callees, flows)
+    --file=<path>   Disambiguate when multiple symbols share the name
+    --json          Output as JSON
+  code-impact <name> Analyze impact of changing a symbol
+    --direction=<d> upstream (callers) or downstream (callees), default: upstream
+    --max-depth=<n> Max traversal depth (default: 5)
+    --min-confidence=<n> Min edge confidence 0-1 (default: 0)
+    --file=<path>   Disambiguate symbol
+    --json          Output as JSON
+  detect-changes    Map git changes to affected symbols and flows
+    --scope=<s>     unstaged, staged, or all (default: all)
+    --json          Output as JSON
+  reindex           Re-index codebase files and symbol graph
+    --root=<path>   Workspace root (default: current directory)
+  reset             Delete nano-brain data (selective or all)
+    --databases     Delete SQLite workspace databases (~/.nano-brain/data/*.sqlite)
+    --sessions      Delete harvested session markdown (~/.nano-brain/sessions/)
+    --memory        Delete memory notes (~/.nano-brain/memory/)
+    --logs          Delete log files (~/.nano-brain/logs/)
+    --vectors       Delete Qdrant collection vectors
     --confirm       Required to actually delete (safety flag)
     --dry-run       Preview what would be deleted without deleting
+    (no flags + --confirm = delete ALL categories)
   rm <workspace>    Remove a workspace and all its data
     --list          List all known workspaces
     --dry-run       Preview what would be deleted without deleting
@@ -243,6 +266,7 @@ async function handleMcp(globalOpts: GlobalOptions, commandArgs: string[]): Prom
   let port = 8282;
   let host = '127.0.0.1';
   let daemon = false;
+  let root: string | undefined;
   
   for (const arg of commandArgs) {
     if (arg === '--http') {
@@ -251,6 +275,8 @@ async function handleMcp(globalOpts: GlobalOptions, commandArgs: string[]): Prom
       port = parseInt(arg.substring(7), 10);
     } else if (arg.startsWith('--host=')) {
       host = arg.substring(7);
+    } else if (arg.startsWith('--root=')) {
+      root = arg.substring(7);
     } else if (arg === '--daemon') {
       daemon = true;
     } else if (arg === 'stop') {
@@ -266,6 +292,7 @@ async function handleMcp(globalOpts: GlobalOptions, commandArgs: string[]): Prom
     httpPort: useHttp ? port : undefined,
     httpHost: useHttp ? host : undefined,
     daemon,
+    root,
   });
 }
 
@@ -276,10 +303,13 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   let port = 3100;
   let foreground = false;
   let subcommand: string | undefined;
+  let root: string | undefined;
 
   for (const arg of commandArgs) {
     if (arg.startsWith('--port=')) {
       port = parseInt(arg.substring(7), 10);
+    } else if (arg.startsWith('--root=')) {
+      root = arg.substring(7);
     } else if (arg === '--foreground' || arg === '-f') {
       foreground = true;
     } else if (arg === 'stop' || arg === 'status') {
@@ -314,7 +344,7 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
 
   // serve (start)
   if (foreground) {
-    return handleMcp(globalOpts, ['--http', `--port=${port}`, '--host=0.0.0.0', '--daemon']);
+    return handleMcp(globalOpts, ['--http', `--port=${port}`, '--host=0.0.0.0', '--daemon', ...(root ? [`--root=${root}`] : [])]);
   }
 
   // Check if already running
@@ -333,6 +363,9 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
 
   const cliPath = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../bin/cli.js');
   const args = [cliPath, 'mcp', '--http', `--port=${port}`, '--host=0.0.0.0', '--daemon'];
+  if (root) {
+    args.push(`--root=${root}`);
+  }
   if (globalOpts.configPath !== DEFAULT_CONFIG) {
     args.push(`--config=${globalOpts.configPath}`);
   }
@@ -646,6 +679,7 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
   const workspaceRoot = process.cwd();
   const resolvedDbPath = resolveDbPath(globalOpts.dbPath, workspaceRoot);
   const workspaceName = extractWorkspaceName(resolvedDbPath);
+  const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
 
   let dbSize = 0;
   try {
@@ -688,6 +722,27 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
     console.log(`  Excludes:   ${codebaseStats.excludeCount} patterns`);
     console.log('');
   }
+
+  // Code Intelligence (symbol graph)
+  try {
+    const symbolDb = new Database(resolvedDbPath);
+    const symbolCount = (symbolDb.prepare('SELECT COUNT(*) as cnt FROM code_symbols WHERE project_hash = ?').get(projectHash) as { cnt: number }).cnt;
+    const edgeCount = (symbolDb.prepare('SELECT COUNT(*) as cnt FROM symbol_edges WHERE project_hash = ?').get(projectHash) as { cnt: number }).cnt;
+    let flowCount = 0;
+    try {
+      flowCount = (symbolDb.prepare('SELECT COUNT(*) as cnt FROM execution_flows WHERE project_hash = ?').get(projectHash) as { cnt: number }).cnt;
+    } catch { /* table may not exist */ }
+    symbolDb.close();
+
+    console.log('Code Intelligence:');
+    console.log(`  Symbols:    ${symbolCount.toLocaleString()}`);
+    console.log(`  Edges:      ${edgeCount.toLocaleString()}`);
+    console.log(`  Flows:      ${flowCount.toLocaleString()}`);
+    if (symbolCount === 0) {
+      console.log('  ⚠️  Empty — run `npx nano-brain reindex` to populate');
+    }
+    console.log('');
+  } catch { /* code_symbols table may not exist in older DBs */ }
 
   await printEmbeddingServerStatus(config);
   console.log('');
@@ -817,7 +872,9 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
   console.log('📂 Indexing codebase...');
   const wsConfig = config.workspaces[root];
   const codebaseConfig = wsConfig?.codebase ?? { enabled: true };
-  const codebaseStats = await indexCodebase(store, root, codebaseConfig, projectHash);
+  const db = new Database(globalOpts.dbPath);
+  const codebaseStats = await indexCodebase(store, root, codebaseConfig, projectHash, undefined, db);
+  db.close();
   console.log(`✅ Indexed ${codebaseStats.filesIndexed} files (${codebaseStats.filesSkippedUnchanged} unchanged)`);
   
   console.log('📜 Harvesting sessions...');
@@ -1485,6 +1542,306 @@ async function handleImpact(globalOpts: GlobalOptions, commandArgs: string[]): P
   }
 
   store.close()
+}
+
+function warnIfEmptySymbolGraph(db: Database.Database, projectHash: string): boolean {
+  const count = db.prepare('SELECT COUNT(*) as cnt FROM code_symbols WHERE project_hash = ?').get(projectHash) as { cnt: number };
+  if (count.cnt === 0) {
+    console.error('⚠️  Symbol graph is empty. Run `npx nano-brain reindex` first.');
+    return true;
+  }
+  return false;
+}
+
+async function handleContext(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  let name: string | undefined;
+  let filePath: string | undefined;
+  let format: 'text' | 'json' = 'text';
+
+  for (const arg of commandArgs) {
+    if (arg.startsWith('--file=')) {
+      filePath = arg.substring(7);
+    } else if (arg === '--json') {
+      format = 'json';
+    } else if (!arg.startsWith('-')) {
+      name = arg;
+    }
+  }
+
+  if (!name) {
+    console.error('Usage: context <symbol-name> [--file=<path>] [--json]');
+    process.exit(1);
+  }
+
+  log('cli', 'context name=' + name + ' file=' + (filePath || ''));
+  const workspaceRoot = process.cwd();
+  const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
+  const resolvedDbPath = resolveDbPath(globalOpts.dbPath, workspaceRoot);
+  const db = new Database(resolvedDbPath);
+
+  if (warnIfEmptySymbolGraph(db, projectHash)) {
+    db.close();
+    return;
+  }
+
+  const graph = new SymbolGraph(db);
+  const result = graph.handleContext({ name, filePath, projectHash });
+
+  if (format === 'json') {
+    console.log(JSON.stringify(result, null, 2));
+    db.close();
+    return;
+  }
+
+  if (!result.found) {
+    if (result.disambiguation) {
+      console.log(`Multiple symbols named "${name}". Use --file= to disambiguate:`);
+      for (const s of result.disambiguation) {
+        console.log(`  ${s.kind} ${s.name} — ${s.filePath}:${s.startLine}`);
+      }
+    } else {
+      console.log(`Symbol "${name}" not found.`);
+    }
+    db.close();
+    return;
+  }
+
+  const sym = result.symbol!;
+  console.log(`${sym.kind} ${sym.name}`);
+  console.log(`  File: ${sym.filePath}:${sym.startLine}-${sym.endLine}`);
+  console.log(`  Exported: ${sym.exported ? 'yes' : 'no'}`);
+  if (result.clusterLabel) {
+    console.log(`  Cluster: ${result.clusterLabel}`);
+  }
+  console.log('');
+
+  if (result.incoming && result.incoming.length > 0) {
+    console.log(`Callers (${result.incoming.length}):`);
+    for (const e of result.incoming) {
+      console.log(`  ← ${e.kind} ${e.name} (${e.filePath}) [${e.edgeType}]`);
+    }
+    console.log('');
+  }
+
+  if (result.outgoing && result.outgoing.length > 0) {
+    console.log(`Callees (${result.outgoing.length}):`);
+    for (const e of result.outgoing) {
+      console.log(`  → ${e.kind} ${e.name} (${e.filePath}) [${e.edgeType}]`);
+    }
+    console.log('');
+  }
+
+  if (result.flows && result.flows.length > 0) {
+    console.log(`Flows (${result.flows.length}):`);
+    for (const f of result.flows) {
+      console.log(`  ${f.flowType}: ${f.label} (step ${f.stepIndex})`);
+    }
+    console.log('');
+  }
+
+  if (result.infrastructureSymbols && result.infrastructureSymbols.length > 0) {
+    console.log(`Infrastructure:`);
+    for (const s of result.infrastructureSymbols) {
+      console.log(`  [${s.operation}] ${s.type}: ${s.pattern}`);
+    }
+  }
+
+  db.close();
+}
+
+async function handleCodeImpact(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  let target: string | undefined;
+  let direction: 'upstream' | 'downstream' = 'upstream';
+  let maxDepth = 5;
+  let minConfidence = 0;
+  let filePath: string | undefined;
+  let format: 'text' | 'json' = 'text';
+
+  for (const arg of commandArgs) {
+    if (arg.startsWith('--direction=')) {
+      const val = arg.substring(12);
+      if (val === 'upstream' || val === 'downstream') direction = val;
+    } else if (arg.startsWith('--max-depth=')) {
+      maxDepth = parseInt(arg.substring(12), 10);
+    } else if (arg.startsWith('--min-confidence=')) {
+      minConfidence = parseFloat(arg.substring(17));
+    } else if (arg.startsWith('--file=')) {
+      filePath = arg.substring(7);
+    } else if (arg === '--json') {
+      format = 'json';
+    } else if (!arg.startsWith('-')) {
+      target = arg;
+    }
+  }
+
+  if (!target) {
+    console.error('Usage: code-impact <symbol-name> [--direction=upstream|downstream] [--max-depth=N] [--min-confidence=N] [--file=<path>] [--json]');
+    process.exit(1);
+  }
+
+  log('cli', 'code-impact target=' + target + ' direction=' + direction + ' depth=' + maxDepth);
+  const workspaceRoot = process.cwd();
+  const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
+  const resolvedDbPath = resolveDbPath(globalOpts.dbPath, workspaceRoot);
+  const db = new Database(resolvedDbPath);
+
+  if (warnIfEmptySymbolGraph(db, projectHash)) {
+    db.close();
+    return;
+  }
+
+  const graph = new SymbolGraph(db);
+  const result = graph.handleImpact({ target, direction, maxDepth, minConfidence, filePath, projectHash });
+
+  if (format === 'json') {
+    console.log(JSON.stringify(result, null, 2));
+    db.close();
+    return;
+  }
+
+  if (!result.found) {
+    if (result.disambiguation) {
+      console.log(`Multiple symbols named "${target}". Use --file= to disambiguate:`);
+      for (const s of result.disambiguation) {
+        console.log(`  ${s.kind} ${s.name} — ${s.filePath}`);
+      }
+    } else {
+      console.log(`Symbol "${target}" not found.`);
+    }
+    db.close();
+    return;
+  }
+
+  const t = result.target!;
+  console.log(`Impact Analysis: ${t.kind} ${t.name} (${t.filePath})`);
+  console.log(`  Direction: ${direction}`);
+  console.log(`  Risk: ${result.risk}`);
+  console.log(`  Direct deps: ${result.summary.directDeps}, Total affected: ${result.summary.totalAffected}, Flows: ${result.summary.flowsAffected}`);
+  console.log('');
+
+  for (const [depth, symbols] of Object.entries(result.byDepth)) {
+    if (symbols.length > 0) {
+      console.log(`Depth ${depth} (${symbols.length}):`);
+      for (const s of symbols) {
+        console.log(`  ${s.kind} ${s.name} (${s.filePath}) [${s.edgeType}, confidence=${s.confidence}]`);
+      }
+    }
+  }
+
+  if (result.affectedFlows.length > 0) {
+    console.log('');
+    console.log(`Affected Flows (${result.affectedFlows.length}):`);
+    for (const f of result.affectedFlows) {
+      console.log(`  ${f.flowType}: ${f.label}`);
+    }
+  }
+
+  db.close();
+}
+
+async function handleDetectChanges(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  let scope: 'unstaged' | 'staged' | 'all' = 'all';
+  let format: 'text' | 'json' = 'text';
+
+  for (const arg of commandArgs) {
+    if (arg.startsWith('--scope=')) {
+      const val = arg.substring(8);
+      if (val === 'unstaged' || val === 'staged' || val === 'all') scope = val;
+    } else if (arg === '--json') {
+      format = 'json';
+    }
+  }
+
+  log('cli', 'detect-changes scope=' + scope);
+  const workspaceRoot = process.cwd();
+  const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
+  const resolvedDbPath = resolveDbPath(globalOpts.dbPath, workspaceRoot);
+  const db = new Database(resolvedDbPath);
+
+  if (warnIfEmptySymbolGraph(db, projectHash)) {
+    db.close();
+    return;
+  }
+
+  const graph = new SymbolGraph(db);
+  const result = graph.handleDetectChanges({ scope, workspaceRoot, projectHash });
+
+  if (format === 'json') {
+    console.log(JSON.stringify(result, null, 2));
+    db.close();
+    return;
+  }
+
+  if (result.changedFiles.length === 0) {
+    console.log('No changed files detected.');
+    db.close();
+    return;
+  }
+
+  console.log(`Risk Level: ${result.riskLevel}`);
+  console.log('');
+
+  console.log(`Changed Files (${result.changedFiles.length}):`);
+  for (const f of result.changedFiles) {
+    console.log(`  ${f}`);
+  }
+  console.log('');
+
+  if (result.changedSymbols.length > 0) {
+    console.log(`Changed Symbols (${result.changedSymbols.length}):`);
+    for (const s of result.changedSymbols) {
+      console.log(`  ${s.kind} ${s.name} (${s.filePath})`);
+    }
+    console.log('');
+  }
+
+  if (result.affectedFlows.length > 0) {
+    console.log(`Affected Flows (${result.affectedFlows.length}):`);
+    for (const f of result.affectedFlows) {
+      console.log(`  ${f.flowType}: ${f.label}`);
+    }
+  }
+
+  db.close();
+}
+
+async function handleReindex(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  let root = process.cwd();
+
+  for (const arg of commandArgs) {
+    if (arg.startsWith('--root=')) {
+      root = arg.substring(7);
+    }
+  }
+
+  log('cli', 'reindex root=' + root);
+  const resolvedDbPath = resolveDbPath(globalOpts.dbPath, root);
+  const store = createStore(resolvedDbPath);
+  const projectHash = crypto.createHash('sha256').update(root).digest('hex').substring(0, 12);
+
+  const config = loadCollectionConfig(globalOpts.configPath);
+  const wsConfig = getWorkspaceConfig(config, root);
+  const codebaseConfig = wsConfig?.codebase ?? { enabled: true };
+
+  console.log(`Reindexing codebase: ${root}`);
+  const db = new Database(resolvedDbPath);
+  const stats = await indexCodebase(store, root, codebaseConfig, projectHash, undefined, db);
+  console.log(`  Files: ${stats.filesIndexed} indexed, ${stats.filesSkippedUnchanged} unchanged`);
+
+  // Report symbol graph stats
+  const symbolCount = (db.prepare('SELECT COUNT(*) as cnt FROM code_symbols WHERE project_hash = ?').get(projectHash) as { cnt: number }).cnt;
+  const edgeCount = (db.prepare('SELECT COUNT(*) as cnt FROM symbol_edges WHERE project_hash = ?').get(projectHash) as { cnt: number }).cnt;
+  console.log(`  Symbols: ${symbolCount}, Edges: ${edgeCount}`);
+
+  if (symbolCount === 0 && isTreeSitterAvailable()) {
+    console.log('  ⚠️  No symbols indexed. Check if your files contain supported languages.');
+  } else if (!isTreeSitterAvailable()) {
+    console.log('  ⚠️  Tree-sitter not available — symbol graph skipped.');
+  }
+
+  db.close();
+  store.close();
+  console.log('✅ Reindex complete.');
 }
 
 async function handleCache(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
@@ -2364,15 +2721,29 @@ async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   log('cli', 'reset command invoked');
   const confirm = commandArgs.includes('--confirm');
   const dryRun = commandArgs.includes('--dry-run');
+  const flagDatabases = commandArgs.includes('--databases');
+  const flagSessions = commandArgs.includes('--sessions');
+  const flagMemory = commandArgs.includes('--memory');
+  const flagLogs = commandArgs.includes('--logs');
+  const flagVectors = commandArgs.includes('--vectors');
+
+  const hasAnyFlag = flagDatabases || flagSessions || flagMemory || flagLogs || flagVectors;
+  const deleteDatabases = !hasAnyFlag || flagDatabases;
+  const deleteSessions = !hasAnyFlag || flagSessions;
+  const deleteMemory = !hasAnyFlag || flagMemory;
+  const deleteLogs = !hasAnyFlag || flagLogs;
+  const deleteVectors = !hasAnyFlag || flagVectors;
 
   if (!confirm && !dryRun) {
-    console.error('⚠️  This will permanently delete ALL nano-brain data.');
+    console.error('⚠️  This will permanently delete nano-brain data.');
     console.error('   Run with --confirm to proceed, or --dry-run to preview.');
     process.exit(1);
   }
 
   const dataDir = DEFAULT_DB_DIR;
   const sessionsDir = DEFAULT_OUTPUT_DIR;
+  const memoryDir = DEFAULT_MEMORY_DIR;
+  const logsDir = DEFAULT_LOGS_DIR;
 
   let sqliteFiles: string[] = [];
   if (fs.existsSync(dataDir)) {
@@ -2380,6 +2751,8 @@ async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   }
 
   const sessionsExist = fs.existsSync(sessionsDir);
+  const memoryExists = fs.existsSync(memoryDir);
+  const logsExist = fs.existsSync(logsDir);
 
   const config = loadCollectionConfig(globalOpts.configPath);
   const vectorConfig = config?.vector;
@@ -2387,63 +2760,101 @@ async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   let qdrantReachable = false;
   let qdrantPointsCount = 0;
 
-  try {
-    const healthRes = await fetch(`${qdrantUrl}/healthz`);
-    if (healthRes.ok) {
-      qdrantReachable = true;
-      const collectionRes = await fetch(`${qdrantUrl}/collections/nano-brain`);
-      if (collectionRes.ok) {
-        const data = await collectionRes.json();
-        const result = data.result || data;
-        qdrantPointsCount = result.points_count ?? result.vectors_count ?? 0;
+  if (deleteVectors) {
+    try {
+      const healthRes = await fetch(`${qdrantUrl}/healthz`);
+      if (healthRes.ok) {
+        qdrantReachable = true;
+        const collectionRes = await fetch(`${qdrantUrl}/collections/nano-brain`);
+        if (collectionRes.ok) {
+          const data = await collectionRes.json();
+          const result = data.result || data;
+          qdrantPointsCount = result.points_count ?? result.vectors_count ?? 0;
+        }
       }
+    } catch {
+      qdrantReachable = false;
     }
-  } catch {
-    qdrantReachable = false;
   }
 
   if (dryRun) {
     console.log('Dry run — would delete:');
     console.log('');
-    console.log(`  SQLite databases:    ${sqliteFiles.length} files in ${dataDir}`);
-    console.log(`  Harvested sessions:  ${sessionsExist ? sessionsDir : '(not found)'}`);
-    if (qdrantReachable) {
-      console.log(`  Qdrant collection:   nano-brain (${qdrantPointsCount} vectors)`);
-    } else {
-      console.log(`  Qdrant collection:   (not reachable at ${qdrantUrl})`);
+    if (deleteDatabases) {
+      console.log(`  SQLite databases:    ${sqliteFiles.length} files in ${dataDir}`);
+    }
+    if (deleteSessions) {
+      console.log(`  Harvested sessions:  ${sessionsExist ? sessionsDir : '(not found)'}`);
+    }
+    if (deleteMemory) {
+      console.log(`  Memory notes:        ${memoryExists ? memoryDir : '(not found)'}`);
+    }
+    if (deleteLogs) {
+      console.log(`  Log files:           ${logsExist ? logsDir : '(not found)'}`);
+    }
+    if (deleteVectors) {
+      if (qdrantReachable) {
+        console.log(`  Qdrant collection:   nano-brain (${qdrantPointsCount} vectors)`);
+      } else {
+        console.log(`  Qdrant collection:   (not reachable at ${qdrantUrl})`);
+      }
     }
     return;
   }
 
-  for (const file of sqliteFiles) {
-    fs.unlinkSync(path.join(dataDir, file));
-  }
-  if (sqliteFiles.length > 0) {
-    console.log(`🗑️  Deleted ${sqliteFiles.length} database files from ${dataDir}`);
-  } else {
-    console.log(`ℹ️  No database files found in ${dataDir}`);
-  }
-
-  if (sessionsExist) {
-    fs.rmSync(sessionsDir, { recursive: true, force: true });
-    console.log(`🗑️  Deleted harvested sessions from ${sessionsDir}`);
-  } else {
-    console.log(`ℹ️  No harvested sessions directory found`);
-  }
-
-  if (qdrantReachable) {
-    try {
-      const deleteRes = await fetch(`${qdrantUrl}/collections/nano-brain`, { method: 'DELETE' });
-      if (deleteRes.ok) {
-        console.log(`🗑️  Deleted Qdrant collection 'nano-brain' (${qdrantPointsCount} vectors)`);
-      } else {
-        console.warn(`⚠️  Failed to delete Qdrant collection: HTTP ${deleteRes.status}`);
-      }
-    } catch (err) {
-      console.warn(`⚠️  Failed to delete Qdrant collection: ${err}`);
+  if (deleteDatabases) {
+    for (const file of sqliteFiles) {
+      fs.unlinkSync(path.join(dataDir, file));
     }
-  } else {
-    console.log(`ℹ️  Qdrant not reachable at ${qdrantUrl} — skipping vector cleanup`);
+    if (sqliteFiles.length > 0) {
+      console.log(`🗑️  Deleted ${sqliteFiles.length} database files from ${dataDir}`);
+    } else {
+      console.log(`ℹ️  No database files found in ${dataDir}`);
+    }
+  }
+
+  if (deleteSessions) {
+    if (sessionsExist) {
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
+      console.log(`🗑️  Deleted harvested sessions from ${sessionsDir}`);
+    } else {
+      console.log(`ℹ️  No harvested sessions directory found`);
+    }
+  }
+
+  if (deleteMemory) {
+    if (memoryExists) {
+      fs.rmSync(memoryDir, { recursive: true, force: true });
+      console.log(`🗑️  Deleted memory notes from ${memoryDir}`);
+    } else {
+      console.log(`ℹ️  No memory directory found`);
+    }
+  }
+
+  if (deleteLogs) {
+    if (logsExist) {
+      fs.rmSync(logsDir, { recursive: true, force: true });
+      console.log(`🗑️  Deleted log files from ${logsDir}`);
+    } else {
+      console.log(`ℹ️  No logs directory found`);
+    }
+  }
+
+  if (deleteVectors) {
+    if (qdrantReachable) {
+      try {
+        const deleteRes = await fetch(`${qdrantUrl}/collections/nano-brain`, { method: 'DELETE' });
+        if (deleteRes.ok) {
+          console.log(`🗑️  Deleted Qdrant collection 'nano-brain' (${qdrantPointsCount} vectors)`);
+        } else {
+          console.warn(`⚠️  Failed to delete Qdrant collection: HTTP ${deleteRes.status}`);
+        }
+      } catch (err) {
+        console.warn(`⚠️  Failed to delete Qdrant collection: ${err}`);
+      }
+    } else {
+      console.log(`ℹ️  Qdrant not reachable at ${qdrantUrl} — skipping vector cleanup`);
+    }
   }
 
   console.log('');
@@ -2737,6 +3148,14 @@ async function main() {
       return handleReset(globalOpts, commandArgs);
     case 'rm':
       return handleRm(globalOpts, commandArgs);
+    case 'context':
+      return handleContext(globalOpts, commandArgs);
+    case 'code-impact':
+      return handleCodeImpact(globalOpts, commandArgs);
+    case 'detect-changes':
+      return handleDetectChanges(globalOpts, commandArgs);
+    case 'reindex':
+      return handleReindex(globalOpts, commandArgs);
     default:
       console.error(`Unknown command: ${command}`);
       showHelp();

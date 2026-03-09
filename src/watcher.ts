@@ -1,11 +1,12 @@
 import { watch, type FSWatcher } from 'chokidar';
 import type { Store, Collection, StorageConfig, CodebaseConfig } from './types.js'
 import { scanCollectionFiles } from './collections.js';
-import { indexDocument, computeHash, extractProjectHashFromPath, openWorkspaceStore } from './store.js';
+import { indexDocument, computeHash, extractProjectHashFromPath, openWorkspaceStore, resolveWorkspaceDbPath } from './store.js';
 import { harvestSessions } from './harvester.js';
 import { checkDiskSpace, evictExpiredSessions, evictBySize } from './storage.js';
 import { indexCodebase, mergeExcludePatterns, resolveExtensions, embedPendingCodebase } from './codebase.js'
 import { log } from './logger.js';
+import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -15,6 +16,7 @@ export interface WatcherOptions {
   store: Store
   collections: Collection[]
   embedder?: { embed(text: string): Promise<{ embedding: number[] }> } | null
+  db?: Database.Database
   onUpdate?: (path: string) => void
   debounceMs?: number
   pollIntervalMs?: number
@@ -50,6 +52,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
     store,
     collections,
     embedder,
+    db,
     onUpdate,
     debounceMs = 2000,
     pollIntervalMs = 300000,
@@ -143,7 +146,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
       }
       
       if (codebaseConfig?.enabled) {
-        await indexCodebase(store, workspaceRoot, codebaseConfig, projectHash, embedder)
+        await indexCodebase(store, workspaceRoot, codebaseConfig, projectHash, embedder, db)
       }
       if (embedder) {
         await embedPendingCodebase(store, embedder, 50, projectHash)
@@ -159,11 +162,14 @@ export function startWatcher(options: WatcherOptions): Watcher {
               log('watcher', 'Skipping workspace (no DB): ' + wsPath);
               continue;
             }
+            const wsDbPath = resolveWorkspaceDbPath(dataDir, wsPath);
+            const wsDb = new Database(wsDbPath);
             const wsHash = crypto.createHash('sha256').update(wsPath).digest('hex').substring(0, 12);
             try {
-              await indexCodebase(wsStore, wsPath, wsConfig.codebase, wsHash, embedder);
+              await indexCodebase(wsStore, wsPath, wsConfig.codebase, wsHash, embedder, wsDb);
               log('watcher', `Codebase indexed for workspace: ${path.basename(wsPath)}`);
             } finally {
+              wsDb.close();
               wsStore.close();
             }
           } catch (err) {

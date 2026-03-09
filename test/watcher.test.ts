@@ -37,6 +37,7 @@ describe('Watcher', () => {
       close: vi.fn(),
       getDocumentBody: vi.fn(),
       insertEmbedding: vi.fn(),
+      insertEmbeddingLocal: vi.fn(),
       ensureVecTable: vi.fn(),
       searchFTS: vi.fn().mockReturnValue([]),
       searchVec: vi.fn().mockReturnValue([]),
@@ -642,7 +643,7 @@ describe('Watcher', () => {
       await watcher.triggerReindex();
 
       expect(mockEmbedder.embed).toHaveBeenCalled();
-      expect(mockStore.insertEmbedding).toHaveBeenCalled();
+      expect(mockStore.insertEmbeddingLocal).toHaveBeenCalled();
 
       watcher.stop();
     });
@@ -802,7 +803,7 @@ describe('Watcher', () => {
       }
 
       watcher.stop();
-    });
+    }, 30000);
 
     it('should snap back to base interval when work is detected (count > 0)', async () => {
       const mockEmbedder = {

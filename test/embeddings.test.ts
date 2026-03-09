@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  detectOllamaUrl,
   checkOllamaHealth,
-  checkOpenAIHealth
+  checkOpenAIHealth,
+  createEmbeddingProvider,
 } from '../src/embeddings.js';
 
 describe('Embeddings', () => {
@@ -11,6 +13,24 @@ describe('Embeddings', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('detectOllamaUrl', () => {
+    it('should return a valid URL string', () => {
+      const url = detectOllamaUrl();
+      expect(typeof url).toBe('string');
+      expect(url).toMatch(/^https?:\/\//);
+    });
+
+    it('should return a URL with port 11434', () => {
+      const url = detectOllamaUrl();
+      expect(url).toMatch(/localhost|host\.docker\.internal/);
+    });
+
+    it('should include port 11434', () => {
+      const url = detectOllamaUrl();
+      expect(url).toContain('11434');
+    });
   });
 
   describe('checkOllamaHealth', () => {
@@ -158,6 +178,183 @@ describe('Embeddings', () => {
 
       const result = await checkOpenAIHealth('https://api.openai.com/v1', 'sk-xxx', 'text-embedding-3-large');
       expect(result.model).toBe('text-embedding-3-large');
+    });
+  });
+
+  describe('createEmbeddingProvider', () => {
+    it('should return null when no provider is available', async () => {
+      global.fetch = vi.fn().mockRejectedValue(new Error('Connection refused'));
+      const provider = await createEmbeddingProvider();
+      expect(provider).toBeNull();
+    });
+
+    it('should return null when OpenAI config is missing url', async () => {
+      const provider = await createEmbeddingProvider({
+        embeddingConfig: {
+          provider: 'openai',
+          apiKey: 'sk-test',
+        },
+      });
+      expect(provider).toBeNull();
+    });
+
+    it('should return null when OpenAI config is missing apiKey', async () => {
+      const provider = await createEmbeddingProvider({
+        embeddingConfig: {
+          provider: 'openai',
+          url: 'https://api.openai.com',
+        },
+      });
+      expect(provider).toBeNull();
+    });
+
+    it('should create OpenAI provider when config is valid and API responds', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [{ embedding: new Array(1536).fill(0.1), index: 0 }],
+          model: 'text-embedding-3-small',
+          usage: { prompt_tokens: 5, total_tokens: 5 },
+        }),
+      });
+
+      const provider = await createEmbeddingProvider({
+        embeddingConfig: {
+          provider: 'openai',
+          url: 'https://api.openai.com',
+          apiKey: 'sk-test',
+          model: 'text-embedding-3-small',
+        },
+      });
+
+      expect(provider).not.toBeNull();
+      expect(provider?.getModel()).toBe('text-embedding-3-small');
+    });
+
+    it('should return null when OpenAI API fails', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+      });
+
+      const provider = await createEmbeddingProvider({
+        embeddingConfig: {
+          provider: 'openai',
+          url: 'https://api.openai.com',
+          apiKey: 'invalid-key',
+        },
+      });
+
+      expect(provider).toBeNull();
+    });
+
+    it('should try Ollama when no explicit provider is configured', async () => {
+      global.fetch = vi.fn()
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ models: [] }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ embeddings: [[0.1, 0.2, 0.3]] }),
+        });
+
+      const provider = await createEmbeddingProvider();
+      expect(provider).not.toBeNull();
+    });
+
+    it('should call onTokenUsage callback when provided', async () => {
+      const onTokenUsage = vi.fn();
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [{ embedding: new Array(1536).fill(0.1), index: 0 }],
+          model: 'text-embedding-3-small',
+          usage: { prompt_tokens: 10, total_tokens: 10 },
+        }),
+      });
+
+      const provider = await createEmbeddingProvider({
+        embeddingConfig: {
+          provider: 'openai',
+          url: 'https://api.openai.com',
+          apiKey: 'sk-test',
+        },
+        onTokenUsage,
+      });
+
+      expect(provider).not.toBeNull();
+      expect(onTokenUsage).toHaveBeenCalledWith('text-embedding-3-small', 10);
+    });
+  });
+
+  describe('EmbeddingProvider interface', () => {
+    it('should have getDimensions method that returns a number', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [{ embedding: new Array(768).fill(0.1), index: 0 }],
+          model: 'test-model',
+          usage: { prompt_tokens: 5, total_tokens: 5 },
+        }),
+      });
+
+      const provider = await createEmbeddingProvider({
+        embeddingConfig: {
+          provider: 'openai',
+          url: 'https://api.openai.com',
+          apiKey: 'sk-test',
+        },
+      });
+
+      expect(provider).not.toBeNull();
+      const dims = provider!.getDimensions();
+      expect(typeof dims).toBe('number');
+      expect(dims).toBeGreaterThan(0);
+    });
+
+    it('should have getMaxChars method that returns a number', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [{ embedding: new Array(768).fill(0.1), index: 0 }],
+          model: 'test-model',
+        }),
+      });
+
+      const provider = await createEmbeddingProvider({
+        embeddingConfig: {
+          provider: 'openai',
+          url: 'https://api.openai.com',
+          apiKey: 'sk-test',
+          maxChars: 4000,
+        },
+      });
+
+      expect(provider).not.toBeNull();
+      const maxChars = provider!.getMaxChars();
+      expect(typeof maxChars).toBe('number');
+      expect(maxChars).toBe(4000);
+    });
+
+    it('should dispose without error', async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [{ embedding: new Array(768).fill(0.1), index: 0 }],
+          model: 'test-model',
+        }),
+      });
+
+      const provider = await createEmbeddingProvider({
+        embeddingConfig: {
+          provider: 'openai',
+          url: 'https://api.openai.com',
+          apiKey: 'sk-test',
+        },
+      });
+
+      expect(provider).not.toBeNull();
+      expect(() => provider!.dispose()).not.toThrow();
     });
   });
 });

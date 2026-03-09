@@ -208,6 +208,19 @@ export function saveHarvestState(stateFile: string, state: HarvestState): void {
   writeFileSync(stateFile, JSON.stringify(state, null, 2), 'utf-8');
 }
 
+export function getMessageDirMtime(sessionId: string, storageDir: string): number | null {
+  const messageDir = join(storageDir, 'message', sessionId);
+  try {
+    if (!existsSync(messageDir)) {
+      return null;
+    }
+    const stat = statSync(messageDir);
+    return stat.mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 export async function harvestSessions(options: HarvesterOptions): Promise<HarvestedSession[]> {
   const { sessionDir, outputDir, stateFile: customStateFile } = options;
   const stateFile = customStateFile || join(outputDir, '.harvest-state.json');
@@ -238,27 +251,40 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       
       const stat = statSync(sessionPath);
       const lastMtime = stat.mtimeMs;
+      const session_pre = parseSession(sessionPath);
+      const messageDirMtime = session_pre ? getMessageDirMtime(session_pre.id, sessionDir) : null;
+      const effectiveMtime = Math.max(lastMtime, messageDirMtime ?? 0);
       
       if (state[sessionFile]?.skipped) {
         continue;
       }
       
-      if (state[sessionFile] && state[sessionFile].mtime >= lastMtime) {
+      if (state[sessionFile] && state[sessionFile].mtime >= effectiveMtime && state[sessionFile].messageCount !== undefined) {
         const session = parseSession(sessionPath);
         if (session) {
           const date = new Date(session.created);
           const dateStr = date.toISOString().split('T')[0];
           const outputPath = getOutputPath(outputDir, session.directory, dateStr, session.slug);
           if (existsSync(outputPath)) {
-            continue;
+            // Quick check: count message files to catch additions within same mtime granularity
+            const msgDir = join(sessionDir, 'message', session.id);
+            try {
+              const msgCount = readdirSync(msgDir).filter(f => f.endsWith('.json')).length;
+              if (msgCount <= (state[sessionFile].messageCount ?? 0)) {
+                continue;
+              }
+              // Message count changed despite same mtime — fall through to re-harvest
+            } catch {
+              continue;
+            }
           }
           const entry = state[sessionFile] || { mtime: 0 };
           entry.retries = (entry.retries || 0) + 1;
+          stateChanged = true;
           if (entry.retries >= 3) {
             entry.skipped = true;
             log('harvester', 'Permanently skipping ' + sessionFile + ' after 3 retries');
             state[sessionFile] = entry;
-            stateChanged = true;
             continue;
           }
           state[sessionFile] = entry;
@@ -284,7 +310,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       }
       
       if (messages.length === 0) {
-        state[sessionFile] = { mtime: lastMtime, skipped: true };
+        state[sessionFile] = { mtime: effectiveMtime, skipped: true };
         stateChanged = true;
         continue;
       }
@@ -309,7 +335,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       
       const hasContent = parsedMessages.some(m => m.text.trim().length > 0);
       if (!hasContent) {
-        state[sessionFile] = { mtime: lastMtime, skipped: true };
+        state[sessionFile] = { mtime: effectiveMtime, skipped: true };
         stateChanged = true;
         continue;
       }
@@ -359,7 +385,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
         
         log('harvester', 'Processed session: ' + session.id + (isIncremental ? ' (incremental)' : ''))
         harvested.push(harvestedSession);
-        state[sessionFile] = { mtime: lastMtime, messageCount: messages.length };
+        state[sessionFile] = { mtime: effectiveMtime, messageCount: messages.length };
         stateChanged = true;
       } catch (err) {
         log('harvester', 'Write failed: ' + outputPath)
