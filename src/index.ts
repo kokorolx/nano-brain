@@ -2680,8 +2680,11 @@ async function main() {
 
   log('cli', 'command=' + command);
 
-  // Resolve per-workspace DB path (init command handles this separately with --root)
-  if (command !== 'init') {
+  // Resolve per-workspace DB path.
+  // Daemon mode (serve or mcp --daemon) skips early resolution — startServer() resolves
+  // using the correct workspace root from config.yml instead of process.cwd()
+  const isDaemonMode = command === 'serve' || (command === 'mcp' && commandArgs.includes('--daemon'));
+  if (command !== 'init' && !isDaemonMode) {
     globalOpts.dbPath = resolveDbPath(globalOpts.dbPath, process.cwd());
   }
   

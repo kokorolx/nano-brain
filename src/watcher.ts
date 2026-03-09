@@ -149,6 +149,29 @@ export function startWatcher(options: WatcherOptions): Watcher {
         await embedPendingCodebase(store, embedder, 50, projectHash)
       }
       
+      if (allWorkspaces && dataDir) {
+        for (const [wsPath, wsConfig] of Object.entries(allWorkspaces)) {
+          if (!wsConfig.codebase?.enabled) continue;
+          if (wsPath === workspaceRoot) continue;
+          try {
+            const wsStore = openWorkspaceStore(dataDir, wsPath);
+            if (!wsStore) {
+              log('watcher', 'Skipping workspace (no DB): ' + wsPath);
+              continue;
+            }
+            const wsHash = crypto.createHash('sha256').update(wsPath).digest('hex').substring(0, 12);
+            try {
+              await indexCodebase(wsStore, wsPath, wsConfig.codebase, wsHash, embedder);
+              log('watcher', `Codebase indexed for workspace: ${path.basename(wsPath)}`);
+            } finally {
+              wsStore.close();
+            }
+          } catch (err) {
+            log('watcher', `Codebase index failed for workspace ${wsPath}: ${err}`);
+          }
+        }
+      }
+      
       dirty = false
       pendingPaths.clear()
       lastReindexAt = Date.now()

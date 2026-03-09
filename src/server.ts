@@ -13,7 +13,7 @@ import type { Store, SearchResult, IndexHealth, Collection, StorageConfig, Codeb
 import type { SearchProviders } from './search.js';
 import { hybridSearch, parseSearchConfig } from './search.js';
 import { findCycles } from './graph.js';
-import { createStore, extractProjectHashFromPath, resolveWorkspaceDbPath } from './store.js';
+import { createStore, extractProjectHashFromPath, resolveWorkspaceDbPath, openWorkspaceStore } from './store.js';
 import { log, initLogger } from './logger.js';
 import { loadCollectionConfig, getCollections, scanCollectionFiles, getWorkspaceConfig } from './collections.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth, checkOpenAIHealth } from './embeddings.js';
@@ -46,6 +46,52 @@ export interface ServerDeps {
   embeddingConfig?: EmbeddingConfig
   searchConfig?: SearchConfig
   db?: Database.Database
+  allWorkspaces?: Record<string, { codebase?: CodebaseConfig }>
+  dataDir?: string
+  daemon?: boolean
+}
+
+export interface ResolvedWorkspace {
+  store: Store
+  workspaceRoot: string
+  projectHash: string
+  needsClose: boolean
+}
+
+export function resolveWorkspace(deps: ServerDeps, filePath?: string, workspaceParam?: string): ResolvedWorkspace | null {
+  if (!deps.daemon || !deps.allWorkspaces || !deps.dataDir) {
+    return { store: deps.store, workspaceRoot: deps.workspaceRoot, projectHash: deps.currentProjectHash, needsClose: false };
+  }
+  
+  if (workspaceParam && workspaceParam !== 'all') {
+    for (const [wsPath, _wsConfig] of Object.entries(deps.allWorkspaces)) {
+      const wsHash = crypto.createHash('sha256').update(wsPath).digest('hex').substring(0, 12);
+      if (workspaceParam === wsHash || workspaceParam === wsPath) {
+        const wsStore = openWorkspaceStore(deps.dataDir, wsPath);
+        if (wsStore) {
+          return { store: wsStore, workspaceRoot: wsPath, projectHash: wsHash, needsClose: true };
+        }
+      }
+    }
+  }
+  
+  if (filePath) {
+    let bestMatch: { wsPath: string; length: number } | null = null;
+    for (const wsPath of Object.keys(deps.allWorkspaces)) {
+      if (filePath.startsWith(wsPath) && (!bestMatch || wsPath.length > bestMatch.length)) {
+        bestMatch = { wsPath, length: wsPath.length };
+      }
+    }
+    if (bestMatch) {
+      const wsHash = crypto.createHash('sha256').update(bestMatch.wsPath).digest('hex').substring(0, 12);
+      const wsStore = openWorkspaceStore(deps.dataDir, bestMatch.wsPath);
+      if (wsStore) {
+        return { store: wsStore, workspaceRoot: bestMatch.wsPath, projectHash: wsHash, needsClose: true };
+      }
+    }
+  }
+  
+  return null;
 }
 
 export function formatSearchResults(results: SearchResult[]): string {
@@ -177,7 +223,8 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     },
     async ({ query, limit, collection, workspace, tags, since, until }) => {
       log('mcp', 'memory_search query="' + query + '" limit=' + limit);
-      const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
+      const defaultWorkspace = deps.daemon ? 'all' : currentProjectHash;
+      const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || defaultWorkspace);
       const parsedTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : undefined;
       const results = store.searchFTS(query, {
         limit,
@@ -212,7 +259,8 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     },
     async ({ query, limit, collection, workspace, tags, since, until }) => {
       log('mcp', 'memory_vsearch query="' + query + '" limit=' + limit);
-      const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
+      const defaultWorkspace = deps.daemon ? 'all' : currentProjectHash;
+      const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || defaultWorkspace);
       const parsedTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : undefined;
       const searchOpts = {
         limit,
@@ -282,7 +330,8 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     },
     async ({ query, limit, collection, minScore, workspace, tags, since, until }) => {
       log('mcp', 'memory_query query="' + query + '" limit=' + limit);
-      const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
+      const defaultWorkspace = deps.daemon ? 'all' : currentProjectHash;
+      const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || defaultWorkspace);
       const parsedTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : undefined;
       const results = await hybridSearch(
         store,
@@ -504,8 +553,31 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       log('mcp', 'memory_status root="' + (root || '') + '"');
       const health = store.getIndexHealth()
       const effectiveRoot = root || deps.workspaceRoot
-      const codebaseStats = getCodebaseStats(store, deps.codebaseConfig, effectiveRoot)
-      // Probe embedding server connectivity
+      let codebaseStats = getCodebaseStats(store, deps.codebaseConfig, effectiveRoot)
+      
+      let workspaceStatsText = '';
+      if (deps.daemon && deps.allWorkspaces && deps.dataDir) {
+        const wsStats: string[] = [];
+        for (const [wsPath, wsConfig] of Object.entries(deps.allWorkspaces)) {
+          if (!wsConfig.codebase?.enabled) continue;
+          try {
+            const wsStore = openWorkspaceStore(deps.dataDir, wsPath);
+            if (!wsStore) continue;
+            try {
+              const stats = getCodebaseStats(wsStore, wsConfig.codebase, wsPath);
+              if (stats !== undefined && stats.enabled && stats.documents > 0) {
+                wsStats.push(`  - ${path.basename(wsPath)}: ${stats.documents} docs, ${stats.chunks} chunks`);
+              }
+            } finally {
+              wsStore.close();
+            }
+          } catch { }
+        }
+        if (wsStats.length > 0) {
+          workspaceStatsText = '\n\n**Workspace Codebase Stats:**\n' + wsStats.join('\n');
+        }
+      }
+      
       const embeddingConfig = deps.embeddingConfig
       const ollamaUrl = embeddingConfig?.url || detectOllamaUrl()
       const ollamaModel = embeddingConfig?.model || 'mxbai-embed-large'
@@ -540,7 +612,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         content: [
           {
             type: 'text',
-            text: formatStatus(health, codebaseStats, embeddingHealth, vectorHealth, tokenUsage.length > 0 ? tokenUsage : null),
+            text: formatStatus(health, codebaseStats, embeddingHealth, vectorHealth, tokenUsage.length > 0 ? tokenUsage : null) + workspaceStatsText,
           },
         ],
       }
@@ -554,7 +626,22 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     },
     async ({ root }) => {
       log('mcp', 'memory_index_codebase root="' + (root || '') + '"');
-      if (!deps.codebaseConfig?.enabled) {
+      
+      const resolved = root ? resolveWorkspace(deps, undefined, root) : null;
+      const effectiveRoot = resolved?.workspaceRoot || root || deps.workspaceRoot;
+      const effectiveStore = resolved?.store || store;
+      const effectiveProjectHash = resolved?.projectHash || crypto.createHash('sha256').update(effectiveRoot).digest('hex').substring(0, 12);
+      
+      let effectiveCodebaseConfig = deps.codebaseConfig;
+      if (deps.daemon && deps.allWorkspaces && effectiveRoot) {
+        const wsConfig = deps.allWorkspaces[effectiveRoot];
+        if (wsConfig?.codebase) {
+          effectiveCodebaseConfig = wsConfig.codebase;
+        }
+      }
+      
+      if (!effectiveCodebaseConfig?.enabled) {
+        if (resolved?.needsClose) resolved.store.close();
         return {
           content: [
             {
@@ -566,24 +653,28 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         }
       }
       
+      const needsClose = resolved?.needsClose ?? false;
+      const storeToUse = effectiveStore;
+      const configToUse = effectiveCodebaseConfig;
+      
       ;(async () => {
         try {
-          const effectiveRoot = root || deps.workspaceRoot
-          const effectiveProjectHash = crypto.createHash('sha256').update(effectiveRoot).digest('hex').substring(0, 12)
           const result = await indexCodebase(
-            store,
+            storeToUse,
             effectiveRoot,
-            deps.codebaseConfig!,
+            configToUse,
             effectiveProjectHash,
             providers.embedder
           )
           console.error(`[codebase] Indexing complete: ${result.filesScanned} scanned, ${result.filesIndexed} indexed, ${result.filesSkippedUnchanged} unchanged`)
           if (providers.embedder) {
-            const embedded = await embedPendingCodebase(store, providers.embedder, 50, effectiveProjectHash)
+            const embedded = await embedPendingCodebase(storeToUse, providers.embedder, 50, effectiveProjectHash)
             console.error(`[codebase] Embedding complete: ${embedded} chunks embedded`)
           }
         } catch (err) {
           console.error(`[codebase] Indexing failed:`, err)
+        } finally {
+          if (needsClose) storeToUse.close();
         }
       })()
       
@@ -591,7 +682,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         content: [
           {
             type: 'text',
-            text: `🔄 Codebase indexing started in background for ${root || deps.workspaceRoot}`,
+            text: `🔄 Codebase indexing started in background for ${effectiveRoot}`,
           },
         ],
       }
@@ -667,19 +758,24 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     },
     async ({ filePath }) => {
       log('mcp', 'memory_focus filePath="' + filePath + '"');
-      const dependencies = store.getFileDependencies(filePath, currentProjectHash);
-      const dependents = store.getFileDependents(filePath, currentProjectHash);
-      const centralityInfo = store.getDocumentCentrality(filePath);
+      const resolved = resolveWorkspace(deps, filePath);
+      const effectiveStore = resolved?.store || store;
+      const effectiveProjectHash = resolved?.projectHash || currentProjectHash;
       
-      const lines: string[] = [];
-      lines.push(`**File:** ${filePath}`);
-      lines.push('');
-      
-      if (centralityInfo) {
-        lines.push(`**Centrality:** ${centralityInfo.centrality.toFixed(4)}`);
-        if (centralityInfo.clusterId !== null) {
-          const clusterMembers = store.getClusterMembers(centralityInfo.clusterId, currentProjectHash);
-          lines.push(`**Cluster ID:** ${centralityInfo.clusterId} (${clusterMembers.length} members)`);
+      try {
+        const dependencies = effectiveStore.getFileDependencies(filePath, effectiveProjectHash);
+        const dependents = effectiveStore.getFileDependents(filePath, effectiveProjectHash);
+        const centralityInfo = effectiveStore.getDocumentCentrality(filePath);
+        
+        const lines: string[] = [];
+        lines.push(`**File:** ${filePath}`);
+        lines.push('');
+        
+        if (centralityInfo) {
+          lines.push(`**Centrality:** ${centralityInfo.centrality.toFixed(4)}`);
+          if (centralityInfo.clusterId !== null) {
+            const clusterMembers = effectiveStore.getClusterMembers(centralityInfo.clusterId, effectiveProjectHash);
+            lines.push(`**Cluster ID:** ${centralityInfo.clusterId} (${clusterMembers.length} members)`);
           if (clusterMembers.length > 0) {
             lines.push('**Cluster Members:**');
             for (const member of clusterMembers.slice(0, 10)) {
@@ -695,33 +791,36 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       }
       lines.push('');
       
-      lines.push(`**Dependencies (imports):** ${dependencies.length}`);
-      const maxDeps = 30;
-      for (const dep of dependencies.slice(0, maxDeps)) {
-        lines.push(`  → ${dep}`);
+        lines.push(`**Dependencies (imports):** ${dependencies.length}`);
+        const maxDeps = 30;
+        for (const dep of dependencies.slice(0, maxDeps)) {
+          lines.push(`  → ${dep}`);
+        }
+        if (dependencies.length > maxDeps) {
+          lines.push(`  ... and ${dependencies.length - maxDeps} more`);
+        }
+        lines.push('');
+        
+        lines.push(`**Dependents (imported by):** ${dependents.length}`);
+        const maxDependents = 30;
+        for (const dep of dependents.slice(0, maxDependents)) {
+          lines.push(`  ← ${dep}`);
+        }
+        if (dependents.length > maxDependents) {
+          lines.push(`  ... and ${dependents.length - maxDependents} more`);
+        }
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: lines.join('\n'),
+            },
+          ],
+        };
+      } finally {
+        if (resolved?.needsClose) resolved.store.close();
       }
-      if (dependencies.length > maxDeps) {
-        lines.push(`  ... and ${dependencies.length - maxDeps} more`);
-      }
-      lines.push('');
-      
-      lines.push(`**Dependents (imported by):** ${dependents.length}`);
-      const maxDependents = 30;
-      for (const dep of dependents.slice(0, maxDependents)) {
-        lines.push(`  ← ${dep}`);
-      }
-      if (dependents.length > maxDependents) {
-        lines.push(`  ... and ${dependents.length - maxDependents} more`);
-      }
-      
-      return {
-        content: [
-          {
-            type: 'text',
-            text: lines.join('\n'),
-          },
-        ],
-      };
     }
   );
   
@@ -731,36 +830,68 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     {},
     async () => {
       log('mcp', 'memory_graph_stats');
-      const stats = store.getGraphStats(currentProjectHash);
-      const edges = store.getFileEdges(currentProjectHash);
-      const cycles = findCycles(edges.map(e => ({ source: e.source_path, target: e.target_path })), 5);
-      
       const lines: string[] = [];
-      lines.push('**Graph Statistics**');
-      lines.push('');
-      lines.push(`**Nodes:** ${stats.nodeCount}`);
-      lines.push(`**Edges:** ${stats.edgeCount}`);
-      lines.push(`**Clusters:** ${stats.clusterCount}`);
-      lines.push('');
       
-      if (stats.topCentrality.length > 0) {
-        lines.push('**Top 10 by Centrality:**');
-        for (const { path: filePath, centrality } of stats.topCentrality) {
-          lines.push(`  ${centrality.toFixed(4)} - ${filePath}`);
-        }
+      if (deps.daemon && deps.allWorkspaces && deps.dataDir) {
+        lines.push('**Graph Statistics (All Workspaces)**');
         lines.push('');
-      }
-      
-      if (cycles.length > 0) {
-        lines.push(`**Cycles (length ≤ 5):** ${cycles.length}`);
-        for (const cycle of cycles.slice(0, 5)) {
-          lines.push(`  ${cycle.join(' → ')} → ${cycle[0]}`);
+        let totalNodes = 0;
+        let totalEdges = 0;
+        let totalClusters = 0;
+        
+        for (const [wsPath, wsConfig] of Object.entries(deps.allWorkspaces)) {
+          if (!wsConfig.codebase?.enabled) continue;
+          try {
+            const wsStore = openWorkspaceStore(deps.dataDir, wsPath);
+            if (!wsStore) continue;
+            const wsHash = crypto.createHash('sha256').update(wsPath).digest('hex').substring(0, 12);
+            try {
+              const wsStats = wsStore.getGraphStats(wsHash);
+              if (wsStats.nodeCount > 0) {
+                lines.push(`**${path.basename(wsPath)}:** ${wsStats.nodeCount} nodes, ${wsStats.edgeCount} edges, ${wsStats.clusterCount} clusters`);
+                totalNodes += wsStats.nodeCount;
+                totalEdges += wsStats.edgeCount;
+                totalClusters += wsStats.clusterCount;
+              }
+            } finally {
+              wsStore.close();
+            }
+          } catch { }
         }
-        if (cycles.length > 5) {
-          lines.push(`  ... and ${cycles.length - 5} more`);
-        }
+        
+        lines.push('');
+        lines.push(`**Total:** ${totalNodes} nodes, ${totalEdges} edges, ${totalClusters} clusters`);
       } else {
-        lines.push('**Cycles:** None detected');
+        const stats = store.getGraphStats(currentProjectHash);
+        const edges = store.getFileEdges(currentProjectHash);
+        const cycles = findCycles(edges.map(e => ({ source: e.source_path, target: e.target_path })), 5);
+        
+        lines.push('**Graph Statistics**');
+        lines.push('');
+        lines.push(`**Nodes:** ${stats.nodeCount}`);
+        lines.push(`**Edges:** ${stats.edgeCount}`);
+        lines.push(`**Clusters:** ${stats.clusterCount}`);
+        lines.push('');
+        
+        if (stats.topCentrality.length > 0) {
+          lines.push('**Top 10 by Centrality:**');
+          for (const { path: filePath, centrality } of stats.topCentrality) {
+            lines.push(`  ${centrality.toFixed(4)} - ${filePath}`);
+          }
+          lines.push('');
+        }
+        
+        if (cycles.length > 0) {
+          lines.push(`**Cycles (length ≤ 5):** ${cycles.length}`);
+          for (const cycle of cycles.slice(0, 5)) {
+            lines.push(`  ${cycle.join(' → ')} → ${cycle[0]}`);
+          }
+          if (cycles.length > 5) {
+            lines.push(`  ... and ${cycles.length - 5} more`);
+          }
+        } else {
+          lines.push('**Cycles:** None detected');
+        }
       }
       
       return {
@@ -924,89 +1055,106 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     async ({ name, file_path }) => {
       log('mcp', 'code_context name="' + name + '" file_path="' + (file_path || '') + '"');
 
-      if (!deps.db) {
+      const resolved = file_path ? resolveWorkspace(deps, file_path) : null;
+      const effectiveProjectHash = resolved?.projectHash || currentProjectHash;
+      
+      let effectiveDb = deps.db;
+      if (resolved?.needsClose && deps.dataDir && resolved.workspaceRoot) {
+        const dbPath = resolveWorkspaceDbPath(deps.dataDir, resolved.workspaceRoot);
+        effectiveDb = new Database(dbPath);
+      }
+
+      if (!effectiveDb) {
+        if (resolved?.needsClose) resolved.store.close();
         return {
           content: [{ type: 'text', text: 'Symbol graph database not available.' }],
           isError: true,
         };
       }
 
-      const graph = new SymbolGraph(deps.db);
-      const result = graph.handleContext({
-        name,
-        filePath: file_path,
-        projectHash: currentProjectHash,
-      });
+      try {
+        const graph = new SymbolGraph(effectiveDb);
+        const result = graph.handleContext({
+          name,
+          filePath: file_path,
+          projectHash: effectiveProjectHash,
+        });
 
-      if (!result.found && result.disambiguation) {
-        const lines = ['**Multiple symbols found. Please specify file_path:**', ''];
-        for (const s of result.disambiguation) {
-          lines.push(`- \`${s.name}\` (${s.kind}) in ${s.filePath}:${s.startLine}`);
+        if (!result.found && result.disambiguation) {
+          const lines = ['**Multiple symbols found. Please specify file_path:**', ''];
+          for (const s of result.disambiguation) {
+            lines.push(`- \`${s.name}\` (${s.kind}) in ${s.filePath}:${s.startLine}`);
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
         }
+
+        if (!result.found) {
+          return { content: [{ type: 'text', text: `Symbol not found: ${name}` }] };
+        }
+
+        const lines: string[] = [];
+        const sym = result.symbol!;
+        lines.push(`## ${sym.name} (${sym.kind})`);
+        lines.push(`**File:** ${sym.filePath}:${sym.startLine}-${sym.endLine}`);
+        lines.push(`**Exported:** ${sym.exported ? 'Yes' : 'No'}`);
+        if (result.clusterLabel) {
+          lines.push(`**Cluster:** ${result.clusterLabel}`);
+        }
+        lines.push('');
+
+        if (result.incoming && result.incoming.length > 0) {
+          const maxIncoming = 20;
+          const displayIncoming = result.incoming.slice(0, maxIncoming);
+          lines.push(`### Callers (${result.incoming.length})`);
+          for (const e of displayIncoming) {
+            lines.push(`- ${e.name} (${e.kind}) — ${e.filePath} [${e.edgeType}, ${(e.confidence * 100).toFixed(0)}%]`);
+          }
+          if (result.incoming.length > maxIncoming) {
+            lines.push(`... and ${result.incoming.length - maxIncoming} more`);
+          }
+          lines.push('');
+        }
+
+        if (result.outgoing && result.outgoing.length > 0) {
+          const maxOutgoing = 20;
+          const displayOutgoing = result.outgoing.slice(0, maxOutgoing);
+          lines.push(`### Callees (${result.outgoing.length})`);
+          for (const e of displayOutgoing) {
+            lines.push(`- ${e.name} (${e.kind}) — ${e.filePath} [${e.edgeType}, ${(e.confidence * 100).toFixed(0)}%]`);
+          }
+          if (result.outgoing.length > maxOutgoing) {
+            lines.push(`... and ${result.outgoing.length - maxOutgoing} more`);
+          }
+          lines.push('');
+        }
+
+        if (result.flows && result.flows.length > 0) {
+          const maxFlows = 10;
+          const displayFlows = result.flows.slice(0, maxFlows);
+          lines.push(`### Flows (${result.flows.length})`);
+          for (const f of displayFlows) {
+            lines.push(`- ${f.label} (${f.flowType}) — step ${f.stepIndex}`);
+          }
+          if (result.flows.length > maxFlows) {
+            lines.push(`... and ${result.flows.length - maxFlows} more`);
+          }
+          lines.push('');
+        }
+
+        if (result.infrastructureSymbols && result.infrastructureSymbols.length > 0) {
+          lines.push(`### Infrastructure (${result.infrastructureSymbols.length})`);
+          for (const s of result.infrastructureSymbols) {
+            lines.push(`- [${s.type}] ${s.pattern} (${s.operation})`);
+          }
+        }
+
         return { content: [{ type: 'text', text: lines.join('\n') }] };
-      }
-
-      if (!result.found) {
-        return { content: [{ type: 'text', text: `Symbol not found: ${name}` }] };
-      }
-
-      const lines: string[] = [];
-      const sym = result.symbol!;
-      lines.push(`## ${sym.name} (${sym.kind})`);
-      lines.push(`**File:** ${sym.filePath}:${sym.startLine}-${sym.endLine}`);
-      lines.push(`**Exported:** ${sym.exported ? 'Yes' : 'No'}`);
-      if (result.clusterLabel) {
-        lines.push(`**Cluster:** ${result.clusterLabel}`);
-      }
-      lines.push('');
-
-      if (result.incoming && result.incoming.length > 0) {
-        const maxIncoming = 20;
-        const displayIncoming = result.incoming.slice(0, maxIncoming);
-        lines.push(`### Callers (${result.incoming.length})`);
-        for (const e of displayIncoming) {
-          lines.push(`- ${e.name} (${e.kind}) — ${e.filePath} [${e.edgeType}, ${(e.confidence * 100).toFixed(0)}%]`);
-        }
-        if (result.incoming.length > maxIncoming) {
-          lines.push(`... and ${result.incoming.length - maxIncoming} more`);
-        }
-        lines.push('');
-      }
-
-      if (result.outgoing && result.outgoing.length > 0) {
-        const maxOutgoing = 20;
-        const displayOutgoing = result.outgoing.slice(0, maxOutgoing);
-        lines.push(`### Callees (${result.outgoing.length})`);
-        for (const e of displayOutgoing) {
-          lines.push(`- ${e.name} (${e.kind}) — ${e.filePath} [${e.edgeType}, ${(e.confidence * 100).toFixed(0)}%]`);
-        }
-        if (result.outgoing.length > maxOutgoing) {
-          lines.push(`... and ${result.outgoing.length - maxOutgoing} more`);
-        }
-        lines.push('');
-      }
-
-      if (result.flows && result.flows.length > 0) {
-        const maxFlows = 10;
-        const displayFlows = result.flows.slice(0, maxFlows);
-        lines.push(`### Flows (${result.flows.length})`);
-        for (const f of displayFlows) {
-          lines.push(`- ${f.label} (${f.flowType}) — step ${f.stepIndex}`);
-        }
-        if (result.flows.length > maxFlows) {
-          lines.push(`... and ${result.flows.length - maxFlows} more`);
-        }
-        lines.push('');
-      }
-
-      if (result.infrastructureSymbols && result.infrastructureSymbols.length > 0) {
-        lines.push(`### Infrastructure (${result.infrastructureSymbols.length})`);
-        for (const s of result.infrastructureSymbols) {
-          lines.push(`- [${s.type}] ${s.pattern} (${s.operation})`);
+      } finally {
+        if (resolved?.needsClose) {
+          resolved.store.close();
+          if (effectiveDb !== deps.db) effectiveDb.close();
         }
       }
-
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
     }
   );
 
@@ -1023,95 +1171,112 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     async ({ target, direction, max_depth, min_confidence, file_path }) => {
       log('mcp', 'code_impact target="' + target + '" direction="' + direction + '"');
 
-      if (!deps.db) {
+      const resolved = file_path ? resolveWorkspace(deps, file_path) : null;
+      const effectiveProjectHash = resolved?.projectHash || currentProjectHash;
+      
+      let effectiveDb = deps.db;
+      if (resolved?.needsClose && deps.dataDir && resolved.workspaceRoot) {
+        const dbPath = resolveWorkspaceDbPath(deps.dataDir, resolved.workspaceRoot);
+        effectiveDb = new Database(dbPath);
+      }
+
+      if (!effectiveDb) {
+        if (resolved?.needsClose) resolved.store.close();
         return {
           content: [{ type: 'text', text: 'Symbol graph database not available.' }],
           isError: true,
         };
       }
 
-      const graph = new SymbolGraph(deps.db);
-      const result = graph.handleImpact({
-        target,
-        direction,
-        maxDepth: max_depth,
-        minConfidence: min_confidence,
-        filePath: file_path,
-        projectHash: currentProjectHash,
-      });
+      try {
+        const graph = new SymbolGraph(effectiveDb);
+        const result = graph.handleImpact({
+          target,
+          direction,
+          maxDepth: max_depth,
+          minConfidence: min_confidence,
+          filePath: file_path,
+          projectHash: effectiveProjectHash,
+        });
 
-      if (!result.found && result.disambiguation) {
-        const lines = ['**Multiple symbols found. Please specify file_path:**', ''];
-        for (const s of result.disambiguation) {
-          lines.push(`- \`${s.name}\` (${s.kind}) in ${s.filePath}`);
-        }
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
-      }
-
-      if (!result.found) {
-        return { content: [{ type: 'text', text: `Symbol not found: ${target}` }] };
-      }
-
-      const lines: string[] = [];
-      const t = result.target!;
-      lines.push(`## Impact Analysis: ${t.name}`);
-      lines.push(`**Direction:** ${direction}`);
-      lines.push(`**Risk Level:** ${result.risk}`);
-      lines.push(`**Summary:** ${result.summary.directDeps} direct deps, ${result.summary.totalAffected} total affected, ${result.summary.flowsAffected} flows`);
-      lines.push('');
-
-      let totalEntries = 0;
-      let truncatedEntries = 0;
-      const maxDepth = 3;
-      const maxEntries = 50;
-      const truncatedByDepth: Record<string, Array<{ name: string; kind: string; filePath: string; edgeType: string }>> = {};
-      for (const [depth, depItems] of Object.entries(result.byDepth as Record<string, Array<{ name: string; kind: string; filePath: string; edgeType: string; confidence: number }>>)) {
-        if (parseInt(depth) > maxDepth) {
-          truncatedEntries += depItems.length;
-          continue;
-        }
-        const remaining = maxEntries - totalEntries;
-        if (remaining <= 0) {
-          truncatedEntries += depItems.length;
-          continue;
-        }
-        if (depItems.length > remaining) {
-          truncatedByDepth[depth] = depItems.slice(0, remaining);
-          truncatedEntries += depItems.length - remaining;
-          totalEntries += remaining;
-        } else {
-          truncatedByDepth[depth] = depItems;
-          totalEntries += depItems.length;
-        }
-      }
-
-      for (const [depth, depItems] of Object.entries(truncatedByDepth)) {
-        if (depItems.length > 0) {
-          lines.push(`### Depth ${depth} (${depItems.length})`);
-          for (const d of depItems) {
-            lines.push(`- ${d.name} (${d.kind}) — ${d.filePath} [${d.edgeType}]`);
+        if (!result.found && result.disambiguation) {
+          const lines = ['**Multiple symbols found. Please specify file_path:**', ''];
+          for (const s of result.disambiguation) {
+            lines.push(`- \`${s.name}\` (${s.kind}) in ${s.filePath}`);
           }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
+        if (!result.found) {
+          return { content: [{ type: 'text', text: `Symbol not found: ${target}` }] };
+        }
+
+        const lines: string[] = [];
+        const t = result.target!;
+        lines.push(`## Impact Analysis: ${t.name}`);
+        lines.push(`**Direction:** ${direction}`);
+        lines.push(`**Risk Level:** ${result.risk}`);
+        lines.push(`**Summary:** ${result.summary.directDeps} direct deps, ${result.summary.totalAffected} total affected, ${result.summary.flowsAffected} flows`);
+        lines.push('');
+
+        let totalEntries = 0;
+        let truncatedEntries = 0;
+        const maxDepth = 3;
+        const maxEntries = 50;
+        const truncatedByDepth: Record<string, Array<{ name: string; kind: string; filePath: string; edgeType: string }>> = {};
+        for (const [depth, depItems] of Object.entries(result.byDepth as Record<string, Array<{ name: string; kind: string; filePath: string; edgeType: string; confidence: number }>>)) {
+          if (parseInt(depth) > maxDepth) {
+            truncatedEntries += depItems.length;
+            continue;
+          }
+          const remaining = maxEntries - totalEntries;
+          if (remaining <= 0) {
+            truncatedEntries += depItems.length;
+            continue;
+          }
+          if (depItems.length > remaining) {
+            truncatedByDepth[depth] = depItems.slice(0, remaining);
+            truncatedEntries += depItems.length - remaining;
+            totalEntries += remaining;
+          } else {
+            truncatedByDepth[depth] = depItems;
+            totalEntries += depItems.length;
+          }
+        }
+
+        for (const [depth, depItems] of Object.entries(truncatedByDepth)) {
+          if (depItems.length > 0) {
+            lines.push(`### Depth ${depth} (${depItems.length})`);
+            for (const d of depItems) {
+              lines.push(`- ${d.name} (${d.kind}) — ${d.filePath} [${d.edgeType}]`);
+            }
+            lines.push('');
+          }
+        }
+        if (truncatedEntries > 0) {
+          lines.push(`... and ${truncatedEntries} more at deeper levels`);
           lines.push('');
         }
-      }
-      if (truncatedEntries > 0) {
-        lines.push(`... and ${truncatedEntries} more at deeper levels`);
-        lines.push('');
-      }
 
-      if (result.affectedFlows.length > 0) {
-        const maxFlows = 20;
-        const displayFlows = result.affectedFlows.slice(0, maxFlows);
-        lines.push(`### Affected Flows (${result.affectedFlows.length})`);
-        for (const f of displayFlows) {
-          lines.push(`- ${f.label} (${f.flowType}) — step ${f.stepIndex}`);
+        if (result.affectedFlows.length > 0) {
+          const maxFlows = 20;
+          const displayFlows = result.affectedFlows.slice(0, maxFlows);
+          lines.push(`### Affected Flows (${result.affectedFlows.length})`);
+          for (const f of displayFlows) {
+            lines.push(`- ${f.label} (${f.flowType}) — step ${f.stepIndex}`);
+          }
+          if (result.affectedFlows.length > maxFlows) {
+            lines.push(`... and ${result.affectedFlows.length - maxFlows} more`);
+          }
         }
-        if (result.affectedFlows.length > maxFlows) {
-          lines.push(`... and ${result.affectedFlows.length - maxFlows} more`);
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      } finally {
+        if (resolved?.needsClose) {
+          resolved.store.close();
+          if (effectiveDb !== deps.db) effectiveDb.close();
         }
       }
-
-      return { content: [{ type: 'text', text: lines.join('\n') }] };
     }
   );
 
@@ -1131,10 +1296,14 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         };
       }
 
+      const effectiveWorkspaceRoot = deps.daemon && deps.allWorkspaces && Object.keys(deps.allWorkspaces).length > 0
+        ? Object.keys(deps.allWorkspaces)[0]
+        : workspaceRoot;
+
       const graph = new SymbolGraph(deps.db);
       const result = graph.handleDetectChanges({
         scope,
-        workspaceRoot,
+        workspaceRoot: effectiveWorkspaceRoot,
         projectHash: currentProjectHash,
       });
 
@@ -1260,11 +1429,17 @@ export async function startServer(options: ServerOptions): Promise<void> {
   initLogger(config ?? undefined);
   const collections = config ? getCollections(config) : [];
   const storageConfig = parseStorageConfig(config?.storage);
-  const resolvedWorkspaceRoot = process.cwd();
+  let resolvedWorkspaceRoot: string;
+  if (daemon && config?.workspaces && Object.keys(config.workspaces).length > 0) {
+    resolvedWorkspaceRoot = Object.keys(config.workspaces)[0];
+    log('server', 'Daemon mode: using first configured workspace as primary');
+    console.error(`[memory] Daemon mode: primary workspace = ${resolvedWorkspaceRoot}`);
+  } else {
+    resolvedWorkspaceRoot = process.cwd();
+  }
   const wsConfig = getWorkspaceConfig(config, resolvedWorkspaceRoot);
   const resolvedCodebaseConfig = wsConfig.codebase;
   const currentProjectHash = crypto.createHash('sha256').update(resolvedWorkspaceRoot).digest('hex').substring(0, 12);
-  // Use per-workspace database: {dirName}-{hash}.sqlite instead of default.sqlite
   const isDefaultDb = dbPath.endsWith('/default.sqlite') || dbPath.endsWith('\\default.sqlite');
   const effectiveDbPath = isDefaultDb ? resolveWorkspaceDbPath(path.dirname(dbPath), resolvedWorkspaceRoot) : dbPath;
   log('server', 'Workspace path=' + resolvedWorkspaceRoot + ' hash=' + currentProjectHash);
@@ -1347,6 +1522,9 @@ export async function startServer(options: ServerOptions): Promise<void> {
     workspaceRoot: resolvedWorkspaceRoot,
     searchConfig: parseSearchConfig(config?.search),
     db: symbolGraphDb,
+    allWorkspaces: config?.workspaces,
+    dataDir: path.dirname(effectiveDbPath),
+    daemon: daemon ?? false,
   };
   
   const server = createMcpServer(deps);
