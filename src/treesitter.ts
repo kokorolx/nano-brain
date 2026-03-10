@@ -88,6 +88,48 @@ function getLanguageParser(language: SupportedLanguage): unknown | null {
   }
 }
 
+interface VueScriptExtraction {
+  scriptContent: string
+  scriptLang: 'ts' | 'js'
+  lineOffset: number
+}
+
+function extractVueScriptContent(content: string): VueScriptExtraction | null {
+  const scriptRegex = /<script\b([^>]*)>([\s\S]*?)<\/script>/g
+  const scripts: Array<{ attrs: string; content: string; index: number }> = []
+  
+  let match
+  while ((match = scriptRegex.exec(content)) !== null) {
+    scripts.push({
+      attrs: match[1],
+      content: match[2],
+      index: match.index,
+    })
+  }
+  
+  if (scripts.length === 0) return null
+  
+  let scriptLang: 'ts' | 'js' = 'js'
+  for (const script of scripts) {
+    const langMatch = script.attrs.match(/lang\s*=\s*["'](\w+)["']/)
+    if (langMatch?.[1] === 'ts' || langMatch?.[1] === 'typescript') {
+      scriptLang = 'ts'
+      break
+    }
+  }
+  
+  const firstScript = scripts[0]
+  const beforeScript = content.substring(0, firstScript.index)
+  const lineOffset = beforeScript.split('\n').length - 1
+  
+  if (scripts.length === 1) {
+    return { scriptContent: firstScript.content, scriptLang, lineOffset }
+  }
+  
+  const combinedContent = scripts.map(s => s.content).join('\n')
+  return { scriptContent: combinedContent, scriptLang, lineOffset }
+}
+
 function getNodeText(node: { text: string }): string {
   return node.text
 }
@@ -399,6 +441,32 @@ export async function parseSymbols(
     return []
   }
   
+  if (language === 'vue') {
+    const vueScript = extractVueScriptContent(content)
+    if (!vueScript) return []
+    
+    const lang = getLanguageParser(vueScript.scriptLang)
+    if (!lang) return []
+    
+    try {
+      const parser = new Parser()
+      parser.setLanguage(lang)
+      const tree = parser.parse(vueScript.scriptContent)
+      const tsNode = tree.rootNode as unknown as TreeSitterNode
+      const symbols = extractTsJsSymbols(tsNode, filePath)
+      
+      for (const sym of symbols) {
+        sym.startLine += vueScript.lineOffset
+        sym.endLine += vueScript.lineOffset
+      }
+      
+      return symbols
+    } catch (e) {
+      console.warn(`[treesitter] Failed to parse Vue script in ${filePath}:`, e)
+      return []
+    }
+  }
+  
   const lang = getLanguageParser(language)
   if (!lang) {
     return []
@@ -581,6 +649,12 @@ export async function resolveCallEdges(
     return []
   }
   
+  if (language === 'vue') {
+    const vueScript = extractVueScriptContent(content)
+    if (!vueScript) return []
+    return resolveCallEdges(filePath, vueScript.scriptContent, vueScript.scriptLang, symbolTable)
+  }
+  
   const lang = getLanguageParser(language)
   if (!lang) {
     return []
@@ -742,6 +816,12 @@ export async function resolveHeritageEdges(
   
   if (!treeSitterAvailable || !Parser) {
     return []
+  }
+  
+  if (language === 'vue') {
+    const vueScript = extractVueScriptContent(content)
+    if (!vueScript) return []
+    return resolveHeritageEdges(filePath, vueScript.scriptContent, vueScript.scriptLang, symbolTable)
   }
   
   const lang = getLanguageParser(language)

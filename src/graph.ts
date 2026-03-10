@@ -3,7 +3,7 @@ import * as fs from 'fs'
 import * as crypto from 'crypto'
 import type Database from 'better-sqlite3'
 
-export type SupportedLanguage = 'js' | 'ts' | 'python' | 'ruby'
+export type SupportedLanguage = 'js' | 'ts' | 'python' | 'ruby' | 'vue'
 
 export function detectLanguage(filePath: string): SupportedLanguage | null {
   const ext = path.extname(filePath).toLowerCase()
@@ -24,6 +24,8 @@ export function detectLanguage(filePath: string): SupportedLanguage | null {
     case '.rb':
     case '.erb':
       return 'ruby'
+    case '.vue':
+      return 'vue'
     default:
       return null
   }

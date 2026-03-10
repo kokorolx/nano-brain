@@ -162,7 +162,7 @@ const BUILTIN_EXCLUDE_PATTERNS = [
 ]
 
 const PROJECT_TYPE_MARKERS: Record<string, string[]> = {
-  'package.json': ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json'],
+  'package.json': ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.vue'],
   'pyproject.toml': ['.py', '.pyi'],
   'setup.py': ['.py', '.pyi'],
   'requirements.txt': ['.py', '.pyi'],
@@ -189,7 +189,7 @@ export function detectProjectType(workspaceRoot: string): string[] {
   extensions.add('.md')
   
   if (extensions.size === 1) {
-    return ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.rb', '.md']
+    return ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.py', '.go', '.rs', '.java', '.rb', '.md']
   }
   
   return Array.from(extensions)
@@ -700,7 +700,7 @@ export async function indexSymbolGraph(
 
   for (const file of files) {
     const language = detectLanguage(file.path) as SupportedLanguage | null
-    if (!language || (language !== 'ts' && language !== 'js' && language !== 'python')) {
+    if (!language || (language !== 'ts' && language !== 'js' && language !== 'python' && language !== 'vue')) {
       filesSkipped++
       continue
     }
@@ -757,7 +757,7 @@ export async function indexSymbolGraph(
 
   for (const file of files) {
     const language = detectLanguage(file.path) as SupportedLanguage | null
-    if (!language || (language !== 'ts' && language !== 'js' && language !== 'python')) {
+    if (!language || (language !== 'ts' && language !== 'js' && language !== 'python' && language !== 'vue')) {
       continue
     }
 
