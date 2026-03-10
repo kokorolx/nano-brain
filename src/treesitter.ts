@@ -28,6 +28,9 @@ let PythonLang: unknown = null
 
 async function initTreeSitter(): Promise<void> {
   try {
+    // Skip build/Release/ (may contain wrong-platform binaries from npm rebuild in Docker)
+    // and use prebuilds/{platform}-{arch}/ which ships correct binaries for all platforms
+    process.env.PREBUILDS_ONLY = '1'
     const ts = await import('tree-sitter')
     Parser = ts.default
     
@@ -41,7 +44,8 @@ async function initTreeSitter(): Promise<void> {
     
     treeSitterAvailable = true
   } catch (e) {
-    console.warn('[treesitter] Native bindings not available, symbol graph disabled')
+    const msg = e instanceof Error ? e.message : String(e)
+    console.warn(`[treesitter] Native bindings not available, symbol graph disabled: ${msg}`)
     treeSitterAvailable = false
   }
 }
