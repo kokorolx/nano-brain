@@ -227,15 +227,41 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
   const state = loadHarvestState(stateFile);
   const harvested: HarvestedSession[] = [];
   
-  log('harvester', 'Starting harvest cycle')
+  const startTime = Date.now()
   const sessionRoot = join(sessionDir, 'session');
   
   if (!existsSync(sessionRoot)) {
+    log('harvester', 'Harvest cycle: no session root found')
     return [];
   }
   
   const projectDirs = readdirSync(sessionRoot);
+  
+  // Pre-scan: count total session files and size across all projects
+  let totalSessionFiles = 0
+  let totalSessionBytes = 0
+  for (const projectHash of projectDirs) {
+    const projectSessionDir = join(sessionRoot, projectHash);
+    if (!existsSync(projectSessionDir)) continue
+    try {
+      const files = readdirSync(projectSessionDir).filter(f => f.startsWith('ses_') && f.endsWith('.json'))
+      for (const file of files) {
+        totalSessionFiles++
+        try {
+          totalSessionBytes += statSync(join(projectSessionDir, file)).size
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+  }
+  
+  const sizeKB = (totalSessionBytes / 1024).toFixed(1)
+  log('harvester', `Starting harvest cycle: ${totalSessionFiles} session files (${sizeKB} KB) across ${projectDirs.length} projects`)
+  
   let stateChanged = false;
+  let processedCount = 0
+  let skippedCount = 0
+  let incrementalCount = 0
+  let errorCount = 0
   
   for (const projectHash of projectDirs) {
     const projectSessionDir = join(sessionRoot, projectHash);
@@ -256,6 +282,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       const effectiveMtime = Math.max(lastMtime, messageDirMtime ?? 0);
       
       if (state[sessionFile]?.skipped) {
+        skippedCount++
         continue;
       }
       
@@ -269,10 +296,11 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
             // Quick check: count message files to catch additions within same mtime granularity
             const msgDir = join(sessionDir, 'message', session.id);
             try {
-              const msgCount = readdirSync(msgDir).filter(f => f.endsWith('.json')).length;
-              if (msgCount <= (state[sessionFile].messageCount ?? 0)) {
-                continue;
-              }
+            const msgCount = readdirSync(msgDir).filter(f => f.endsWith('.json')).length;
+                if (msgCount <= (state[sessionFile].messageCount ?? 0)) {
+                  skippedCount++
+                  continue;
+                }
               // Message count changed despite same mtime — fall through to re-harvest
             } catch {
               continue;
@@ -305,13 +333,14 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       
       const previousMessageCount = state[sessionFile]?.messageCount;
       if (previousMessageCount !== undefined && previousMessageCount >= messages.length) {
-        // messageCount unchanged or messages were deleted — skip
+        skippedCount++
         continue;
       }
       
       if (messages.length === 0) {
         state[sessionFile] = { mtime: effectiveMtime, skipped: true };
         stateChanged = true;
+        skippedCount++
         continue;
       }
       
@@ -337,6 +366,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       if (!hasContent) {
         state[sessionFile] = { mtime: effectiveMtime, skipped: true };
         stateChanged = true;
+        skippedCount++
         continue;
       }
       
@@ -383,11 +413,14 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
           messages: parsedMessages
         };
         
-        log('harvester', 'Processed session: ' + session.id + (isIncremental ? ' (incremental)' : ''))
+        processedCount++
+        if (isIncremental) incrementalCount++
+        log('harvester', `Processed session: ${session.id}${isIncremental ? ' (incremental)' : ''} [${processedCount}/${totalSessionFiles}]`)
         harvested.push(harvestedSession);
         state[sessionFile] = { mtime: effectiveMtime, messageCount: messages.length };
         stateChanged = true;
       } catch (err) {
+        errorCount++
         log('harvester', 'Write failed: ' + outputPath)
         console.warn(`[harvester] Failed to write ${outputPath}:`, err);
         continue;
@@ -399,9 +432,18 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
     saveHarvestState(stateFile, state);
   }
   
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+  const stats = [
+    `${harvested.length} harvested`,
+    incrementalCount > 0 ? `${incrementalCount} incremental` : null,
+    `${skippedCount} skipped`,
+    errorCount > 0 ? `${errorCount} errors` : null,
+    `${elapsed}s`,
+  ].filter(Boolean).join(', ')
+  
+  log('harvester', `Harvest complete: ${stats}`)
   if (harvested.length > 0) {
-    log('harvester', 'Harvest complete: ' + harvested.length + ' session(s)')
-    console.log(`[harvester] Harvested ${harvested.length} session(s)`);
+    console.log(`[harvester] Harvested ${harvested.length} session(s) in ${elapsed}s`);
   }
   
   return harvested;
