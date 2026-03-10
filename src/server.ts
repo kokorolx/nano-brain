@@ -24,6 +24,7 @@ import { indexCodebase, getCodebaseStats, embedPendingCodebase } from './codebas
 import { createVectorStore, type VectorStore, type VectorStoreHealth } from './vector-store.js'
 import Database from 'better-sqlite3'
 import { SymbolGraph, type ContextResult, type ImpactResult, type DetectChangesResult } from './symbol-graph.js'
+import { ResultCache } from './cache.js'
 
 export interface ServerOptions {
   dbPath: string;
@@ -179,6 +180,25 @@ export function formatSearchResults(results: SearchResult[]): string {
   }).join('\n---\n\n');
 }
 
+export function formatCompactResults(results: SearchResult[], cacheKey: string): string {
+  if (results.length === 0) {
+    return 'No results found.';
+  }
+
+  const header = `🔑 ${cacheKey} | Use memory_expand(cacheKey, index) for full content | compact:false for verbose`;
+  
+  const lines = results.map((r, i) => {
+    const score = r.score.toFixed(3);
+    const title = r.title.replace(/[|—]/g, '-');
+    const symbols = r.symbols && r.symbols.length > 0 ? ` [${r.symbols.join(', ')}]` : '';
+    const firstLine = r.snippet.split('\n')[0] || '';
+    const truncated = firstLine.length > 80 ? firstLine.substring(0, 80) + '…' : firstLine;
+    return `${i + 1}. [${score}] ${title} (${r.docid}) — ${r.path}:${r.startLine}${symbols} | ${truncated}`;
+  });
+
+  return header + '\n\n' + lines.join('\n');
+}
+
 export function formatStatus(
   health: IndexHealth,
   codebaseStats?: { enabled: boolean; documents: number; extensions: string[]; excludeCount: number; storageUsed: number; maxSize: number },
@@ -270,6 +290,8 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     }
   );
   
+  const resultCache = new ResultCache();
+  
   server.tool(
     'memory_search',
     'BM25 full-text keyword search across indexed documents',
@@ -281,8 +303,9 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       tags: z.string().optional().describe('Comma-separated tags to filter by (AND logic)'),
       since: z.string().optional().describe('Filter documents modified on or after this date (ISO format)'),
       until: z.string().optional().describe('Filter documents modified on or before this date (ISO format)'),
+      compact: z.boolean().optional().default(false).describe('Return compact single-line results with caching. Defaults to verbose.'),
     },
-    async ({ query, limit, collection, workspace, tags, since, until }) => {
+    async ({ query, limit, collection, workspace, tags, since, until, compact }) => {
       log('mcp', 'memory_search query="' + query + '" limit=' + limit);
       if (deps.daemon && !workspace) {
         return {
@@ -300,6 +323,12 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         since,
         until,
       });
+      if (compact) {
+        const cacheKey = resultCache.set(results, query);
+        return {
+          content: [{ type: 'text', text: formatCompactResults(results, cacheKey) }],
+        };
+      }
       return {
         content: [
           {
@@ -322,8 +351,9 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       tags: z.string().optional().describe('Comma-separated tags to filter by (AND logic)'),
       since: z.string().optional().describe('Filter documents modified on or after this date (ISO format)'),
       until: z.string().optional().describe('Filter documents modified on or before this date (ISO format)'),
+      compact: z.boolean().optional().default(false).describe('Return compact single-line results with caching. Defaults to verbose.'),
     },
-    async ({ query, limit, collection, workspace, tags, since, until }) => {
+    async ({ query, limit, collection, workspace, tags, since, until, compact }) => {
       log('mcp', 'memory_vsearch query="' + query + '" limit=' + limit);
       if (deps.daemon && !workspace) {
         return {
@@ -353,6 +383,10 @@ export function createMcpServer(deps: ServerDeps): McpServer {
             store.setQueryEmbeddingCache(query, embedding);
           }
           const results = await store.searchVecAsync(query, embedding, searchOpts);
+          if (compact) {
+            const cacheKey = resultCache.set(results, query);
+            return { content: [{ type: 'text', text: formatCompactResults(results, cacheKey) }] };
+          }
           return {
             content: [
               {
@@ -363,6 +397,10 @@ export function createMcpServer(deps: ServerDeps): McpServer {
           };
         } catch (err) {
           const fallbackResults = store.searchFTS(query, searchOpts);
+          if (compact) {
+            const cacheKey = resultCache.set(fallbackResults, query);
+            return { content: [{ type: 'text', text: `⚠️  Vector search failed, falling back to FTS: ${err instanceof Error ? err.message : String(err)}\n\n${formatCompactResults(fallbackResults, cacheKey)}` }] };
+          }
           return {
             content: [
               {
@@ -374,6 +412,10 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         }
       } else {
         const fallbackResults = store.searchFTS(query, searchOpts);
+        if (compact) {
+          const cacheKey = resultCache.set(fallbackResults, query);
+          return { content: [{ type: 'text', text: `⚠️  Embedder not available, falling back to FTS\n\n${formatCompactResults(fallbackResults, cacheKey)}` }] };
+        }
         return {
           content: [
             {
@@ -398,8 +440,9 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       tags: z.string().optional().describe('Comma-separated tags to filter by (AND logic)'),
       since: z.string().optional().describe('Filter documents modified on or after this date (ISO format)'),
       until: z.string().optional().describe('Filter documents modified on or before this date (ISO format)'),
+      compact: z.boolean().optional().default(false).describe('Return compact single-line results with caching. Defaults to verbose.'),
     },
-    async ({ query, limit, collection, minScore, workspace, tags, since, until }) => {
+    async ({ query, limit, collection, minScore, workspace, tags, since, until, compact }) => {
       log('mcp', 'memory_query query="' + query + '" limit=' + limit);
       if (deps.daemon && !workspace) {
         return {
@@ -415,6 +458,12 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         providers
       );
       
+      if (compact) {
+        const cacheKey = resultCache.set(results, query);
+        return {
+          content: [{ type: 'text', text: formatCompactResults(results, cacheKey) }],
+        };
+      }
       return {
         content: [
           {
@@ -422,6 +471,87 @@ export function createMcpServer(deps: ServerDeps): McpServer {
             text: formatSearchResults(results),
           },
         ],
+      };
+    }
+  );
+  
+  server.tool(
+    'memory_expand',
+    'Expand a compact search result to see full content',
+    {
+      cacheKey: z.string().describe('Cache key from compact search response'),
+      index: z.number().optional().describe('1-based result index to expand'),
+      indices: z.array(z.number()).optional().describe('Array of 1-based indices to expand multiple results'),
+      docid: z.string().optional().describe('Document ID fallback if cache expired'),
+    },
+    async ({ cacheKey, index, indices, docid }) => {
+      log('mcp', 'memory_expand cacheKey="' + cacheKey + '" index=' + index + ' indices=' + JSON.stringify(indices) + ' docid=' + (docid || ''));
+      
+      const cached = resultCache.get(cacheKey);
+      
+      const expandIndices: number[] = [];
+      if (indices && indices.length > 0) {
+        expandIndices.push(...indices);
+      } else if (index !== undefined) {
+        expandIndices.push(index);
+      }
+      
+      if (cached && expandIndices.length > 0) {
+        const errors: string[] = [];
+        const expanded: string[] = [];
+        
+        for (const idx of expandIndices) {
+          if (idx < 1 || idx > cached.results.length) {
+            errors.push(`Index ${idx} out of range. Results have ${cached.results.length} items (1-${cached.results.length}).`);
+            continue;
+          }
+          const result = cached.results[idx - 1];
+          expanded.push(formatSearchResults([result]));
+        }
+        
+        if (errors.length > 0 && expanded.length === 0) {
+          return { content: [{ type: 'text', text: errors.join('\n') }], isError: true };
+        }
+        
+        const text = expanded.join('\n---\n\n') + (errors.length > 0 ? '\n\n⚠️ ' + errors.join('\n') : '');
+        return { content: [{ type: 'text', text }] };
+      }
+      
+      if (expandIndices.length === 0 && !docid) {
+        return {
+          content: [{ type: 'text', text: 'Provide index, indices, or docid to expand.' }],
+          isError: true,
+        };
+      }
+      
+      if (!cached && docid) {
+        const doc = store.findDocument(docid);
+        if (!doc) {
+          return {
+            content: [{ type: 'text', text: `Document not found: ${docid}` }],
+            isError: true,
+          };
+        }
+        const body = store.getDocumentBody(doc.hash, undefined, undefined);
+        const truncated = body ? (body.length > 2000 ? body.substring(0, 2000) + '\n... (truncated to 2000 chars)' : body) : '';
+        return {
+          content: [{
+            type: 'text',
+            text: `⚠️ Cache expired. Showing document section instead of matched snippet.\n\n**${doc.title}** (${doc.path})\n\n${truncated}`,
+          }],
+        };
+      }
+      
+      if (!cached) {
+        return {
+          content: [{ type: 'text', text: 'Cache expired. Re-run your search or provide a docid.' }],
+          isError: true,
+        };
+      }
+      
+      return {
+        content: [{ type: 'text', text: 'Provide index, indices, or docid to expand.' }],
+        isError: true,
       };
     }
   );

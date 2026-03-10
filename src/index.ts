@@ -14,6 +14,8 @@ import { isTreeSitterAvailable } from './treesitter.js';
 import { QdrantVecStore } from './providers/qdrant.js';
 import { createVectorStore } from './vector-store.js';
 import type { SearchResult, CollectionConfig, Store } from './types.js';
+import { ResultCache } from './cache.js';
+import { formatCompactResults } from './server.js';
 import type { VectorPoint, VectorStoreHealth } from './vector-store.js';
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
@@ -129,6 +131,7 @@ nano-brain - Memory system with hybrid search
     -c <collection> Filter by collection
     --json          Output as JSON
     --files         Show file paths only
+    --compact       Output compact single-line results
     --min-score=<n> Minimum score threshold (query only)
     --scope=all     Search across all workspaces
     --tags=<tags>   Filter by comma-separated tags (AND logic)
@@ -1092,6 +1095,7 @@ async function handleSearch(
   let tags: string[] | undefined;
   let since: string | undefined;
   let until: string | undefined;
+  let compact = false;
   
   for (let i = 1; i < commandArgs.length; i++) {
     const arg = commandArgs[i];
@@ -1104,6 +1108,8 @@ async function handleSearch(
       format = 'json';
     } else if (arg === '--files') {
       format = 'files';
+    } else if (arg === '--compact') {
+      compact = true;
     } else if (arg.startsWith('--min-score=')) {
       minScore = parseFloat(arg.substring(12));
     } else if (arg === '--scope=all' || arg === '--scope' && commandArgs[i + 1] === 'all') {
@@ -1162,7 +1168,13 @@ async function handleSearch(
     provider?.dispose();
   }
   
-  console.log(formatSearchOutput(results, format));
+  if (compact && format !== 'json') {
+    const cache = new ResultCache();
+    const cacheKey = cache.set(results, query);
+    console.log(formatCompactResults(results, cacheKey));
+  } else {
+    console.log(formatSearchOutput(results, format));
+  }
   store.close();
 }
 

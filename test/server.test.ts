@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createMcpServer, formatSearchResults, formatStatus } from '../src/server.js';
+import { createMcpServer, formatSearchResults, formatCompactResults, formatStatus } from '../src/server.js';
 import type { Store, SearchResult, IndexHealth, Collection } from '../src/types.js';
 import type { SearchProviders } from '../src/search.js';
 
@@ -103,6 +103,68 @@ describe('Server', () => {
       
       expect(formatted).toContain('### 1. Title doc1');
       expect(formatted).not.toContain('### 2.');
+    });
+  });
+
+  describe('formatCompactResults', () => {
+    it('should return "No results found." for empty results', () => {
+      const formatted = formatCompactResults([], 'search_1');
+      expect(formatted).toBe('No results found.');
+    });
+
+    it('should include cache key header with hint', () => {
+      const results = [createMockResult('doc1', 0.95)];
+      const formatted = formatCompactResults(results, 'search_42');
+      
+      expect(formatted).toContain('🔑 search_42');
+      expect(formatted).toContain('memory_expand(cacheKey, index)');
+      expect(formatted).toContain('compact:false for verbose');
+    });
+
+    it('should render single-line per result with score, title, docid, path:startLine', () => {
+      const results = [createMockResult('doc1', 0.95)];
+      const formatted = formatCompactResults(results, 'search_1');
+      
+      expect(formatted).toContain('1. [0.950]');
+      expect(formatted).toContain('Title doc1');
+      expect(formatted).toContain('(doc1)');
+      expect(formatted).toContain('path/doc1:1');
+    });
+
+    it('should truncate snippet first line at 80 chars with …', () => {
+      const longSnippet = 'A'.repeat(100);
+      const results = [createMockResult('doc1', 0.95, longSnippet)];
+      const formatted = formatCompactResults(results, 'search_1');
+      
+      expect(formatted).toContain('A'.repeat(80) + '…');
+      expect(formatted).not.toContain('A'.repeat(81));
+    });
+
+    it('should include full first line if under 80 chars', () => {
+      const shortSnippet = 'Short snippet here';
+      const results = [createMockResult('doc1', 0.95, shortSnippet)];
+      const formatted = formatCompactResults(results, 'search_1');
+      
+      expect(formatted).toContain('Short snippet here');
+      expect(formatted).not.toContain('…');
+    });
+
+    it('should include symbols in brackets when present', () => {
+      const result = createMockResult('doc1', 0.95);
+      result.symbols = ['functionA', 'classB'];
+      const formatted = formatCompactResults([result], 'search_1');
+      
+      expect(formatted).toContain('[functionA, classB]');
+    });
+
+    it('should escape pipe and em-dash in title', () => {
+      const result = createMockResult('doc1', 0.95);
+      result.title = 'Title | with — special chars';
+      const formatted = formatCompactResults([result], 'search_1');
+      
+      expect(formatted).toContain('Title - with - special chars');
+      expect(formatted).not.toContain('Title |');
+      expect(formatted).not.toContain('with —');
     });
   });
   
@@ -536,6 +598,44 @@ describe('Server', () => {
       mockStore.searchFTS('test', 10, undefined, effectiveWorkspace);
       
       expect(mockStore.searchFTS).toHaveBeenCalledWith('test', 10, undefined, 'otherws789012');
+    });
+  });
+
+  describe('MCP compact mode integration', () => {
+    it('should use formatSearchResults for verbose mode (compact=false)', () => {
+      const results = [createMockResult('doc1', 0.95)];
+      const formatted = formatSearchResults(results);
+
+      expect(formatted).toContain('### 1. Title doc1');
+      expect(formatted).toContain('**Path:**');
+      expect(formatted).toContain('**Score:**');
+      expect(formatted).toContain('**Lines:**');
+    });
+
+    it('should use formatCompactResults for compact mode (compact=true)', () => {
+      const results = [createMockResult('doc1', 0.95)];
+      const formatted = formatCompactResults(results, 'search_1');
+
+      expect(formatted).toContain('🔑 search_1');
+      expect(formatted).toContain('1. [0.950]');
+      expect(formatted).not.toContain('### 1.');
+      expect(formatted).not.toContain('**Path:**');
+    });
+
+    it('should include cache key hint in compact output', () => {
+      const results = [createMockResult('doc1', 0.95)];
+      const formatted = formatCompactResults(results, 'search_42');
+
+      expect(formatted).toContain('memory_expand(cacheKey, index)');
+      expect(formatted).toContain('compact:false for verbose');
+    });
+
+    it('should handle empty results in both modes', () => {
+      const verboseEmpty = formatSearchResults([]);
+      const compactEmpty = formatCompactResults([], 'search_1');
+
+      expect(verboseEmpty).toBe('No results found.');
+      expect(compactEmpty).toBe('No results found.');
     });
   });
 });

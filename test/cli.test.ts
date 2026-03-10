@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { parseGlobalOptions, showHelp, showVersion, formatSearchOutput, resolveWorkspaceIdentifier } from '../src/index.js';
+import { formatCompactResults } from '../src/server.js';
 import type { SearchResult, CollectionConfig, Store } from '../src/types.js';
 import * as crypto from 'crypto';
 
@@ -497,5 +498,71 @@ describe('Command Dispatch - New Commands', () => {
 
     expect(result.remaining[0]).toBe('reindex');
     expect(result.remaining).toHaveLength(1);
+  });
+});
+
+describe('CLI --compact flag', () => {
+  it('should parse --compact flag in search command', () => {
+    const args = ['search', 'test query', '--compact'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('search');
+    expect(result.remaining).toContain('--compact');
+  });
+
+  it('should parse --compact flag in query command', () => {
+    const args = ['query', 'test query', '--compact'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('query');
+    expect(result.remaining).toContain('--compact');
+  });
+
+  it('should parse --compact flag in vsearch command', () => {
+    const args = ['vsearch', 'test query', '--compact'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining[0]).toBe('vsearch');
+    expect(result.remaining).toContain('--compact');
+  });
+
+  it('should parse both --json and --compact flags', () => {
+    const args = ['query', 'test', '--json', '--compact'];
+    const result = parseGlobalOptions(args);
+
+    expect(result.remaining).toContain('--json');
+    expect(result.remaining).toContain('--compact');
+  });
+
+  it('should format results in compact mode', () => {
+    const results = [
+      createMockResult('doc1', 0.95, 'First line of snippet\nSecond line'),
+      createMockResult('doc2', 0.80, 'Another snippet'),
+    ];
+    const output = formatCompactResults(results, 'search_1');
+
+    expect(output).toContain('🔑 search_1');
+    expect(output).toContain('memory_expand');
+    expect(output).toContain('1. [0.950]');
+    expect(output).toContain('2. [0.800]');
+  });
+});
+
+describe('showHelp includes --compact flag', () => {
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleLogSpy.mockRestore();
+  });
+
+  it('should include --compact in help text', () => {
+    showHelp();
+    const output = consoleLogSpy.mock.calls[0][0] as string;
+    expect(output).toContain('--compact');
+    expect(output).toContain('Output compact single-line results');
   });
 });
