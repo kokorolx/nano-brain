@@ -645,7 +645,7 @@ export function getCodebaseStats(
   store: Store,
   config: CodebaseConfig | undefined,
   workspaceRoot: string
-): { enabled: boolean; documents: number; chunks: number; extensions: string[]; excludeCount: number; storageUsed: number; maxSize: number } | undefined {
+): { enabled: boolean; documents: number; extensions: string[]; excludeCount: number; storageUsed: number; maxSize: number } | undefined {
   if (!config?.enabled) {
     return undefined
   }
@@ -661,7 +661,6 @@ export function getCodebaseStats(
   return {
     enabled: true,
     documents: codebaseCollection?.documentCount ?? 0,
-    chunks: 0,
     extensions,
     excludeCount: excludePatterns.length,
     storageUsed,

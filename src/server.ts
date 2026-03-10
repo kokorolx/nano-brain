@@ -181,7 +181,7 @@ export function formatSearchResults(results: SearchResult[]): string {
 
 export function formatStatus(
   health: IndexHealth,
-  codebaseStats?: { enabled: boolean; documents: number; chunks: number; extensions: string[]; excludeCount: number; storageUsed: number; maxSize: number },
+  codebaseStats?: { enabled: boolean; documents: number; extensions: string[]; excludeCount: number; storageUsed: number; maxSize: number },
   embeddingHealth?: { provider: string; url: string; model: string; reachable: boolean; models?: string[]; error?: string },
   vectorHealth?: VectorStoreHealth | null,
   tokenUsage?: Array<{ model: string; totalTokens: number; requestCount: number; lastUpdated: string }> | null
@@ -659,7 +659,21 @@ export function createMcpServer(deps: ServerDeps): McpServer {
             try {
               const stats = getCodebaseStats(wsStore, wsConfig.codebase, wsPath);
               if (stats !== undefined && stats.enabled && stats.documents > 0) {
-                wsStats.push(`  - ${path.basename(wsPath)}: ${stats.documents} docs, ${stats.chunks} chunks`);
+                let symbolCount = 0;
+                let edgeCount = 0;
+                try {
+                  const wsDbPath = resolveWorkspaceDbPath(deps.dataDir, wsPath);
+                  const wsDb = new Database(wsDbPath);
+                  try {
+                    const row = wsDb.prepare('SELECT COUNT(*) as cnt FROM code_symbols').get() as { cnt: number } | undefined;
+                    symbolCount = row?.cnt ?? 0;
+                    const edgeRow = wsDb.prepare('SELECT COUNT(*) as cnt FROM symbol_edges').get() as { cnt: number } | undefined;
+                    edgeCount = edgeRow?.cnt ?? 0;
+                  } finally {
+                    wsDb.close();
+                  }
+                } catch { }
+                wsStats.push(`  - ${path.basename(wsPath)}: ${stats.documents} docs, ${symbolCount} symbols, ${edgeCount} edges`);
               }
             } finally {
               wsStore.close();
