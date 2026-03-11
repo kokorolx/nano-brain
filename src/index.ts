@@ -242,6 +242,8 @@ nano-brain - Memory system with hybrid search
     verify          Compare SQLite vector counts against Qdrant
     activate        Switch config to use Qdrant as vector provider
     cleanup         Drop SQLite vector tables (requires Qdrant active with vectors)
+  learning          Manage self-learning system
+    rollback [id]   View or rollback to a previous config version
 Logging Config (~/.nano-brain/config.yml):
   logging:
     enabled: true               # enable file logging (or use NANO_BRAIN_LOG=1 env)
@@ -3210,6 +3212,59 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
   }
 }
 
+async function handleConsolidate(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  log('cli', 'consolidate');
+  const store = createStore(globalOpts.dbPath);
+  const config = loadCollectionConfig(globalOpts.configPath);
+  
+  if (!config?.consolidation?.enabled) {
+    console.log('Consolidation is not enabled. Set consolidation.enabled=true in config.yml');
+    store.close();
+    return;
+  }
+  
+  console.log('Consolidation requires an LLM provider. Configure consolidation.model and consolidation.endpoint in config.yml');
+  store.close();
+}
+
+async function handleLearning(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  const subcommand = commandArgs[0];
+  
+  if (subcommand === 'rollback') {
+    const versionId = commandArgs[1] ? parseInt(commandArgs[1], 10) : undefined;
+    const store = createStore(globalOpts.dbPath);
+    try {
+      if (versionId) {
+        const version = store.getConfigVersion(versionId);
+        if (!version) {
+          console.error('Config version ' + versionId + ' not found');
+          process.exit(1);
+        }
+        console.log('Config version ' + versionId + ' (created ' + version.created_at + ')');
+        console.log('Config:', version.config_json);
+      } else {
+        const latest = store.getLatestConfigVersion();
+        if (!latest) {
+          console.log('No config versions found. Learning has not been active.');
+        } else {
+          console.log('Latest config version: ' + latest.version_id + ' (created ' + latest.created_at + ')');
+          console.log('Config:', latest.config_json);
+          console.log('\nUse: nano-brain learning rollback <version_id>');
+        }
+      }
+    } finally {
+      store.close();
+    }
+    return;
+  }
+  
+  console.error('Usage: nano-brain learning rollback [version_id]');
+  console.error('');
+  console.error('Commands:');
+  console.error('  rollback [version_id]  View or rollback to a previous config version');
+  process.exit(1);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   
@@ -3288,6 +3343,10 @@ async function main() {
       return handleDetectChanges(globalOpts, commandArgs);
     case 'reindex':
       return handleReindex(globalOpts, commandArgs);
+    case 'consolidate':
+      return handleConsolidate(globalOpts, commandArgs);
+    case 'learning':
+      return handleLearning(globalOpts, commandArgs);
     default:
       console.error(`Unknown command: ${command}`);
       showHelp();

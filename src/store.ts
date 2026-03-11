@@ -201,6 +201,26 @@ export function createStore(dbPath: string): Store {
       request_count INTEGER NOT NULL DEFAULT 0,
       last_updated TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS search_telemetry (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      query_id TEXT NOT NULL,
+      timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+      query_text TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      config_variant TEXT,
+      result_docids TEXT NOT NULL DEFAULT '[]',
+      expanded_indices TEXT NOT NULL DEFAULT '[]',
+      execution_ms INTEGER NOT NULL DEFAULT 0,
+      session_id TEXT,
+      feedback_signal TEXT NOT NULL DEFAULT 'neutral',
+      cache_key TEXT,
+      workspace_hash TEXT NOT NULL DEFAULT 'global'
+    );
+    CREATE INDEX IF NOT EXISTS idx_telemetry_timestamp ON search_telemetry(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_telemetry_session ON search_telemetry(session_id);
+    CREATE INDEX IF NOT EXISTS idx_telemetry_config ON search_telemetry(config_variant);
+    CREATE INDEX IF NOT EXISTS idx_telemetry_cache_key ON search_telemetry(cache_key);
   `);
   
   const hasProjectHash = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'project_hash');
@@ -249,6 +269,68 @@ export function createStore(dbPath: string): Store {
         SELECT hash, 'global', 'general', result, created_at FROM llm_cache_old;
       DROP TABLE llm_cache_old;
     `);
+  }
+  
+  // Schema versioning
+  const currentVersion = (db.pragma('user_version') as Array<{ user_version: number }>)[0].user_version;
+  const TARGET_VERSION = 1;
+
+  if (currentVersion < 1) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bandit_stats (
+        parameter_name TEXT NOT NULL,
+        variant_value REAL NOT NULL,
+        successes INTEGER NOT NULL DEFAULT 1,
+        failures INTEGER NOT NULL DEFAULT 1,
+        workspace_hash TEXT NOT NULL DEFAULT 'global',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (parameter_name, variant_value, workspace_hash)
+      );
+
+      CREATE TABLE IF NOT EXISTS config_versions (
+        version_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        config_json TEXT NOT NULL,
+        expand_rate REAL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS consolidations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_ids TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        insight TEXT NOT NULL,
+        connections TEXT NOT NULL DEFAULT '[]',
+        confidence REAL NOT NULL DEFAULT 0.0,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS importance_scores (
+        doc_hash TEXT PRIMARY KEY,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        entity_density REAL NOT NULL DEFAULT 0.0,
+        last_accessed TEXT,
+        connection_count INTEGER NOT NULL DEFAULT 0,
+        importance_score REAL NOT NULL DEFAULT 0.0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS workspace_profiles (
+        workspace_hash TEXT PRIMARY KEY,
+        profile_data TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS global_learning (
+        parameter_name TEXT PRIMARY KEY,
+        value REAL NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0.0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    
+    db.pragma(`user_version = 1`);
+    log('store', 'Schema migrated to version 1 (self-learning tables)');
   }
   
   if (vecAvailable) {
@@ -460,6 +542,88 @@ export function createStore(dbPath: string): Store {
   `);
 
   const getTokenUsageStmt = db.prepare(`SELECT model, total_tokens as totalTokens, request_count as requestCount, last_updated as lastUpdated FROM token_usage ORDER BY total_tokens DESC`);
+
+  const insertTelemetryStmt = db.prepare(`
+    INSERT INTO search_telemetry (query_id, query_text, tier, config_variant, result_docids, execution_ms, session_id, cache_key, workspace_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const updateTelemetryExpandStmt = db.prepare(`
+    UPDATE search_telemetry SET expanded_indices = ?, feedback_signal = 'positive'
+    WHERE cache_key = ? AND feedback_signal = 'neutral'
+  `);
+
+  const updateTelemetryReformulationStmt = db.prepare(`
+    UPDATE search_telemetry SET feedback_signal = 'negative'
+    WHERE id = ?
+  `);
+
+  const getRecentQueriesStmt = db.prepare(`
+    SELECT id, query_text, timestamp FROM search_telemetry
+    WHERE session_id = ? AND timestamp > datetime('now', '-60 seconds')
+    ORDER BY timestamp DESC LIMIT 5
+  `);
+
+  const purgeTelemetryStmt = db.prepare(`
+    DELETE FROM search_telemetry WHERE timestamp < datetime('now', '-' || ? || ' days')
+  `);
+
+  const getTelemetryCountStmt = db.prepare(`
+    SELECT COUNT(*) as count FROM search_telemetry
+  `);
+
+  const upsertBanditStmt = db.prepare(`
+    INSERT INTO bandit_stats (parameter_name, variant_value, successes, failures, workspace_hash, updated_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(parameter_name, variant_value, workspace_hash) DO UPDATE SET
+      successes = excluded.successes,
+      failures = excluded.failures,
+      updated_at = datetime('now')
+  `);
+
+  const getBanditStatsStmt = db.prepare(`
+    SELECT parameter_name, variant_value, successes, failures
+    FROM bandit_stats WHERE workspace_hash = ?
+  `);
+
+  const insertConfigVersionStmt = db.prepare(`
+    INSERT INTO config_versions (config_json, expand_rate) VALUES (?, ?)
+  `);
+
+  const getLatestConfigVersionStmt = db.prepare(`
+    SELECT version_id, config_json, expand_rate, created_at
+    FROM config_versions ORDER BY version_id DESC LIMIT 1
+  `);
+
+  const getConfigVersionStmt = db.prepare(`
+    SELECT version_id, config_json, expand_rate, created_at
+    FROM config_versions WHERE version_id = ?
+  `);
+
+  const getWorkspaceProfileStmt = db.prepare(`
+    SELECT workspace_hash, profile_data, updated_at FROM workspace_profiles WHERE workspace_hash = ?
+  `);
+
+  const upsertWorkspaceProfileStmt = db.prepare(`
+    INSERT INTO workspace_profiles (workspace_hash, profile_data, updated_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(workspace_hash) DO UPDATE SET
+      profile_data = excluded.profile_data,
+      updated_at = datetime('now')
+  `);
+
+  const upsertGlobalLearningStmt = db.prepare(`
+    INSERT INTO global_learning (parameter_name, value, confidence, updated_at)
+    VALUES (?, ?, ?, datetime('now'))
+    ON CONFLICT(parameter_name) DO UPDATE SET
+      value = excluded.value,
+      confidence = excluded.confidence,
+      updated_at = datetime('now')
+  `);
+
+  const getGlobalLearningStmt = db.prepare(`
+    SELECT parameter_name, value, confidence FROM global_learning
+  `);
   
   return {
     modelStatus: {
@@ -1432,6 +1596,91 @@ export function createStore(dbPath: string): Store {
         const row = db.prepare('SELECT COUNT(*) as count FROM vectors_vec').get() as { count: number };
         return row.count;
       } catch { return 0; }
+    },
+
+    logSearchQuery(queryId: string, queryText: string, tier: string, configVariant: string | null, resultDocids: string[], executionMs: number, sessionId: string | null, cacheKey: string | null, workspaceHash: string) {
+      try {
+        insertTelemetryStmt.run(queryId, queryText, tier, configVariant, JSON.stringify(resultDocids), executionMs, sessionId, cacheKey, workspaceHash);
+      } catch (err) {
+        console.warn('[store] Failed to log telemetry:', err instanceof Error ? err.message : String(err));
+      }
+    },
+
+    logSearchExpand(cacheKey: string, expandedIndices: number[]) {
+      try {
+        updateTelemetryExpandStmt.run(JSON.stringify(expandedIndices), cacheKey);
+      } catch (err) {
+        console.warn('[store] Failed to log expand:', err instanceof Error ? err.message : String(err));
+      }
+    },
+
+    getRecentQueries(sessionId: string): Array<{ id: number; query_text: string; timestamp: string }> {
+      return getRecentQueriesStmt.all(sessionId) as Array<{ id: number; query_text: string; timestamp: string }>;
+    },
+
+    markReformulation(telemetryId: number) {
+      try {
+        updateTelemetryReformulationStmt.run(telemetryId);
+      } catch (err) {
+        console.warn('[store] Failed to mark reformulation:', err instanceof Error ? err.message : String(err));
+      }
+    },
+
+    purgeTelemetry(retentionDays: number): number {
+      const result = purgeTelemetryStmt.run(retentionDays);
+      return result.changes;
+    },
+
+    getTelemetryCount(): number {
+      return (getTelemetryCountStmt.get() as { count: number }).count;
+    },
+
+    saveBanditStats(stats: Array<{ parameterName: string; variantValue: number; successes: number; failures: number }>, workspaceHash: string) {
+      for (const s of stats) {
+        try {
+          upsertBanditStmt.run(s.parameterName, s.variantValue, s.successes, s.failures, workspaceHash);
+        } catch (err) {
+          console.warn('[store] Failed to save bandit stats:', err instanceof Error ? err.message : String(err));
+        }
+      }
+    },
+
+    loadBanditStats(workspaceHash: string): Array<{ parameter_name: string; variant_value: number; successes: number; failures: number }> {
+      return getBanditStatsStmt.all(workspaceHash) as Array<{ parameter_name: string; variant_value: number; successes: number; failures: number }>;
+    },
+
+    saveConfigVersion(configJson: string, expandRate: number | null): number {
+      try {
+        const result = insertConfigVersionStmt.run(configJson, expandRate);
+        return Number(result.lastInsertRowid);
+      } catch (err) {
+        console.warn('[store] Failed to save config version:', err instanceof Error ? err.message : String(err));
+        return 0;
+      }
+    },
+
+    getLatestConfigVersion(): { version_id: number; config_json: string; expand_rate: number | null; created_at: string } | null {
+      return getLatestConfigVersionStmt.get() as { version_id: number; config_json: string; expand_rate: number | null; created_at: string } | null;
+    },
+
+    getConfigVersion(versionId: number): { version_id: number; config_json: string; expand_rate: number | null; created_at: string } | null {
+      return getConfigVersionStmt.get(versionId) as { version_id: number; config_json: string; expand_rate: number | null; created_at: string } | null;
+    },
+
+    getWorkspaceProfile(workspaceHash: string): { workspace_hash: string; profile_data: string; updated_at: string } | null {
+      return getWorkspaceProfileStmt.get(workspaceHash) as { workspace_hash: string; profile_data: string; updated_at: string } | null;
+    },
+
+    saveWorkspaceProfile(workspaceHash: string, profileData: string): void {
+      upsertWorkspaceProfileStmt.run(workspaceHash, profileData);
+    },
+
+    saveGlobalLearning(parameterName: string, value: number, confidence: number): void {
+      upsertGlobalLearningStmt.run(parameterName, value, confidence);
+    },
+
+    getGlobalLearning(): Array<{ parameter_name: string; value: number; confidence: number }> {
+      return getGlobalLearningStmt.all() as Array<{ parameter_name: string; value: number; confidence: number }>;
     },
   };
 }

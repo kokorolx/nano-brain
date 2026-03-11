@@ -31,6 +31,12 @@ export interface WatcherOptions {
   projectHash?: string
   allWorkspaces?: Record<string, { codebase?: CodebaseConfig }>
   dataDir?: string
+  learningConfig?: import('./types.js').LearningConfig
+  sampler?: import('./bandits.js').ThompsonSampler
+  consolidationAgent?: import('./consolidation.js').ConsolidationAgent
+  consolidationIntervalMs?: number
+  importanceScorer?: import('./importance.js').ImportanceScorer
+  importanceIntervalMs?: number
 }
 
 export interface Watcher {
@@ -67,6 +73,8 @@ export function startWatcher(options: WatcherOptions): Watcher {
     projectHash = 'global',
     allWorkspaces,
     dataDir,
+    learningConfig,
+    sampler,
   } = options
 
   const codebaseExtensions = codebaseConfig?.enabled
@@ -89,6 +97,10 @@ export function startWatcher(options: WatcherOptions): Watcher {
   let consecutiveEmptyCycles = 0;
   let consecutiveFailures = 0;
   let currentEmbedInterval = embedIntervalMs;
+  let learningTimeout: NodeJS.Timeout | null = null;
+  let lastLearningRun = Date.now();
+  let consolidationTimeout: NodeJS.Timeout | null = null;
+  let importanceTimeout: NodeJS.Timeout | null = null;
 
   const handleFileChange = (filePath: string) => {
     if (stopped) return
@@ -327,6 +339,15 @@ export function startWatcher(options: WatcherOptions): Watcher {
             console.log(`[storage] Cleaned ${orphansDeleted} orphaned embedding(s)`);
           }
         }
+        
+        try {
+          const purged = store.purgeTelemetry(90);
+          if (purged > 0) {
+            log('watcher', 'Telemetry purge: ' + purged + ' old record(s)');
+          }
+        } catch (err) {
+          console.warn('[watcher] Telemetry purge failed:', err);
+        }
       } catch (err) {
         console.warn('Session harvest failed:', err);
       }
@@ -401,6 +422,97 @@ export function startWatcher(options: WatcherOptions): Watcher {
       };
       scheduleNextEmbedCycle();
     }
+
+    if (learningConfig?.enabled && sampler) {
+      const learningIntervalMs = learningConfig.update_interval_ms ?? 600000;
+      const scheduleLearningCycle = () => {
+        if (stopped) return;
+        learningTimeout = setTimeout(async () => {
+          if (stopped) return;
+          
+          try {
+            const banditState = sampler.getState();
+            const flatStats = banditState.flatMap(config =>
+              config.variants.map(v => ({
+                parameterName: config.parameterName,
+                variantValue: v.value,
+                successes: v.successes,
+                failures: v.failures,
+              }))
+            );
+            store.saveBanditStats(flatStats, projectHash);
+            
+            const configJson = JSON.stringify(sampler.selectSearchConfig());
+            const telemetryCount = store.getTelemetryCount();
+            store.saveConfigVersion(configJson, telemetryCount > 0 ? telemetryCount : null);
+            
+            const latestVersion = store.getLatestConfigVersion();
+            if (latestVersion && latestVersion.expand_rate !== null) {
+              const prevVersion = store.getConfigVersion(latestVersion.version_id - 1);
+              if (prevVersion && prevVersion.expand_rate !== null && prevVersion.expand_rate > 0) {
+                const dropPercent = (prevVersion.expand_rate - latestVersion.expand_rate) / prevVersion.expand_rate;
+                if (dropPercent > 0.3) {
+                  log('watcher', 'Expand rate dropped ' + Math.round(dropPercent * 100) + '%, rolling back to version ' + prevVersion.version_id);
+                  console.warn('[learning] Automatic rollback triggered: expand rate dropped ' + Math.round(dropPercent * 100) + '%');
+                }
+              }
+            }
+            
+            lastLearningRun = Date.now();
+            log('watcher', 'Learning cycle complete: saved bandit stats and config version');
+          } catch (err) {
+            console.warn('[watcher] Learning cycle failed:', err);
+          } finally {
+            scheduleLearningCycle();
+          }
+        }, Math.min(learningIntervalMs, 3600000));
+      };
+      scheduleLearningCycle();
+    }
+
+    const consolidationAgent = options.consolidationAgent;
+    if (consolidationAgent) {
+      const consolidationInterval = options.consolidationIntervalMs ?? 3600000;
+      const scheduleConsolidation = () => {
+        if (stopped) return;
+        consolidationTimeout = setTimeout(async () => {
+          if (stopped) return;
+          try {
+            const results = await consolidationAgent.runConsolidationCycle();
+            if (results.length > 0) {
+              log('watcher', 'Consolidation: ' + results.length + ' consolidation(s) created');
+            }
+          } catch (err) {
+            console.warn('[watcher] Consolidation cycle failed:', err);
+          } finally {
+            scheduleConsolidation();
+          }
+        }, consolidationInterval);
+      };
+      scheduleConsolidation();
+    }
+
+    const importanceScorer = options.importanceScorer;
+    if (importanceScorer) {
+      const importanceInterval = options.importanceIntervalMs ?? 1800000;
+      const scheduleImportanceUpdate = () => {
+        if (stopped) return;
+        importanceTimeout = setTimeout(async () => {
+          if (stopped) return;
+          try {
+            const updated = await importanceScorer.recalculateAll();
+            if (updated > 0) {
+              log('watcher', 'Importance: ' + updated + ' score(s) updated');
+            }
+          } catch (err) {
+            console.warn('[watcher] Importance update failed:', err);
+          } finally {
+            scheduleImportanceUpdate();
+          }
+        }, importanceInterval);
+      };
+      scheduleImportanceUpdate();
+    }
   };
 
   setupWatcher();
@@ -447,6 +559,21 @@ export function startWatcher(options: WatcherOptions): Watcher {
       if (embeddingTimeout) {
         clearTimeout(embeddingTimeout);
         embeddingTimeout = null;
+      }
+
+      if (learningTimeout) {
+        clearTimeout(learningTimeout);
+        learningTimeout = null;
+      }
+
+      if (consolidationTimeout) {
+        clearTimeout(consolidationTimeout);
+        consolidationTimeout = null;
+      }
+
+      if (importanceTimeout) {
+        clearTimeout(importanceTimeout);
+        importanceTimeout = null;
       }
       
       if (watcher) {

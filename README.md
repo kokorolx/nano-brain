@@ -634,6 +634,58 @@ This adds a managed block to your project's `AGENTS.md` with quick reference tab
 
 See [SKILL.md](./SKILL.md) for full routing rules and [AGENTS_SNIPPET.md](./AGENTS_SNIPPET.md) for the project-level snippet.
 
+## Self-Learning Configuration
+
+nano-brain includes an adaptive self-learning system that improves search quality over time.
+
+### Quick Start
+
+Add to your `config.yml`:
+
+```yaml
+telemetry:
+  enabled: true          # Log search queries and feedback (default: true)
+  retention_days: 90     # How long to keep telemetry data
+
+learning:
+  enabled: true          # Enable adaptive search tuning
+  update_interval_ms: 600000  # Cold-path update interval (10 min)
+
+consolidation:
+  enabled: true          # Enable memory consolidation
+  interval_ms: 3600000   # Consolidation interval (60 min)
+  model: gpt-4o-mini     # LLM model for consolidation
+  endpoint: https://api.openai.com/v1  # OpenAI-compatible endpoint
+  apiKey: sk-...         # API key
+
+importance:
+  enabled: true          # Enable importance scoring
+  weight: 0.1            # Importance boost weight
+  decay_half_life_days: 30
+
+intents:
+  enabled: true          # Enable query intent classification
+```
+
+### How It Works
+
+1. **Telemetry**: Every search query is logged with results and timing. When you expand a result, it's recorded as positive feedback.
+2. **Thompson Sampling**: Search parameters (rrf_k, centrality_weight) are automatically tuned using multi-armed bandits based on expand feedback.
+3. **Consolidation**: Periodically, an LLM reviews recent memories and finds connections, generating consolidated insights.
+4. **Importance Scoring**: Documents accessed frequently get boosted in search results. Unused documents decay over time.
+5. **Intent Classification**: Queries are classified by intent (lookup, explanation, architecture, recall) and routed to optimized search configs.
+
+### CLI Commands
+
+- `nano-brain learning rollback [version_id]` — View or rollback to a previous config version
+- `nano-brain consolidate` — Trigger a manual consolidation cycle
+
+### MCP Tools
+
+- `memory_consolidate` — Trigger consolidation manually
+- `memory_importance` — View document importance scores
+- `memory_status` — View learning system status (telemetry records, bandit variants, config version)
+
 ## License
 
 MIT

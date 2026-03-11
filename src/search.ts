@@ -5,6 +5,9 @@ import { log } from './logger.js';
 import type Database from 'better-sqlite3';
 import { getClusterLabels } from './graph.js';
 import { SymbolGraph } from './symbol-graph.js';
+import { generateQueryId } from './telemetry.js';
+import type { ThompsonSampler } from './bandits.js';
+import type { IntentClassifier } from './intent-classifier.js';
 
 export interface SearchOptions {
   query: string;
@@ -29,6 +32,11 @@ export interface HybridSearchOptions {
   until?: string;
   searchConfig?: SearchConfig;
   db?: Database.Database;
+  cacheKey?: string;
+  sessionId?: string;
+  sampler?: ThompsonSampler;
+  importanceScorer?: { getScore(docid: string): number; applyBoost(searchScore: number, importanceScore: number): number };
+  intentClassifier?: IntentClassifier;
 }
 
 export interface SearchProviders {
@@ -348,6 +356,7 @@ export async function hybridSearch(
   options: HybridSearchOptions,
   providers: SearchProviders = {}
 ): Promise<SearchResult[]> {
+  const startTime = Date.now();
   const {
     query,
     limit = 10,
@@ -359,9 +368,33 @@ export async function hybridSearch(
     until,
     searchConfig,
     db,
+    cacheKey,
+    sessionId,
   } = options;
   
-  const config = searchConfig ?? DEFAULT_SEARCH_CONFIG;
+  const config = { ...(searchConfig ?? DEFAULT_SEARCH_CONFIG) };
+  
+  if (options.sampler) {
+    try {
+      const variants = options.sampler.selectSearchConfig();
+      if (variants.rrf_k !== undefined) config.rrf_k = variants.rrf_k;
+      if (variants.centrality_weight !== undefined) config.centrality_weight = variants.centrality_weight;
+    } catch (err) {
+      log('search', 'Bandit variant selection failed, using static config: ' + (err instanceof Error ? err.message : String(err)));
+    }
+  }
+  
+  if (options.intentClassifier?.isEnabled()) {
+    const classification = options.intentClassifier.classify(query);
+    if (classification.intent !== 'unclassified') {
+      const overrides = options.intentClassifier.getConfigOverrides(classification.intent);
+      if (overrides.rrf_k !== undefined) config.rrf_k = overrides.rrf_k;
+      if (overrides.centrality_weight !== undefined) config.centrality_weight = overrides.centrality_weight;
+      if (overrides.top_k !== undefined) config.top_k = overrides.top_k;
+      log('search', 'Intent: ' + classification.intent + ' (confidence=' + classification.confidence.toFixed(2) + ')');
+    }
+  }
+  
   const useExpansion = options.useExpansion ?? config.expansion.enabled;
   const useReranking = options.useReranking ?? config.reranking.enabled;
   const topK = options.topK ?? config.top_k;
@@ -496,6 +529,16 @@ export async function hybridSearch(
   fusedResults = applyCentralityBoost(fusedResults, config.centrality_weight);
   
   fusedResults = applySupersedeDemotion(fusedResults, config.supersede_demotion);
+
+  if (options.importanceScorer) {
+    fusedResults = fusedResults.map(r => {
+      const importanceScore = options.importanceScorer!.getScore(r.docid);
+      if (importanceScore > 0) {
+        return { ...r, score: options.importanceScorer!.applyBoost(r.score, importanceScore) };
+      }
+      return r;
+    });
+  }
   
   fusedResults.sort((a, b) => b.score - a.score);
   
@@ -560,6 +603,25 @@ export async function hybridSearch(
   if (db && projectHash) {
     const clusterLabels = getClusterLabels(db, projectHash);
     results = results.map(r => enrichResultWithSymbols(r, db, projectHash, clusterLabels));
+  }
+
+  try {
+    const executionMs = Date.now() - startTime;
+    const queryId = generateQueryId();
+    const resultDocids = results.map(r => r.docid);
+    const tier = providers.reranker && useReranking ? 'hybrid+rerank' : (providers.embedder ? 'hybrid' : 'fts');
+    store.logSearchQuery(
+      queryId,
+      query,
+      tier,
+      null,
+      resultDocids,
+      executionMs,
+      sessionId ?? null,
+      cacheKey ?? null,
+      projectHash ?? 'global'
+    );
+  } catch {
   }
 
   return results;

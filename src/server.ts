@@ -26,6 +26,7 @@ import { createVectorStore, type VectorStore, type VectorStoreHealth } from './v
 import Database from 'better-sqlite3'
 import { SymbolGraph, type ContextResult, type ImpactResult, type DetectChangesResult } from './symbol-graph.js'
 import { ResultCache } from './cache.js'
+import { detectReformulation } from './telemetry.js'
 
 export interface ServerOptions {
   dbPath: string;
@@ -461,11 +462,21 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       }
       const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
       const parsedTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : undefined;
+      const sessionId = crypto.createHash('sha256').update(query + Date.now().toString()).digest('hex').substring(0, 12);
       const results = await hybridSearch(
         store,
-        { query, limit, collection, minScore, projectHash: effectiveWorkspace, tags: parsedTags, since, until, searchConfig: deps.searchConfig, db: deps.db },
+        { query, limit, collection, minScore, projectHash: effectiveWorkspace, tags: parsedTags, since, until, searchConfig: deps.searchConfig, db: deps.db, sessionId },
         providers
       );
+      
+      try {
+        const recentQueries = store.getRecentQueries(sessionId);
+        const reformulatedId = detectReformulation(query, recentQueries);
+        if (reformulatedId !== null) {
+          store.markReformulation(reformulatedId);
+        }
+      } catch {
+      }
       
       if (compact) {
         const cacheKey = resultCache.set(results, query);
@@ -521,6 +532,11 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         
         if (errors.length > 0 && expanded.length === 0) {
           return { content: [{ type: 'text', text: errors.join('\n') }], isError: true };
+        }
+        
+        try {
+          store.logSearchExpand(cacheKey, expandIndices);
+        } catch {
         }
         
         const text = expanded.join('\n---\n\n') + (errors.length > 0 ? '\n\n⚠️ ' + errors.join('\n') : '');
@@ -860,11 +876,26 @@ export function createMcpServer(deps: ServerDeps): McpServer {
 
       const tokenUsage = store.getTokenUsage()
 
+      let learningText = '';
+      try {
+        const telemetryCount = store.getTelemetryCount();
+        const banditStats = store.loadBanditStats(currentProjectHash);
+        const latestConfig = store.getLatestConfigVersion();
+        
+        learningText = '\n\n## Learning\n';
+        learningText += '- Telemetry records: ' + telemetryCount + '\n';
+        learningText += '- Bandit variants tracked: ' + banditStats.length + '\n';
+        if (latestConfig) {
+          learningText += '- Config version: ' + latestConfig.version_id + ' (updated ' + latestConfig.created_at + ')\n';
+        }
+      } catch {
+      }
+
       return {
         content: [
           {
             type: 'text',
-            text: formatStatus(health, codebaseStats, embeddingHealth, vectorHealth, tokenUsage.length > 0 ? tokenUsage : null) + workspaceStatsText,
+            text: formatStatus(health, codebaseStats, embeddingHealth, vectorHealth, tokenUsage.length > 0 ? tokenUsage : null) + workspaceStatsText + learningText,
           },
         ],
       }
@@ -1674,6 +1705,116 @@ export function createMcpServer(deps: ServerDeps): McpServer {
           wsResult.store.close()
           if (effectiveDb !== deps.db) effectiveDb.close()
         }
+      }
+    }
+  );
+
+  server.tool(
+    'memory_consolidate',
+    'Trigger memory consolidation cycle manually',
+    {
+      workspace: z.string().optional().describe('Workspace path or hash. Required in daemon mode.'),
+    },
+    async ({ workspace }) => {
+      if (checkReady()) return WARMUP_ERROR;
+      log('mcp', 'memory_consolidate triggered');
+      
+      const wsResult = requireDaemonWorkspace(deps, workspace);
+      if ('error' in wsResult) {
+        return { content: [{ type: 'text', text: wsResult.error }], isError: true };
+      }
+      
+      try {
+        return {
+          content: [{ type: 'text', text: 'Consolidation is not configured. Set consolidation.enabled=true and configure an LLM provider in config.yml.' }],
+        };
+      } finally {
+        if (wsResult.needsClose) wsResult.store.close();
+      }
+    }
+  );
+
+  server.tool(
+    'memory_importance',
+    'View document importance scores with breakdown',
+    {
+      limit: z.number().optional().default(10).describe('Number of top documents to show'),
+      workspace: z.string().optional().describe('Workspace path or hash.'),
+    },
+    async ({ limit, workspace }) => {
+      if (checkReady()) return WARMUP_ERROR;
+      log('mcp', 'memory_importance limit=' + limit);
+      
+      const wsResult = requireDaemonWorkspace(deps, workspace);
+      if ('error' in wsResult) {
+        return { content: [{ type: 'text', text: wsResult.error }], isError: true };
+      }
+      
+      try {
+        return {
+          content: [{ type: 'text', text: 'Importance scoring not yet active. Enable with importance.enabled=true in config.' }],
+        };
+      } finally {
+        if (wsResult.needsClose) wsResult.store.close();
+      }
+    }
+  );
+
+  server.tool(
+    'memory_learning_status',
+    'Show learning system status: telemetry, bandits, consolidation, importance',
+    {
+      workspace: z.string().optional().describe('Workspace path or hash.'),
+    },
+    async ({ workspace }) => {
+      if (checkReady()) return WARMUP_ERROR;
+      log('mcp', 'memory_learning_status');
+      
+      const wsResult = requireDaemonWorkspace(deps, workspace);
+      if ('error' in wsResult) {
+        return { content: [{ type: 'text', text: wsResult.error }], isError: true };
+      }
+      
+      try {
+        const effectiveStore = wsResult.store;
+        const effectiveProjectHash = wsResult.projectHash;
+        
+        const telemetryCount = effectiveStore.getTelemetryCount();
+        const banditStats = effectiveStore.loadBanditStats(effectiveProjectHash);
+        const globalLearning = effectiveStore.getGlobalLearning();
+        
+        let text = '## Learning Status\n\n';
+        text += '**Telemetry:** ' + telemetryCount + ' queries logged\n';
+        text += '**Bandit Stats:** ' + banditStats.length + ' variant records\n';
+        
+        if (banditStats.length > 0) {
+          text += '\n### Active Bandits\n';
+          const grouped = new Map<string, typeof banditStats>();
+          for (const s of banditStats) {
+            const arr = grouped.get(s.parameter_name) ?? [];
+            arr.push(s);
+            grouped.set(s.parameter_name, arr);
+          }
+          for (const [param, variants] of grouped) {
+            text += '\n**' + param + ':**\n';
+            for (const v of variants) {
+              const total = v.successes + v.failures;
+              const rate = total > 0 ? (v.successes / total * 100).toFixed(1) : 'N/A';
+              text += '  - ' + v.variant_value + ': ' + v.successes + '/' + total + ' (' + rate + '% success)\n';
+            }
+          }
+        }
+        
+        if (globalLearning.length > 0) {
+          text += '\n### Global Learning\n';
+          for (const g of globalLearning) {
+            text += '- ' + g.parameter_name + ': ' + g.value.toFixed(4) + ' (confidence: ' + g.confidence.toFixed(2) + ')\n';
+          }
+        }
+        
+        return { content: [{ type: 'text', text }] };
+      } finally {
+        if (wsResult.needsClose) wsResult.store.close();
       }
     }
   );

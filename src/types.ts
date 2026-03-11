@@ -91,6 +91,11 @@ export interface CollectionConfig {
     sessionPoll?: number
     reindexPoll?: number
   }
+  telemetry?: Partial<TelemetryConfig>
+  learning?: Partial<LearningConfig>
+  consolidation?: Partial<ConsolidationConfig>
+  importance?: Partial<ImportanceConfig>
+  intents?: Partial<IntentConfig>
 }
 
 export interface CodebaseConfig {
@@ -255,6 +260,106 @@ export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
   supersede_demotion: 0.3,
 };
 
+// === Self-Learning Types ===
+
+export interface TelemetryConfig {
+  enabled: boolean;
+  retention_days: number;
+}
+
+export const DEFAULT_TELEMETRY_CONFIG: TelemetryConfig = {
+  enabled: true,
+  retention_days: 90,
+};
+
+export interface LearningConfig {
+  enabled: boolean;
+  update_interval_ms: number;
+  exploration_threshold: number;
+  dampening_factor: number;
+}
+
+export const DEFAULT_LEARNING_CONFIG: LearningConfig = {
+  enabled: false,
+  update_interval_ms: 600000,
+  exploration_threshold: 100,
+  dampening_factor: 0.1,
+};
+
+export interface ConsolidationConfig {
+  enabled: boolean;
+  interval_ms: number;
+  model: string;
+  endpoint?: string;
+  apiKey?: string;
+  max_memories_per_cycle: number;
+  min_memories_threshold: number;
+  confidence_threshold: number;
+}
+
+export const DEFAULT_CONSOLIDATION_CONFIG: ConsolidationConfig = {
+  enabled: false,
+  interval_ms: 3600000,
+  model: '',
+  max_memories_per_cycle: 20,
+  min_memories_threshold: 2,
+  confidence_threshold: 0.6,
+};
+
+export interface ImportanceConfig {
+  enabled: boolean;
+  weight: number;
+  decay_half_life_days: number;
+  formula_weights: {
+    usage: number;
+    entity_density: number;
+    recency: number;
+    connections: number;
+  };
+}
+
+export const DEFAULT_IMPORTANCE_CONFIG: ImportanceConfig = {
+  enabled: false,
+  weight: 0.1,
+  decay_half_life_days: 30,
+  formula_weights: {
+    usage: 0.4,
+    entity_density: 0.2,
+    recency: 0.2,
+    connections: 0.2,
+  },
+};
+
+export interface IntentConfig {
+  enabled: boolean;
+  intents: Record<string, {
+    keywords: string[];
+    config_overrides: Partial<SearchConfig>;
+  }>;
+}
+
+export const DEFAULT_INTENT_CONFIG: IntentConfig = {
+  enabled: false,
+  intents: {
+    lookup: {
+      keywords: ['where is', 'find', 'locate', 'show me'],
+      config_overrides: { centrality_weight: 0.2 },
+    },
+    explanation: {
+      keywords: ['how does', 'explain', 'why', 'what is'],
+      config_overrides: { rrf_k: 45 },
+    },
+    architecture: {
+      keywords: ['design', 'architecture', 'structure', 'flow', 'diagram'],
+      config_overrides: { centrality_weight: 0.3 },
+    },
+    recall: {
+      keywords: ['what did we', 'decision', 'agreed', 'discussed'],
+      config_overrides: {},
+    },
+  },
+};
+
 export interface RemoveWorkspaceResult {
   documentsDeleted: number;
   embeddingsDeleted: number;
@@ -379,4 +484,22 @@ export interface Store {
   recordTokenUsage(model: string, tokens: number): void;
   getTokenUsage(): Array<{ model: string; totalTokens: number; requestCount: number; lastUpdated: string }>;
   getSqliteVecCount(): number;
+
+  logSearchQuery(queryId: string, queryText: string, tier: string, configVariant: string | null, resultDocids: string[], executionMs: number, sessionId: string | null, cacheKey: string | null, workspaceHash: string): void;
+  logSearchExpand(cacheKey: string, expandedIndices: number[]): void;
+  getRecentQueries(sessionId: string): Array<{ id: number; query_text: string; timestamp: string }>;
+  markReformulation(telemetryId: number): void;
+  purgeTelemetry(retentionDays: number): number;
+  getTelemetryCount(): number;
+
+  saveBanditStats(stats: Array<{ parameterName: string; variantValue: number; successes: number; failures: number }>, workspaceHash: string): void;
+  loadBanditStats(workspaceHash: string): Array<{ parameter_name: string; variant_value: number; successes: number; failures: number }>;
+  saveConfigVersion(configJson: string, expandRate: number | null): number;
+  getLatestConfigVersion(): { version_id: number; config_json: string; expand_rate: number | null; created_at: string } | null;
+  getConfigVersion(versionId: number): { version_id: number; config_json: string; expand_rate: number | null; created_at: string } | null;
+
+  getWorkspaceProfile(workspaceHash: string): { workspace_hash: string; profile_data: string; updated_at: string } | null;
+  saveWorkspaceProfile(workspaceHash: string, profileData: string): void;
+  saveGlobalLearning(parameterName: string, value: number, confidence: number): void;
+  getGlobalLearning(): Array<{ parameter_name: string; value: number; confidence: number }>;
 }

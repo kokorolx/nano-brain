@@ -1,4 +1,5 @@
-import type { Collection, CollectionConfig, WorkspaceConfig } from './types.js';
+import type { Collection, CollectionConfig, WorkspaceConfig, TelemetryConfig, LearningConfig, ConsolidationConfig, ImportanceConfig, IntentConfig } from './types.js';
+import { DEFAULT_TELEMETRY_CONFIG, DEFAULT_LEARNING_CONFIG, DEFAULT_CONSOLIDATION_CONFIG, DEFAULT_IMPORTANCE_CONFIG, DEFAULT_INTENT_CONFIG } from './types.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -233,4 +234,28 @@ export function setWorkspaceConfig(configPath: string, workspaceRoot: string, ws
   }
   config.workspaces[workspaceRoot] = wsConfig
   saveCollectionConfig(configPath, config)
+}
+
+export function parseTelemetryConfig(partial?: Partial<TelemetryConfig>): TelemetryConfig {
+  return { ...DEFAULT_TELEMETRY_CONFIG, ...partial };
+}
+
+export function parseLearningConfig(partial?: Partial<LearningConfig>): LearningConfig {
+  return { ...DEFAULT_LEARNING_CONFIG, ...partial };
+}
+
+export function parseConsolidationConfig(partial?: Partial<ConsolidationConfig>): ConsolidationConfig {
+  return { ...DEFAULT_CONSOLIDATION_CONFIG, ...partial };
+}
+
+export function parseImportanceConfig(partial?: Partial<ImportanceConfig>): ImportanceConfig {
+  return { ...DEFAULT_IMPORTANCE_CONFIG, ...partial };
+}
+
+export function parseIntentConfig(partial?: Partial<IntentConfig>): IntentConfig {
+  if (!partial) return { ...DEFAULT_INTENT_CONFIG };
+  return {
+    enabled: partial.enabled ?? DEFAULT_INTENT_CONFIG.enabled,
+    intents: partial.intents ?? DEFAULT_INTENT_CONFIG.intents,
+  };
 }
