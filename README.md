@@ -16,6 +16,7 @@ An MCP server that gives AI coding agents persistent memory across sessions. Ind
 - **Dual vector stores** — Qdrant (production) or sqlite-vec (embedded)
 - **Privacy-first** — 100% local processing option, your code never leaves your machine
 - **MCP + CLI** — stdio/HTTP/SSE transports for local or containerized environments
+- **Automatic corruption recovery** — detects & recovers from database corruption on startup with zero user intervention
 
 Inspired by [QMD](https://github.com/tobi/qmd) and [OpenClaw](https://github.com/openclaw/openclaw).
 
@@ -204,6 +205,75 @@ Heading-aware markdown chunking that respects document structure:
 - Content-addressed storage (SHA-256 deduplication)
 - Retention policies (maxSize budget, auto-cleanup)
 - Disk space checks before indexing
+
+
+## Database Reliability & Corruption Recovery
+
+**Why corruption happens**:
+SQLite databases can become corrupted due to:
+- Unexpected process termination during write operations
+- Filesystem crashes or power loss during WAL (Write-Ahead Log) checkpoint
+- Disk I/O errors or hardware faults
+- Rare race conditions in concurrent access (even with better-sqlite3 serialization)
+
+**Automatic corruption detection**:
+nano-brain automatically detects database corruption on startup via `PRAGMA integrity_check`:
+- Runs before any database operations in `createStore()`
+- Checks database file integrity without modifying data
+- Takes 50-500ms depending on database size
+
+**Automatic recovery**:
+When corruption is detected:
+1. **Backup corrupted file** — Renamed to `.corrupted.{ISO-timestamp}` for forensics/recovery
+2. **Clear WAL/SHM files** — Removes Write-Ahead Log and shared memory files
+3. **Initialize fresh database** — Creates clean SQLite database from scratch
+4. **Verify fresh database** — Runs integrity check to confirm recovery succeeded
+5. **Emit metric** — `database_corruption_detected` counter for monitoring/alerting
+
+**Why this works**:
+The database is a **cache/index** — all data is re-derivable from source files. Recovery involves:
+- Session harvesting (re-ingests from session logs)
+- Codebase reindexing (rescan source files)
+- Memory re-embedding (regenerates vectors)
+- Call graph rebuilding (reparses symbols)
+
+**Automatic restart with launchd**:
+On macOS, nano-brain runs as a launchd service (`com.tamlh.nano-brain`):
+- If corruption causes a fatal error, process exits
+- launchd automatically restarts it after 10-second throttle
+- On restart, `checkAndRecoverDB()` detects corruption and recovers
+- Service comes back online automatically with fresh database
+
+**Installation (macOS)**:
+```bash
+# Copy plist to launchd directory
+cp ~/.config/nano-brain/launchd/com.tamlh.nano-brain.plist ~/Library/LaunchAgents/
+
+# Load the service
+launchctl load ~/Library/LaunchAgents/com.tamlh.nano-brain.plist
+
+# Check status
+launchctl list | grep nano-brain
+```
+
+**Monitoring**:
+Check for corruption metrics in your monitoring/alerting system:
+- Counter: `database_corruption_detected`
+- Alert threshold: > 3 events per 24 hours (indicates underlying hardware/filesystem issue)
+
+**Troubleshooting**:
+If corruption happens frequently:
+1. Check system logs for disk I/O errors: `log stream --predicate 'eventMessage contains[c] "I/O error"'`
+2. Verify filesystem health: `diskutil verifyVolume /` (macOS)
+3. Check disk space: `df -h ~/.nano-brain/`
+4. Review database size: `ls -lh ~/.nano-brain/index.db`
+5. Consider moving database to a different drive if corruption persists
+
+**Forensics**:
+Corrupted backups are kept for analysis:
+- Located at: `~/.nano-brain/index.db.corrupted.{ISO-timestamp}`
+- Last 5 backups are kept by default; older ones are auto-cleaned
+- File size indicates when corruption occurred (if truncated vs intact)
 
 ## MCP Tools (17 Total)
 

@@ -8,6 +8,33 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { chunkMarkdown } from './chunker.js';
 import { log } from './logger.js';
+import { checkAndRecoverDB, type CorruptionRecoveryResult } from './db/corruption-recovery.js';
+import { incrementCounter } from './metrics.js';
+
+export function applyPragmas(db: Database.Database): void {
+  db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 15000');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('wal_autocheckpoint = 1000');
+  db.pragma('journal_size_limit = 67108864');
+}
+
+export function openDatabase(dbPath: string, opts?: { readonly?: boolean }): Database.Database {
+  const db = new Database(dbPath, opts);
+  applyPragmas(db);
+  return db;
+}
+
+let lastCorruptionRecovery: CorruptionRecoveryResult | null = null;
+
+export function getLastCorruptionRecovery(): CorruptionRecoveryResult | null {
+  return lastCorruptionRecovery;
+}
+
+export function clearCorruptionRecovery(): void {
+  lastCorruptionRecovery = null;
+}
 
 export function sanitizeFTS5Query(query: string): string {
   const trimmed = query.trim();
@@ -21,15 +48,23 @@ export function sanitizeFTS5Query(query: string): string {
 
 export function createStore(dbPath: string): Store {
   log('store', 'createStore dbPath=' + dbPath);
-  const dir = path.dirname(dbPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  const db = new Database(dbPath);
   
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  db.pragma('busy_timeout = 5000');
+  const recoveryResult = checkAndRecoverDB(dbPath, {
+    logger: { log, error: console.error },
+    metricsCallback: (event: string) => {
+      if (event === 'corruption_detected') {
+        incrementCounter('database_corruption_detected');
+      }
+    }
+  });
+  
+  const db = recoveryResult.db;
+  if (recoveryResult.recovered) {
+    lastCorruptionRecovery = recoveryResult;
+    log('store', `Database recovered from corruption at ${recoveryResult.recoveredAt}`);
+  }
+  
+  applyPragmas(db);
   
   let vecAvailable = false;
   let vectorStore: VectorStore | null = null;
@@ -800,7 +835,12 @@ export function createStore(dbPath: string): Store {
       expander: 'missing',
     },
     
+    getDb() {
+      return db;
+    },
+    
     close() {
+      try { db.pragma('wal_checkpoint(PASSIVE)'); } catch { /* ignore checkpoint errors */ }
       db.close();
     },
     
@@ -2025,27 +2065,7 @@ export function openWorkspaceStore(dataDir: string, workspacePath: string): Stor
   if (!fs.existsSync(dbPath)) {
     return null;
   }
-  try {
-    return createStore(dbPath);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes('malformed') || msg.includes('corrupt') || msg.includes('disk image')) {
-      log('store', `Corrupted database detected: ${dbPath} — deleting and rebuilding`);
-      console.warn(`[store] Corrupted database: ${path.basename(dbPath)} — auto-recovering`);
-      try {
-        const walPath = dbPath + '-wal';
-        const shmPath = dbPath + '-shm';
-        if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
-        if (fs.existsSync(walPath)) fs.unlinkSync(walPath);
-        if (fs.existsSync(shmPath)) fs.unlinkSync(shmPath);
-        return createStore(dbPath);
-      } catch (recreateErr) {
-        log('store', `Failed to recreate database: ${recreateErr}`);
-        return null;
-      }
-    }
-    throw err;
-  }
+  return createStore(dbPath);
 }
 
 /**

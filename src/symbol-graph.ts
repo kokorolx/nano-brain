@@ -90,13 +90,19 @@ export class SymbolGraph {
       INSERT INTO symbol_edges (source_id, target_id, edge_type, confidence, project_hash)
       VALUES (?, ?, ?, ?, ?)
     `)
-    stmt.run(
-      edge.sourceId,
-      edge.targetId,
-      edge.edgeType,
-      edge.confidence,
-      edge.projectHash
-    )
+    try {
+      stmt.run(
+        edge.sourceId,
+        edge.targetId,
+        edge.edgeType,
+        edge.confidence,
+        edge.projectHash
+      )
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('FOREIGN KEY')) return
+      throw err
+    }
   }
 
   deleteSymbolsForFile(filePath: string, projectHash: string): void {

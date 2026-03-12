@@ -1,9 +1,9 @@
 import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, appendFileSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { createHash } from 'crypto';
-import Database from 'better-sqlite3';
 import type { HarvestedSession } from './types.js';
 import { log } from './logger.js';
+import { openDatabase } from './store.js';
 
 export interface HarvesterOptions {
   sessionDir: string;
@@ -263,7 +263,7 @@ function harvestFromDb(
   let incrementalCount = 0;
   let errorCount = 0;
 
-  const db = new Database(dbPath, { readonly: true });
+  const db = openDatabase(dbPath, { readonly: true });
 
   try {
     const sessionsStmt = db.prepare<[], DbSession>(
@@ -442,7 +442,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
   if (existsSync(dbPath)) {
     let dbSessionCount = 0;
     try {
-      const db = new Database(dbPath, { readonly: true });
+      const db = openDatabase(dbPath, { readonly: true });
       try {
         const row = db.prepare<[], { count: number }>('SELECT count(*) as count FROM session').get();
         dbSessionCount = row?.count ?? 0;

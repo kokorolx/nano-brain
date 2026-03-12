@@ -396,6 +396,7 @@ export interface RemoveWorkspaceResult {
 }
 
 export interface Store {
+  getDb(): import('better-sqlite3').Database;
   close(): void;
   
   insertDocument(doc: Omit<Document, 'id'>): number;

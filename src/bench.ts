@@ -185,7 +185,7 @@ async function runStoreSuite(iterations: number, dbPath: string): Promise<BenchR
   const results: BenchResult[] = [];
 
   const tempDbPath = path.join(os.tmpdir(), `nano-brain-bench-${Date.now()}.sqlite`);
-  const tempStore = createStore(tempDbPath);
+  const tempStore = await createStore(tempDbPath);
 
   let docCounter = 0;
   results.push(
@@ -208,7 +208,7 @@ async function runStoreSuite(iterations: number, dbPath: string): Promise<BenchR
 
   tempStore.close();
 
-  const userStore = createStore(dbPath);
+  const userStore = await createStore(dbPath);
 
   results.push(
     await runBenchmark('getIndexHealth', () => {
@@ -356,7 +356,7 @@ function parseOptions(commandArgs: string[]): BenchOptions {
 export async function handleBench(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const options = parseOptions(commandArgs);
 
-  const store = createStore(globalOpts.dbPath);
+  const store = await createStore(globalOpts.dbPath);
   const config = loadCollectionConfig(globalOpts.configPath);
 
   const embeddingConfig = config?.embedding;

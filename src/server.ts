@@ -14,7 +14,7 @@ import type { Store, SearchResult, IndexHealth, Collection, StorageConfig, Codeb
 import type { SearchProviders } from './search.js';
 import { hybridSearch, parseSearchConfig } from './search.js';
 import { findCycles } from './graph.js';
-import { createStore, extractProjectHashFromPath, resolveWorkspaceDbPath, openWorkspaceStore, setProjectLabelDataDir, resolveProjectLabel } from './store.js';
+import { createStore, extractProjectHashFromPath, resolveWorkspaceDbPath, openWorkspaceStore, setProjectLabelDataDir, resolveProjectLabel, openDatabase, getLastCorruptionRecovery, clearCorruptionRecovery } from './store.js';
 import { log, initLogger } from './logger.js';
 import { loadCollectionConfig, getCollections, scanCollectionFiles, getWorkspaceConfig } from './collections.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth, checkOpenAIHealth } from './embeddings.js';
@@ -27,6 +27,9 @@ import Database from 'better-sqlite3'
 import { SymbolGraph, type ContextResult, type ImpactResult, type DetectChangesResult } from './symbol-graph.js'
 import { ResultCache } from './cache.js'
 import { detectReformulation } from './telemetry.js'
+
+let maintenanceMode = false;
+let maintenanceTimer: NodeJS.Timeout | null = null;
 
 export interface ServerOptions {
   dbPath: string;
@@ -55,6 +58,7 @@ export interface ServerDeps {
   daemon?: boolean
   ready?: { value: boolean }
   sequenceAnalyzer?: import('./sequence-analyzer.js').SequenceAnalyzer
+  corruptionWarningPending?: { value: boolean; corruptedPath?: string }
 }
 
 export interface ResolvedWorkspace {
@@ -142,7 +146,7 @@ function requireDaemonWorkspace(
     let db = deps.db
     if (resolved.needsClose && deps.dataDir && resolved.workspaceRoot) {
       const dbPath = resolveWorkspaceDbPath(deps.dataDir, resolved.workspaceRoot)
-      db = new Database(dbPath)
+      db = openDatabase(dbPath)
     }
     return {
       projectHash: resolved.projectHash,
@@ -286,6 +290,20 @@ export function createMcpServer(deps: ServerDeps): McpServer {
   
   const checkReady = () => deps.ready && !deps.ready.value;
   
+  const getCorruptionWarning = (): string | null => {
+    if (deps.corruptionWarningPending?.value) {
+      deps.corruptionWarningPending.value = false;
+      const corruptedPath = deps.corruptionWarningPending.corruptedPath || 'unknown';
+      return `[WARNING] Database was corrupted and rebuilt. Some search results may be incomplete until reindexing completes. Corrupt file preserved at: ${corruptedPath}\n\n`;
+    }
+    return null;
+  };
+  
+  const prependWarning = (text: string): string => {
+    const warning = getCorruptionWarning();
+    return warning ? warning + text : text;
+  };
+  
   const server = new McpServer(
     {
       name: 'nano-brain',
@@ -335,14 +353,14 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       if (compact) {
         const cacheKey = resultCache.set(results, query);
         return {
-          content: [{ type: 'text', text: formatCompactResults(results, cacheKey) }],
+          content: [{ type: 'text', text: prependWarning(formatCompactResults(results, cacheKey)) }],
         };
       }
       return {
         content: [
           {
             type: 'text',
-            text: formatSearchResults(results),
+            text: prependWarning(formatSearchResults(results)),
           },
         ],
       };
@@ -395,13 +413,13 @@ export function createMcpServer(deps: ServerDeps): McpServer {
           const results = await store.searchVecAsync(query, embedding, searchOpts);
           if (compact) {
             const cacheKey = resultCache.set(results, query);
-            return { content: [{ type: 'text', text: formatCompactResults(results, cacheKey) }] };
+            return { content: [{ type: 'text', text: prependWarning(formatCompactResults(results, cacheKey)) }] };
           }
           return {
             content: [
               {
                 type: 'text',
-                text: formatSearchResults(results),
+                text: prependWarning(formatSearchResults(results)),
               },
             ],
           };
@@ -409,13 +427,13 @@ export function createMcpServer(deps: ServerDeps): McpServer {
           const fallbackResults = store.searchFTS(query, searchOpts);
           if (compact) {
             const cacheKey = resultCache.set(fallbackResults, query);
-            return { content: [{ type: 'text', text: `⚠️  Vector search failed, falling back to FTS: ${err instanceof Error ? err.message : String(err)}\n\n${formatCompactResults(fallbackResults, cacheKey)}` }] };
+            return { content: [{ type: 'text', text: prependWarning(`⚠️  Vector search failed, falling back to FTS: ${err instanceof Error ? err.message : String(err)}\n\n${formatCompactResults(fallbackResults, cacheKey)}`) }] };
           }
           return {
             content: [
               {
                 type: 'text',
-                text: `⚠️  Vector search failed, falling back to FTS: ${err instanceof Error ? err.message : String(err)}\n\n${formatSearchResults(fallbackResults)}`,
+                text: prependWarning(`⚠️  Vector search failed, falling back to FTS: ${err instanceof Error ? err.message : String(err)}\n\n${formatSearchResults(fallbackResults)}`),
               },
             ],
           };
@@ -424,13 +442,13 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         const fallbackResults = store.searchFTS(query, searchOpts);
         if (compact) {
           const cacheKey = resultCache.set(fallbackResults, query);
-          return { content: [{ type: 'text', text: `⚠️  Embedder not available, falling back to FTS\n\n${formatCompactResults(fallbackResults, cacheKey)}` }] };
+          return { content: [{ type: 'text', text: prependWarning(`⚠️  Embedder not available, falling back to FTS\n\n${formatCompactResults(fallbackResults, cacheKey)}`) }] };
         }
         return {
           content: [
             {
               type: 'text',
-              text: `⚠️  Embedder not available, falling back to FTS\n\n${formatSearchResults(fallbackResults)}`,
+              text: prependWarning(`⚠️  Embedder not available, falling back to FTS\n\n${formatSearchResults(fallbackResults)}`),
             },
           ],
         };
@@ -482,14 +500,14 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       if (compact) {
         const cacheKey = resultCache.set(results, query);
         return {
-          content: [{ type: 'text', text: formatCompactResults(results, cacheKey) }],
+          content: [{ type: 'text', text: prependWarning(formatCompactResults(results, cacheKey)) }],
         };
       }
       return {
         content: [
           {
             type: 'text',
-            text: formatSearchResults(results),
+            text: prependWarning(formatSearchResults(results)),
           },
         ],
       };
@@ -825,7 +843,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
                 let edgeCount = 0;
                 try {
                   const wsDbPath = resolveWorkspaceDbPath(deps.dataDir, wsPath);
-                  const wsDb = new Database(wsDbPath);
+                  const wsDb = openDatabase(wsDbPath);
                   try {
                     const row = wsDb.prepare('SELECT COUNT(*) as cnt FROM code_symbols').get() as { cnt: number } | undefined;
                     symbolCount = row?.cnt ?? 0;
@@ -949,7 +967,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       let symbolGraphDbNeedsClose = false;
       if (resolved?.needsClose && deps.dataDir && resolved.workspaceRoot) {
         const wsDbPath = resolveWorkspaceDbPath(deps.dataDir, resolved.workspaceRoot);
-        symbolGraphDb = new Database(wsDbPath);
+        symbolGraphDb = openDatabase(wsDbPath);
         symbolGraphDbNeedsClose = true;
       }
       
@@ -1915,8 +1933,9 @@ export function createMcpServer(deps: ServerDeps): McpServer {
 
 
 
-export function createRejectionThreshold(limit: number, windowMs: number): { handler: (err: unknown) => void; getCount: () => number } {
+export function createRejectionThreshold(limit: number, windowMs: number): { handler: (err: unknown) => void; getCount: () => number; setOnExit: (fn: () => void) => void } {
   let count = 0;
+  let onExit: (() => void) | null = null;
   const handler = (err: unknown) => {
     const error = err instanceof Error ? err : new Error(String(err));
     console.error('[memory] Unhandled rejection:', error.message);
@@ -1927,16 +1946,18 @@ export function createRejectionThreshold(limit: number, windowMs: number): { han
     if (count >= limit) {
       console.error(`[memory] Rejection threshold exceeded (${count} in ${windowMs}ms) — exiting`);
       log('server', `Rejection threshold exceeded (${count} in ${windowMs}ms) — exiting`);
-      process.exit(1);
+      if (onExit) onExit(); else process.exit(1);
     }
   };
-  return { handler, getCount: () => count };
+  return { handler, getCount: () => count, setOnExit: (fn) => { onExit = fn; } };
 }
 
 export async function startServer(options: ServerOptions): Promise<void> {
   // Suppress EPIPE on stdout/stderr — daemon may outlive its pipe
   process.stdout?.on('error', () => {});
   process.stderr?.on('error', () => {});
+
+  let cleanupRef: (() => void) | null = null;
 
   process.on('uncaughtException', (err: Error) => {
     // EPIPE is non-fatal for daemons (broken stdout/stderr pipe)
@@ -1947,7 +1968,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
     try { console.error('[memory] Uncaught exception:', err.message); } catch {}
     try { if (err.stack) console.error(err.stack); } catch {}
     log('server', `Uncaught exception: ${err.message}\n${err.stack || ''}`);
-    process.exit(1);
+    if (cleanupRef) cleanupRef(); else process.exit(1);
   });
 
   const rejectionThreshold = createRejectionThreshold(3, 60000);
@@ -1992,7 +2013,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
   console.error(`[memory] Database: ${effectiveDbPath}`);
   log('server', 'Config path=' + finalConfigPath);
   const store = createStore(effectiveDbPath);
-  const symbolGraphDb = new Database(effectiveDbPath);
+  const symbolGraphDb = store.getDb();
   
   const validateInterval = (value: number | undefined, name: string, defaultVal: number): number => {
     if (value === undefined) return defaultVal;
@@ -2019,7 +2040,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
         if (health.dimensions && configuredDimensions && health.dimensions !== configuredDimensions) {
           console.error(`[memory] FATAL: Vector dimension mismatch! Configured=${configuredDimensions}, Qdrant collection=${health.dimensions}`);
           console.error(`[memory] Either update config.yml vector.dimensions or recreate the Qdrant collection.`);
-          process.exit(1);
+          if (cleanupRef) cleanupRef(); else process.exit(1);
         }
       }).catch((err) => {
         log('server', 'vector health check failed error=' + (err instanceof Error ? err.message : String(err)));
@@ -2053,6 +2074,11 @@ export async function startServer(options: ServerOptions): Promise<void> {
     expander: 'disabled',
   };
   
+  const recovery = getLastCorruptionRecovery();
+  const corruptionWarningPending = recovery?.recovered
+    ? { value: true, corruptedPath: recovery.corruptedPath }
+    : { value: false };
+  
   const deps: ServerDeps = {
     store,
     providers,
@@ -2069,6 +2095,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
     allWorkspaces: config?.workspaces,
     dataDir: path.dirname(effectiveDbPath),
     daemon: daemon ?? false,
+    corruptionWarningPending,
   };
   
   const server = createMcpServer(deps);
@@ -2147,10 +2174,13 @@ export async function startServer(options: ServerOptions): Promise<void> {
     }
     
     if (watcher) watcher.stop();
+    try { symbolGraphDb.pragma('wal_checkpoint(PASSIVE)'); } catch { /* ignore checkpoint errors */ }
     symbolGraphDb.close();
     store.close();
     process.exit(0);
   };
+  cleanupRef = cleanup;
+  rejectionThreshold.setOnExit(cleanup);
   process.on('SIGTERM', cleanup);
   process.on('SIGINT', cleanup);
   
@@ -2166,14 +2196,33 @@ export async function startServer(options: ServerOptions): Promise<void> {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
       const pathname = url.pathname;
 
+      if (maintenanceMode && pathname !== '/api/maintenance/resume' && pathname !== '/health') {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'maintenance in progress' }));
+        return;
+      }
+
       if (req.method === 'GET' && pathname === '/health') {
         let version = 'unknown';
         try {
           const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'package.json');
           version = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
         } catch {}
+        const recovery = getLastCorruptionRecovery();
+        const healthResponse: Record<string, unknown> = {
+          status: 'ok',
+          ready: readyState.value,
+          version,
+          uptime: process.uptime(),
+          sessions: { sse: sseSessions.size, streamable: streamableSessions.size }
+        };
+        if (recovery?.recovered) {
+          healthResponse.corruption_recovered = true;
+          healthResponse.recovered_at = recovery.recoveredAt;
+          healthResponse.corrupted_path = recovery.corruptedPath;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', ready: readyState.value, version, uptime: process.uptime(), sessions: { sse: sseSessions.size, streamable: streamableSessions.size } }));
+        res.end(JSON.stringify(healthResponse));
         return;
       }
 
@@ -2213,15 +2262,29 @@ export async function startServer(options: ServerOptions): Promise<void> {
       }
 
       if (req.method === 'GET' && pathname === '/api/status') {
-        const indexHealth = store.getIndexHealth();
+        let indexHealth: any = null;
+        let indexError: string | undefined;
+        try {
+          indexHealth = store.getIndexHealth();
+        } catch (e) {
+          indexError = e instanceof Error ? e.message : String(e);
+          log('server', `getIndexHealth failed: ${indexError}`);
+        }
         const modelStatus = store.modelStatus;
+        let statusVersion = 'unknown';
+        try {
+          const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'package.json');
+          statusVersion = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
+        } catch {}
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-          status: 'ok',
+          status: indexError ? 'degraded' : 'ok',
+          version: statusVersion,
           uptime: process.uptime(),
           ready: readyState.value,
           models: modelStatus,
           index: indexHealth,
+          ...(indexError ? { error: indexError } : {}),
           workspace: { root: resolvedWorkspaceRoot, hash: currentProjectHash },
         }));
         return;
@@ -2270,6 +2333,157 @@ export async function startServer(options: ServerOptions): Promise<void> {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Invalid JSON body' }));
         }
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/write') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        try {
+          const { content, tags, workspace } = JSON.parse(body);
+          if (!content) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'content is required' }));
+            return;
+          }
+          const date = new Date().toISOString().split('T')[0];
+          const memoryDir = path.join(outputDir, 'memory');
+          fs.mkdirSync(memoryDir, { recursive: true });
+          const targetPath = path.join(memoryDir, `${date}.md`);
+          const timestamp = new Date().toISOString();
+          const workspaceName = path.basename(resolvedWorkspaceRoot);
+          const entry = `\n## ${timestamp}\n\n**Workspace:** ${workspaceName} (${currentProjectHash})\n\n${content}\n`;
+          fs.appendFileSync(targetPath, entry, 'utf-8');
+          let tagInfo = '';
+          if (tags) {
+            const parsedTags = tags.split(',').map((t: string) => t.trim().toLowerCase()).filter((t: string) => t.length > 0);
+            if (parsedTags.length > 0) {
+              const fileContent = fs.readFileSync(targetPath, 'utf-8');
+              const title = path.basename(targetPath, path.extname(targetPath));
+              const hash = crypto.createHash('sha256').update(fileContent).digest('hex');
+              store.insertContent(hash, fileContent);
+              const stats = fs.statSync(targetPath);
+              const docId = store.insertDocument({
+                collection: 'memory',
+                path: targetPath,
+                title,
+                hash,
+                createdAt: stats.birthtime.toISOString(),
+                modifiedAt: stats.mtime.toISOString(),
+                active: true,
+                projectHash: currentProjectHash,
+              });
+              store.insertTags(docId, parsedTags);
+              tagInfo = ` Tags: ${parsedTags.join(', ')}`;
+            }
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'ok', path: targetPath, message: `Written to ${targetPath}${tagInfo}` }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/init') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Use maintenance endpoints for init operations from container. Run init directly on the host: npx nano-brain init' }));
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/reindex') {
+        let body = '';
+        for await (const chunk of req) body += chunk;
+        try {
+          const { root } = JSON.parse(body || '{}');
+          const effectiveRoot = root || resolvedWorkspaceRoot;
+          const effectiveProjectHash = crypto.createHash('sha256').update(effectiveRoot).digest('hex').substring(0, 12);
+          const wsConfig = getWorkspaceConfig(loadCollectionConfig(finalConfigPath), effectiveRoot);
+          const codebaseConfig = wsConfig?.codebase ?? { enabled: true };
+          indexCodebase(store, effectiveRoot, codebaseConfig, effectiveProjectHash, providers.embedder, symbolGraphDb)
+            .then((stats) => {
+              log('server', `[api/reindex] Reindex complete: ${stats.filesIndexed} indexed, ${stats.filesSkippedUnchanged} unchanged`);
+            })
+            .catch((err) => {
+              log('server', `[api/reindex] Reindex failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'started', root: effectiveRoot }));
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/embed') {
+        try {
+          if (!providers.embedder) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Embedding provider not available' }));
+            return;
+          }
+          embedPendingCodebase(store, providers.embedder, 50, currentProjectHash)
+            .then((embedded) => {
+              log('server', `[api/embed] Embedded ${embedded} chunks`);
+            })
+            .catch((err) => {
+              log('server', `[api/embed] Embedding failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'started' }));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Embedding failed' }));
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/maintenance/prepare') {
+        if (maintenanceMode) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'maintenance already in progress' }));
+          return;
+        }
+        maintenanceMode = true;
+        if (watcher) {
+          watcher.stop();
+          watcher = null;
+        }
+        try {
+          symbolGraphDb.pragma('wal_checkpoint(TRUNCATE)');
+        } catch (err) {
+          log('server', 'WAL checkpoint failed during maintenance prepare: ' + (err instanceof Error ? err.message : String(err)));
+        }
+        maintenanceTimer = setTimeout(() => {
+          if (maintenanceMode) {
+            maintenanceMode = false;
+            startFileWatcher();
+            log('server', 'Maintenance auto-resumed after timeout (no resume call received)');
+          }
+        }, 5 * 60 * 1000);
+        log('server', 'Maintenance mode started');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'prepared' }));
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/maintenance/resume') {
+        if (!maintenanceMode) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'no maintenance in progress' }));
+          return;
+        }
+        maintenanceMode = false;
+        if (maintenanceTimer) {
+          clearTimeout(maintenanceTimer);
+          maintenanceTimer = null;
+        }
+        startFileWatcher();
+        log('server', 'Maintenance mode ended');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'resumed' }));
         return;
       }
 

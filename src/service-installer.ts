@@ -70,6 +70,8 @@ export function generateLaunchdPlist(config: ServiceConfig): string {
     <key>PATH</key>
     <string>/usr/local/bin:/usr/bin:/bin:${path.dirname(config.nodePath)}</string>
   </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
 </dict>
 </plist>
 `;
@@ -85,6 +87,8 @@ Type=simple
 ExecStart=${config.nodePath} ${config.cliPath} serve --port ${config.port}
 Restart=always
 RestartSec=2
+StartLimitBurst=5
+StartLimitIntervalSec=600
 WorkingDirectory=${config.homeDir}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:${path.dirname(config.nodePath)}
 StandardOutput=append:${config.logsDir}/server.log

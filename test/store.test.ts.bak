@@ -1500,8 +1500,8 @@ describe('Store', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it('should return null for non-existent DB', async () => {
-      const result = await openWorkspaceStore(tmpDir, '/nonexistent/workspace');
+    it('should return null for non-existent DB', () => {
+      const result = openWorkspaceStore(tmpDir, '/nonexistent/workspace');
       expect(result).toBeNull();
     });
 

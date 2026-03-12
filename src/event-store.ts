@@ -11,7 +11,7 @@ export class SqliteEventStore implements EventStore {
     this.db = db;
     this.ttlSeconds = ttlSeconds;
     this.ensureTable();
-    this.cleanupStale();
+    try { this.cleanupStale(); } catch {}
   }
 
   private ensureTable(): void {
@@ -63,8 +63,10 @@ export class SqliteEventStore implements EventStore {
   }
 
   cleanup(): void {
-    const cutoff = Math.floor(Date.now() / 1000) - this.ttlSeconds;
-    this.db.prepare('DELETE FROM mcp_events WHERE created_at < ?').run(cutoff);
+    try {
+      const cutoff = Math.floor(Date.now() / 1000) - this.ttlSeconds;
+      this.db.prepare('DELETE FROM mcp_events WHERE created_at < ?').run(cutoff);
+    } catch {}
   }
 
   private cleanupStale(): void {

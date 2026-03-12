@@ -204,14 +204,12 @@ export function startWatcher(options: WatcherOptions): Watcher {
               log('watcher', 'Skipping workspace (no DB): ' + wsPath);
               continue;
             }
-            const wsDbPath = resolveWorkspaceDbPath(dataDir, wsPath);
-            const wsDb = new Database(wsDbPath);
+            const wsDb = wsStore.getDb();
             const wsHash = crypto.createHash('sha256').update(wsPath).digest('hex').substring(0, 12);
             try {
               await indexCodebase(wsStore, wsPath, wsConfig.codebase, wsHash, embedder, wsDb);
               log('watcher', `Codebase indexed for workspace: ${path.basename(wsPath)}`);
             } finally {
-              wsDb.close();
               wsStore.close();
             }
           } catch (err) {
@@ -446,6 +444,13 @@ export function startWatcher(options: WatcherOptions): Watcher {
             consecutiveFailures = 0;
           } catch (err) {
             consecutiveFailures++;
+            // Detect SQLITE_CORRUPT and trigger recovery instead of endless retry
+            if (err && typeof err === 'object' && 'code' in err && (err as any).code === 'SQLITE_CORRUPT') {
+              console.error('[embed] SQLITE_CORRUPT detected — database is corrupted. Restart the daemon to trigger recovery.');
+              log('watcher', `SQLITE_CORRUPT in embedding cycle: ${err}. Daemon restart needed for recovery.`);
+              // Stop retrying — the DB is corrupt, retrying will just spam errors
+              return;
+            }
             if (consecutiveFailures >= 5) {
               console.warn(`[embed] WARNING: ${consecutiveFailures} consecutive embedding failures. Check embedding provider configuration. Last error:`, err);
             } else {

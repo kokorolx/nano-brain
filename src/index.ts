@@ -1,5 +1,5 @@
 import { startServer } from './server.js';
-import { createStore, computeHash, indexDocument, extractProjectHashFromPath, resolveWorkspaceDbPath, resolveProjectLabel, setProjectLabelDataDir } from './store.js';
+import { createStore, computeHash, indexDocument, extractProjectHashFromPath, resolveWorkspaceDbPath, resolveProjectLabel, setProjectLabelDataDir, openDatabase } from './store.js';
 import { loadCollectionConfig, addCollection, removeCollection, renameCollection, listCollections, getCollections, scanCollectionFiles, saveCollectionConfig, getWorkspaceConfig, removeWorkspaceConfig } from './collections.js';
 import { harvestSessions } from './harvester.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth, checkOpenAIHealth } from './embeddings.js';
@@ -54,6 +54,47 @@ async function proxyPost(port: number, path: string, body: any): Promise<any> {
   return resp.json();
 }
 
+function isRunningInContainer(): boolean {
+  try {
+    return fs.existsSync('/.dockerenv');
+  } catch {
+    return false;
+  }
+}
+
+function getHttpHost(): string {
+  return isRunningInContainer() ? 'host.docker.internal' : 'localhost';
+}
+
+async function detectRunningServerContainer(port: number = DEFAULT_HTTP_PORT): Promise<boolean> {
+  const host = getHttpHost();
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    const resp = await fetch(`http://${host}:${port}/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function proxyGetContainer(port: number, path: string): Promise<any> {
+  const host = getHttpHost();
+  const resp = await fetch(`http://${host}:${port}${path}`);
+  return resp.json();
+}
+
+async function proxyPostContainer(port: number, path: string, body: any): Promise<any> {
+  const host = getHttpHost();
+  const resp = await fetch(`http://${host}:${port}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return resp.json();
+}
+
 function resolveOpenCodeStorageDir(): string {
   // XDG path (Linux): ~/.local/share/opencode/storage
   const xdgData = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
@@ -81,10 +122,10 @@ export function parseGlobalOptions(args: string[]): GlobalOptions {
   let dbPath = path.join(DEFAULT_DB_DIR, 'default.sqlite');
   let configPath = DEFAULT_CONFIG;
   const remaining: string[] = [];
-  
+
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    
+
     if (arg.startsWith('--db=')) {
       dbPath = arg.substring(5);
     } else if (arg === '--db' && i + 1 < args.length) {
@@ -103,7 +144,7 @@ export function parseGlobalOptions(args: string[]): GlobalOptions {
       remaining.push(arg);
     }
   }
-  
+
   return { dbPath, configPath, remaining };
 }
 
@@ -282,11 +323,11 @@ export function formatSearchOutput(results: SearchResult[], format: 'text' | 'js
   if (format === 'json') {
     return JSON.stringify(results, null, 2);
   }
-  
+
   if (format === 'files') {
     return results.map(r => r.path).join('\n');
   }
-  
+
   const lines: string[] = [];
   for (const result of results) {
     lines.push(`[${result.docid}] ${result.collection}/${result.path}`);
@@ -305,7 +346,7 @@ async function handleMcp(globalOpts: GlobalOptions, commandArgs: string[]): Prom
   let host = '127.0.0.1';
   let daemon = false;
   let root: string | undefined;
-  
+
   for (const arg of commandArgs) {
     if (arg === '--http') {
       useHttp = true;
@@ -322,7 +363,7 @@ async function handleMcp(globalOpts: GlobalOptions, commandArgs: string[]): Prom
       return;
     }
   }
-  
+
   log('cli', 'mcp server start transport=' + (useHttp ? `http:${host}:${port}` : 'stdio'));
   await startServer({
     dbPath: globalOpts.dbPath,
@@ -360,12 +401,50 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
 
   // serve stop
   if (subcommand === 'stop') {
+    let stopped = false;
+    // Try stopping via PID file
     try {
-      const pid = parseInt(fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim(), 10);
-      process.kill(pid, 'SIGTERM');
-      fs.unlinkSync(SERVE_PID_FILE);
-      console.log(`Stopped nano-brain server (PID: ${pid})`);
+      if (fs.existsSync(SERVE_PID_FILE)) {
+        const pid = parseInt(fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim(), 10);
+        process.kill(pid, 'SIGTERM');
+        fs.unlinkSync(SERVE_PID_FILE);
+        console.log(`Stopped nano-brain server (PID: ${pid})`);
+        stopped = true;
+      }
     } catch {
+      // Process might already be dead
+      if (fs.existsSync(SERVE_PID_FILE)) fs.unlinkSync(SERVE_PID_FILE);
+    }
+
+    // Secondary stop: try to find process by port if PID file failed or was missing
+    if (!stopped) {
+      try {
+        const isPortActive = await detectRunningServer(port);
+        if (isPortActive) {
+          // On macOS/Linux we can use lsof to find the PID and kill it
+          const platform = process.platform;
+          if (platform === 'darwin' || platform === 'linux') {
+            try {
+              const cmd = platform === 'darwin'
+                ? `lsof -i tcp:${port} -t`
+                : `fuser ${port}/tcp 2>/dev/null`;
+              const pid = execSync(cmd, { encoding: 'utf-8' }).trim();
+              if (pid) {
+                process.kill(parseInt(pid, 10), 'SIGTERM');
+                console.log(`Stopped nano-brain server on port ${port} (PID: ${pid})`);
+                stopped = true;
+              }
+            } catch {
+              // Ignore command failures
+            }
+          }
+        }
+      } catch {
+        // Ignore health check failures
+      }
+    }
+
+    if (!stopped) {
       console.log('No running server found');
     }
     return;
@@ -414,14 +493,24 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     return handleMcp(globalOpts, ['--http', `--port=${port}`, '--host=0.0.0.0', '--daemon', ...(root ? [`--root=${root}`] : [])]);
   }
 
-  // Check if already running
+  // Check if already running via PID file
+  let pidFileValid = false;
   try {
-    const existingPid = parseInt(fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim(), 10);
-    process.kill(existingPid, 0);
-    console.log(`Server already running (PID: ${existingPid}). Stop first: npx nano-brain serve stop`);
-    return;
+    if (fs.existsSync(SERVE_PID_FILE)) {
+      const existingPid = parseInt(fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim(), 10);
+      process.kill(existingPid, 0);
+      console.log(`Server already running (PID: ${existingPid}). Stop first: npx nano-brain serve stop`);
+      return;
+    }
   } catch {
-    // Not running, proceed
+    // PID file process not running, or PID file invalid
+  }
+
+  // Secondary check: verify if port is already in use by another instance
+  const isPortActive = await detectRunningServer(port);
+  if (isPortActive) {
+    console.log(`Server already running on port ${port}. Stop first: npx nano-brain serve stop`);
+    return;
   }
 
   // Spawn detached child
@@ -462,53 +551,53 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
 
 async function handleCollection(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const subcommand = commandArgs[0];
-  
+
   if (!subcommand) {
     console.error('Missing collection subcommand (add, remove, list, rename)');
     process.exit(1);
   }
-  
+
   switch (subcommand) {
     case 'add': {
       const name = commandArgs[1];
       const collectionPath = commandArgs[2];
       let pattern = '**/*.md';
-      
+
       for (const arg of commandArgs.slice(3)) {
         if (arg.startsWith('--pattern=')) {
           pattern = arg.substring(10);
         }
       }
-      
+
       if (!name || !collectionPath) {
         console.error('Usage: collection add <name> <path> [--pattern=<glob>]');
         process.exit(1);
       }
-      
+
       addCollection(globalOpts.configPath, name, collectionPath, pattern);
       console.log(`✅ Added collection "${name}"`);
       break;
     }
-    
+
     case 'remove': {
       const name = commandArgs[1];
       if (!name) {
         console.error('Usage: collection remove <name>');
         process.exit(1);
       }
-      
+
       removeCollection(globalOpts.configPath, name);
       console.log(`✅ Removed collection "${name}"`);
       break;
     }
-    
+
     case 'list': {
       const config = loadCollectionConfig(globalOpts.configPath);
       if (!config) {
         console.log('No collections configured');
         return;
       }
-      
+
       const names = listCollections(config);
       if (names.length === 0) {
         console.log('No collections configured');
@@ -521,21 +610,21 @@ async function handleCollection(globalOpts: GlobalOptions, commandArgs: string[]
       }
       break;
     }
-    
+
     case 'rename': {
       const oldName = commandArgs[1];
       const newName = commandArgs[2];
-      
+
       if (!oldName || !newName) {
         console.error('Usage: collection rename <old> <new>');
         process.exit(1);
       }
-      
+
       renameCollection(globalOpts.configPath, oldName, newName);
       console.log(`✅ Renamed collection "${oldName}" to "${newName}"`);
       break;
     }
-    
+
     default:
       console.error(`Unknown collection subcommand: ${subcommand}`);
       process.exit(1);
@@ -706,7 +795,7 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
       let embedded = 0;
       let pending = 0;
       try {
-        const readDb = new Database(dbFile, { readonly: true });
+        const readDb = openDatabase(dbFile, { readonly: true });
         try {
           docs = (readDb.prepare('SELECT COUNT(*) as count FROM documents WHERE active = 1').get() as { count: number }).count;
           embedded = (readDb.prepare('SELECT COUNT(*) as count FROM content_vectors').get() as { count: number }).count;
@@ -743,7 +832,7 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
     const allTokenUsage = new Map<string, { totalTokens: number; requestCount: number; lastUpdated: string }>();
     for (const dbFile of dbFiles) {
       try {
-        const readDb = new Database(dbFile, { readonly: true });
+        const readDb = openDatabase(dbFile, { readonly: true });
         try {
           const rows = readDb.prepare('SELECT model, total_tokens as totalTokens, request_count as requestCount, last_updated as lastUpdated FROM token_usage').all() as Array<{ model: string; totalTokens: number; requestCount: number; lastUpdated: string }>;
           for (const row of rows) {
@@ -776,7 +865,7 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
     dbSize = fs.statSync(resolvedDbPath).size;
   } catch { /* ignore */ }
 
-  const store = createStore(resolvedDbPath);
+  const store = await createStore(resolvedDbPath);
   const health = store.getIndexHealth();
 
   console.log(`nano-brain Status — ${workspaceName}`);
@@ -828,7 +917,7 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
 
   // Code Intelligence (symbol graph)
   try {
-    const symbolDb = new Database(resolvedDbPath);
+    const symbolDb = openDatabase(resolvedDbPath);
     const symbolCount = (symbolDb.prepare('SELECT COUNT(*) as cnt FROM code_symbols WHERE project_hash = ?').get(projectHash) as { cnt: number }).cnt;
     const edgeCount = (symbolDb.prepare('SELECT COUNT(*) as cnt FROM symbol_edges WHERE project_hash = ?').get(projectHash) as { cnt: number }).cnt;
     let flowCount = 0;
@@ -863,10 +952,16 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
 }
 
 async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  if (isRunningInContainer()) {
+    console.error('Error: Destructive operations must be run on the host, not from containers.');
+    console.error('Run this command directly on the host: npx nano-brain init --force');
+    process.exit(1);
+  }
+
   let root = process.cwd();
   let force = false;
   let all = false;
-  
+
   for (const arg of commandArgs) {
     if (arg.startsWith('--root=')) {
       root = arg.substring(7);
@@ -876,21 +971,21 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
       all = true;
     }
   }
-  
+
   log('cli', 'init start root=' + root + ' force=' + force + ' all=' + all);
-  
+
   // Resolve per-workspace DB path with the actual root
   globalOpts.dbPath = resolveDbPath(globalOpts.dbPath, root);
   const configDir = path.dirname(globalOpts.configPath);
   const configPath = globalOpts.configPath;
-  
+
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
   }
-  
+
   let config = loadCollectionConfig(configPath);
   const isNewConfig = !config;
-  
+
   if (!config) {
     config = {
       collections: {
@@ -924,11 +1019,11 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
   } else {
     console.log(`ℹ️  Config exists: ${configPath}`);
   }
-  
+
   if (config.embedding?.provider !== 'openai') {
     const ollamaUrl = config.embedding?.url || detectOllamaUrl();
     const ollamaHealth = await checkOllamaHealth(ollamaUrl);
-    
+
     if (ollamaHealth.reachable) {
       console.log(`✅ Ollama reachable at ${ollamaUrl}`);
     } else {
@@ -944,16 +1039,17 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
     const dataDir = path.dirname(globalOpts.dbPath);
     let deletedCount = 0;
     if (fs.existsSync(dataDir)) {
-      const sqliteFiles = fs.readdirSync(dataDir).filter(file => file.endsWith('.sqlite'));
-      for (const file of sqliteFiles) {
+      const dbFiles = fs.readdirSync(dataDir).filter(file =>
+        file.endsWith('.sqlite') || file.endsWith('-wal') || file.endsWith('-shm')
+      );
+      for (const file of dbFiles) {
         fs.unlinkSync(path.join(dataDir, file));
       }
-      deletedCount = sqliteFiles.length;
+      deletedCount = dbFiles.length;
     }
     console.log(`🗑️  Force --all: deleted ${deletedCount} database files from ${dataDir}`);
   }
-  
-  const store = createStore(globalOpts.dbPath);
+
   if (!config.workspaces) {
     config.workspaces = {};
   }
@@ -967,24 +1063,46 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
     console.log(`ℹ️  Workspace already configured: ${root}`);
   }
   const projectHash = crypto.createHash('sha256').update(root).digest('hex').substring(0, 12);
-  if (force && !all) {
-    console.log('🗑️  Force mode: clearing workspace memory...');
-    const cleared = store.clearWorkspace(projectHash);
-    console.log(`   Deleted ${cleared.documentsDeleted} documents, ${cleared.embeddingsDeleted} embeddings`);
+  let serverRunning = false;
+  if (force) {
+    serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
+    if (serverRunning) {
+      try {
+        await proxyPost(DEFAULT_HTTP_PORT, '/api/maintenance/prepare', {});
+        console.log('⏸️  Daemon paused for maintenance');
+      } catch (err) {
+        console.error('⚠️  Warning: Could not coordinate with daemon. Stop the daemon first: launchctl unload ~/Library/LaunchAgents/com.nano-brain.server.plist');
+        process.exit(1);
+      }
+    }
   }
+  if (force && !all) {
+    console.log('🗑️  Force mode: deleting workspace database...');
+    const dbPath = globalOpts.dbPath;
+    let deletedFiles = 0;
+    for (const suffix of ['', '-wal', '-shm']) {
+      const filePath = dbPath + suffix;
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+        deletedFiles++;
+      }
+    }
+    console.log(`   Deleted ${deletedFiles} database file(s)`);
+  }
+  const store = await createStore(globalOpts.dbPath);
   console.log('📂 Indexing codebase...');
   const wsConfig = config.workspaces[root];
   const codebaseConfig = wsConfig?.codebase ?? { enabled: true };
-  const db = new Database(globalOpts.dbPath);
+  const db = openDatabase(globalOpts.dbPath);
   const codebaseStats = await indexCodebase(store, root, codebaseConfig, projectHash, undefined, db);
   db.close();
   console.log(`✅ Indexed ${codebaseStats.filesIndexed} files (${codebaseStats.filesSkippedUnchanged} unchanged)`);
-  
+
   console.log('📜 Harvesting sessions...');
   const sessionDir = resolveOpenCodeStorageDir();
   const sessions = await harvestSessions({ sessionDir, outputDir: DEFAULT_OUTPUT_DIR });
   console.log(`✅ Harvested ${sessions.length} sessions`);
-  
+
   console.log('📚 Indexing collections...');
   const collections = getCollections(config);
   // Only index core collections during init; MCP watcher handles the rest
@@ -1042,20 +1160,20 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
     console.log(`   Run 'npx nano-brain embed' later to generate embeddings`);
   }
   store.close();
-  
+
   const agentsPath = path.join(root, 'AGENTS.md');
   const snippetPath = path.join(path.dirname(import.meta.url.replace('file://', '')), '..', 'AGENTS_SNIPPET.md');
   const startMarker = '<!-- OPENCODE-MEMORY:START -->';
   const endMarker = '<!-- OPENCODE-MEMORY:END -->';
-  
+
   if (fs.existsSync(snippetPath)) {
     const snippet = fs.readFileSync(snippetPath, 'utf-8');
-    
+
     if (fs.existsSync(agentsPath)) {
       let agentsContent = fs.readFileSync(agentsPath, 'utf-8');
       const startIdx = agentsContent.indexOf(startMarker);
       const endIdx = agentsContent.indexOf(endMarker);
-      
+
       if (startIdx !== -1 && endIdx !== -1) {
         agentsContent = agentsContent.substring(0, startIdx) + snippet + agentsContent.substring(endIdx + endMarker.length);
         fs.writeFileSync(agentsPath, agentsContent);
@@ -1069,7 +1187,7 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
       console.log(`✅ Created AGENTS.md with memory snippet`);
     }
   }
-  
+
 
   // Install slash commands to both global and project .opencode/command/
   const commandsDir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'commands');
@@ -1087,29 +1205,37 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
     }
     console.log(`✅ Installed ${commandFiles.length} slash commands (global + project)`);
   }
+  if (serverRunning) {
+    try {
+      await proxyPost(DEFAULT_HTTP_PORT, '/api/maintenance/resume', {});
+      console.log('▶️  Daemon resumed');
+    } catch (err) {
+      console.error('⚠️  Warning: Could not resume daemon. It will auto-resume in 5 minutes.');
+    }
+  }
   console.log('');
   console.log('nano-brain initialized! Run `npx nano-brain status` to verify.');
 }
 
 async function handleUpdate(globalOpts: GlobalOptions): Promise<void> {
   log('cli', 'update start');
-  const store = createStore(globalOpts.dbPath);
+  const store = await createStore(globalOpts.dbPath);
   const config = loadCollectionConfig(globalOpts.configPath);
-  
+
   if (!config) {
     console.error('No config file found');
     store.close();
     process.exit(1);
   }
-  
+
   const collections = getCollections(config);
   let totalIndexed = 0;
   let totalSkipped = 0;
-  
+
   for (const collection of collections) {
     console.log(`Scanning collection: ${collection.name}`);
     const files = await scanCollectionFiles(collection);
-    
+
     for (const file of files) {
       const content = fs.readFileSync(file, 'utf-8');
       const title = path.basename(file, path.extname(file));
@@ -1117,7 +1243,7 @@ async function handleUpdate(globalOpts: GlobalOptions): Promise<void> {
         ? extractProjectHashFromPath(file, DEFAULT_OUTPUT_DIR)
         : undefined;
       const result = indexDocument(store, collection.name, file, content, title, effectiveProjectHash);
-      
+
       if (result.skipped) {
         totalSkipped++;
       } else {
@@ -1125,34 +1251,56 @@ async function handleUpdate(globalOpts: GlobalOptions): Promise<void> {
       }
     }
   }
-  
+
   console.log(`✅ Indexed ${totalIndexed} documents, skipped ${totalSkipped}`);
   store.close();
 }
 
 async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   let force = false;
-  
+
   for (const arg of commandArgs) {
     if (arg === '--force') {
       force = true;
     }
   }
-  
+
   log('cli', 'embed start force=' + force);
+
+  if (isRunningInContainer()) {
+    const serverRunning = await detectRunningServerContainer(DEFAULT_HTTP_PORT);
+    if (!serverRunning) {
+      console.error('Error: Daemon not running. Start it on the host:');
+      console.error('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
+      process.exit(1);
+    }
+    try {
+      const result = await proxyPostContainer(DEFAULT_HTTP_PORT, '/api/embed', {});
+      if (result.error) {
+        console.error('Error:', result.error);
+        process.exit(1);
+      }
+      console.log('✅ Embedding started in background on daemon');
+      return;
+    } catch (err) {
+      console.error('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  }
+
   const config = loadCollectionConfig(globalOpts.configPath);
   const provider = await createEmbeddingProvider({ embeddingConfig: config?.embedding });
-  
+
   if (!provider) {
     console.error('Failed to load embedding provider');
     process.exit(1);
   }
-  
+
   let totalEmbedded = 0;
   const dataDir = path.dirname(globalOpts.dbPath);
-  
+
   try {
-    const store = createStore(globalOpts.dbPath);
+    const store = await createStore(globalOpts.dbPath);
     const hashes = store.getHashesNeedingEmbedding();
     if (hashes.length > 0) {
       store.ensureVecTable(provider.getDimensions());
@@ -1170,14 +1318,14 @@ async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       throw err;
     }
   }
-  
+
   if (config?.workspaces) {
     for (const [wsPath, wsConfig] of Object.entries(config.workspaces)) {
       if (!wsConfig.codebase?.enabled) continue;
       const wsDbPath = resolveWorkspaceDbPath(dataDir, wsPath);
       if (!fs.existsSync(wsDbPath)) continue;
       try {
-        const wsStore = createStore(wsDbPath);
+        const wsStore = await createStore(wsDbPath);
         const wsHashes = wsStore.getHashesNeedingEmbedding();
         if (wsHashes.length > 0) {
           wsStore.ensureVecTable(provider.getDimensions());
@@ -1192,13 +1340,13 @@ async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       }
     }
   }
-  
+
   if (totalEmbedded === 0) {
     console.log('No chunks need embedding');
   } else {
     console.log(`✅ Embedded ${totalEmbedded} documents total`);
   }
-  
+
   provider.dispose();
 }
 
@@ -1209,12 +1357,12 @@ async function handleSearch(
 ): Promise<void> {
   log('cli', 'search mode=' + mode + ' query=' + (commandArgs[0] || ''));
   const query = commandArgs[0];
-  
+
   if (!query) {
     console.error('Missing query argument');
     process.exit(1);
   }
-  
+
   let limit = 10;
   let collection: string | undefined;
   let format: 'text' | 'json' | 'files' = 'text';
@@ -1224,10 +1372,10 @@ async function handleSearch(
   let since: string | undefined;
   let until: string | undefined;
   let compact = false;
-  
+
   for (let i = 1; i < commandArgs.length; i++) {
     const arg = commandArgs[i];
-    
+
     if (arg === '-n' && i + 1 < commandArgs.length) {
       limit = parseInt(commandArgs[++i], 10);
     } else if (arg === '-c' && i + 1 < commandArgs.length) {
@@ -1251,12 +1399,24 @@ async function handleSearch(
       until = arg.substring(8);
     }
   }
-  
-  const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
+
+  const inContainer = isRunningInContainer();
+  const serverRunning = inContainer
+    ? await detectRunningServerContainer(DEFAULT_HTTP_PORT)
+    : await detectRunningServer(DEFAULT_HTTP_PORT);
+
+  if (inContainer && !serverRunning) {
+    console.error('Error: Daemon not running. Start it on the host:');
+    console.error('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
+    process.exit(1);
+  }
+
   if (serverRunning) {
     try {
       const endpoint = mode === 'fts' ? '/api/search' : '/api/query';
-      const data = await proxyPost(DEFAULT_HTTP_PORT, endpoint, { query, limit, tags: tags?.join(','), scope });
+      const data = inContainer
+        ? await proxyPostContainer(DEFAULT_HTTP_PORT, endpoint, { query, limit, tags: tags?.join(','), scope })
+        : await proxyPost(DEFAULT_HTTP_PORT, endpoint, { query, limit, tags: tags?.join(','), scope });
       if (format === 'json') {
         console.log(JSON.stringify(data, null, 2));
       } else if (format === 'files') {
@@ -1270,16 +1430,20 @@ async function handleSearch(
       }
       return;
     } catch (err) {
+      if (inContainer) {
+        console.error('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
       log('cli', 'HTTP proxy failed, falling back to local: ' + (err instanceof Error ? err.message : String(err)));
     }
   }
-  
+
   const workspaceRoot = process.cwd();
   const projectHash = scope === 'all' ? 'all' : crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
-  
-  const store = createStore(globalOpts.dbPath);
+
+  const store = await createStore(globalOpts.dbPath);
   let results: SearchResult[];
-  
+
   if (mode === 'fts') {
     results = store.searchFTS(query, { limit, collection, projectHash, tags, since, until });
   } else if (mode === 'vec') {
@@ -1294,7 +1458,7 @@ async function handleSearch(
       store.close();
       process.exit(1);
     }
-    
+
     const { embedding } = await provider.embed(query);
     results = await store.searchVecAsync(query, embedding, { limit, collection, projectHash, tags, since, until });
     provider.dispose();
@@ -1317,7 +1481,7 @@ async function handleSearch(
     reranker?.dispose();
     provider?.dispose();
   }
-  
+
   if (compact && format !== 'json') {
     const cache = new ResultCache();
     const cacheKey = cache.set(results, query);
@@ -1330,19 +1494,19 @@ async function handleSearch(
 
 async function handleGet(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const id = commandArgs[0];
-  
+
   if (!id) {
     console.error('Missing document id or path');
     process.exit(1);
   }
-  
+
   let full = false;
   let fromLine: number | undefined;
   let maxLines: number | undefined;
-  
+
   for (let i = 1; i < commandArgs.length; i++) {
     const arg = commandArgs[i];
-    
+
     if (arg === '--full') {
       full = true;
     } else if (arg.startsWith('--from=')) {
@@ -1351,26 +1515,26 @@ async function handleGet(globalOpts: GlobalOptions, commandArgs: string[]): Prom
       maxLines = parseInt(arg.substring(8), 10);
     }
   }
-  
-  const store = createStore(globalOpts.dbPath);
+
+  const store = await createStore(globalOpts.dbPath);
   const doc = store.findDocument(id);
-  
+
   if (!doc) {
     console.error(`Document not found: ${id}`);
     store.close();
     process.exit(1);
   }
-  
+
   console.log(`Document: ${doc.collection}/${doc.path}`);
   console.log(`Title: ${doc.title}`);
   console.log(`Docid: ${doc.hash.substring(0, 6)}`);
   console.log('');
-  
+
   const body = store.getDocumentBody(doc.hash, fromLine, maxLines);
   if (body) {
     console.log(body);
   }
-  
+
   store.close();
 }
 
@@ -1378,25 +1542,25 @@ async function handleHarvest(globalOpts: GlobalOptions): Promise<void> {
   log('cli', 'harvest start');
   const sessionDir = resolveOpenCodeStorageDir();
   const outputDir = DEFAULT_OUTPUT_DIR;
-  
+
   console.log('Harvesting sessions...');
   const sessions = await harvestSessions({ sessionDir, outputDir });
-  
+
   console.log(`✅ Harvested ${sessions.length} sessions to ${outputDir}`);
 }
 
 async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const content = commandArgs[0]
-  
+
   if (!content) {
     console.error('Usage: write "content here" [--supersedes=<path-or-docid>] [--tags=<comma-separated>]')
     process.exit(1)
   }
-  
+
   log('cli', 'write command contentLength=' + content.length);
   let supersedes: string | undefined
   let tags: string[] | undefined
-  
+
   for (let i = 1; i < commandArgs.length; i++) {
     const arg = commandArgs[i]
     if (arg.startsWith('--supersedes=')) {
@@ -1405,7 +1569,31 @@ async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       tags = arg.substring(7).split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0)
     }
   }
-  
+
+  if (isRunningInContainer()) {
+    const serverRunning = await detectRunningServerContainer(DEFAULT_HTTP_PORT);
+    if (!serverRunning) {
+      console.error('Error: Daemon not running. Start it on the host:');
+      console.error('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
+      process.exit(1);
+    }
+    try {
+      const result = await proxyPostContainer(DEFAULT_HTTP_PORT, '/api/write', {
+        content,
+        tags: tags?.join(','),
+      });
+      if (result.error) {
+        console.error('Error:', result.error);
+        process.exit(1);
+      }
+      console.log(`✅ ${result.message}`);
+      return;
+    } catch (err) {
+      console.error('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  }
+
   const date = new Date().toISOString().split('T')[0]
   const memoryDir = DEFAULT_MEMORY_DIR
   if (!fs.existsSync(memoryDir)) {
@@ -1417,13 +1605,13 @@ async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   const workspaceName = path.basename(workspaceRoot)
   const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12)
   const entry = `\n## ${timestamp}\n\n**Workspace:** ${workspaceName} (${projectHash})\n\n${content}\n`
-  
+
   fs.appendFileSync(targetPath, entry, 'utf-8')
-  
+
   let supersedeWarning = ''
   let tagInfo = ''
-  const store = createStore(globalOpts.dbPath)
-  
+  const store = await createStore(globalOpts.dbPath)
+
   if (supersedes) {
     const targetDoc = store.findDocument(supersedes)
     if (targetDoc) {
@@ -1432,7 +1620,7 @@ async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       supersedeWarning = `\n⚠️ Supersede target not found: ${supersedes}`
     }
   }
-  
+
   if (tags && tags.length > 0) {
     const fileContent = fs.readFileSync(targetPath, 'utf-8')
     const title = path.basename(targetPath, path.extname(targetPath))
@@ -1452,22 +1640,22 @@ async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     store.insertTags(docId, tags)
     tagInfo = `\n📌 Tags: ${tags.join(', ')}`
   }
-  
+
   store.close()
-  
+
   console.log(`✅ Written to ${targetPath} [${workspaceName}]${supersedeWarning}${tagInfo}`)
 }
 
 async function handleTags(globalOpts: GlobalOptions): Promise<void> {
-  const store = createStore(globalOpts.dbPath)
+  const store = await createStore(globalOpts.dbPath)
   const tags = store.listAllTags()
-  
+
   if (tags.length === 0) {
     console.log('No tags found.')
     store.close()
     return
   }
-  
+
   console.log('Tags:')
   for (const { tag, count } of tags) {
     console.log(`  ${tag}: ${count} document${count === 1 ? '' : 's'}`)
@@ -1477,24 +1665,24 @@ async function handleTags(globalOpts: GlobalOptions): Promise<void> {
 
 async function handleFocus(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const filePath = commandArgs[0]
-  
+
   if (!filePath) {
     console.error('Usage: focus <filepath>')
     process.exit(1)
   }
-  
+
   log('cli', 'focus file=' + filePath);
   const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(process.cwd(), filePath)
-  const store = createStore(globalOpts.dbPath)
+  const store = await createStore(globalOpts.dbPath)
   const projectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12)
-  
+
   const dependencies = store.getFileDependencies(absolutePath, projectHash)
   const dependents = store.getFileDependents(absolutePath, projectHash)
   const centralityInfo = store.getDocumentCentrality(absolutePath)
-  
+
   console.log(`File: ${absolutePath}`)
   console.log('')
-  
+
   if (centralityInfo) {
     console.log(`Centrality: ${centralityInfo.centrality.toFixed(4)}`)
     if (centralityInfo.clusterId !== null) {
@@ -1514,30 +1702,30 @@ async function handleFocus(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     console.log('Centrality: Not indexed')
   }
   console.log('')
-  
+
   console.log(`Dependencies (imports): ${dependencies.length}`)
   for (const dep of dependencies) {
     console.log(`  → ${dep}`)
   }
   console.log('')
-  
+
   console.log(`Dependents (imported by): ${dependents.length}`)
   for (const dep of dependents) {
     console.log(`  ← ${dep}`)
   }
-  
+
   store.close()
 }
 
 async function handleGraphStats(globalOpts: GlobalOptions): Promise<void> {
   log('cli', 'graph-stats invoked');
-  const store = createStore(globalOpts.dbPath)
+  const store = await createStore(globalOpts.dbPath)
   const projectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12)
-  
+
   const stats = store.getGraphStats(projectHash)
   const edges = store.getFileEdges(projectHash)
   const cycles = findCycles(edges.map(e => ({ source: e.source_path, target: e.target_path })), 5)
-  
+
   console.log('Graph Statistics')
   console.log('═══════════════════════════════════════════════════')
   console.log('')
@@ -1545,7 +1733,7 @@ async function handleGraphStats(globalOpts: GlobalOptions): Promise<void> {
   console.log(`Edges: ${stats.edgeCount}`)
   console.log(`Clusters: ${stats.clusterCount}`)
   console.log('')
-  
+
   if (stats.topCentrality.length > 0) {
     console.log('Top 10 by Centrality:')
     for (const { path: filePath, centrality } of stats.topCentrality) {
@@ -1553,7 +1741,7 @@ async function handleGraphStats(globalOpts: GlobalOptions): Promise<void> {
     }
     console.log('')
   }
-  
+
   if (cycles.length > 0) {
     console.log(`Cycles (length ≤ 5): ${cycles.length}`)
     for (const cycle of cycles.slice(0, 5)) {
@@ -1565,7 +1753,7 @@ async function handleGraphStats(globalOpts: GlobalOptions): Promise<void> {
   } else {
     console.log('Cycles: None detected')
   }
-  
+
   store.close()
 }
 
@@ -1591,7 +1779,7 @@ async function handleSymbols(globalOpts: GlobalOptions, commandArgs: string[]): 
   }
 
   log('cli', 'symbols type=' + (type || '') + ' pattern=' + (pattern || '') + ' repo=' + (repo || '') + ' operation=' + (operation || ''));
-  const store = createStore(globalOpts.dbPath)
+  const store = await createStore(globalOpts.dbPath)
   const projectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12)
 
   const results = store.querySymbols({
@@ -1658,7 +1846,7 @@ async function handleImpact(globalOpts: GlobalOptions, commandArgs: string[]): P
     process.exit(1)
   }
 
-  const store = createStore(globalOpts.dbPath)
+  const store = await createStore(globalOpts.dbPath)
   const projectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12)
 
   const results = store.getSymbolImpact(type, pattern, projectHash)
@@ -1740,7 +1928,7 @@ async function handleContext(globalOpts: GlobalOptions, commandArgs: string[]): 
   const workspaceRoot = process.cwd();
   const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
   const resolvedDbPath = resolveDbPath(globalOpts.dbPath, workspaceRoot);
-  const db = new Database(resolvedDbPath);
+  const db = openDatabase(resolvedDbPath);
 
   if (warnIfEmptySymbolGraph(db, projectHash)) {
     db.close();
@@ -1846,7 +2034,7 @@ async function handleCodeImpact(globalOpts: GlobalOptions, commandArgs: string[]
   const workspaceRoot = process.cwd();
   const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
   const resolvedDbPath = resolveDbPath(globalOpts.dbPath, workspaceRoot);
-  const db = new Database(resolvedDbPath);
+  const db = openDatabase(resolvedDbPath);
 
   if (warnIfEmptySymbolGraph(db, projectHash)) {
     db.close();
@@ -1919,7 +2107,7 @@ async function handleDetectChanges(globalOpts: GlobalOptions, commandArgs: strin
   const workspaceRoot = process.cwd();
   const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
   const resolvedDbPath = resolveDbPath(globalOpts.dbPath, workspaceRoot);
-  const db = new Database(resolvedDbPath);
+  const db = openDatabase(resolvedDbPath);
 
   if (warnIfEmptySymbolGraph(db, projectHash)) {
     db.close();
@@ -1978,8 +2166,30 @@ async function handleReindex(globalOpts: GlobalOptions, commandArgs: string[]): 
   }
 
   log('cli', 'reindex root=' + root);
+
+  if (isRunningInContainer()) {
+    const serverRunning = await detectRunningServerContainer(DEFAULT_HTTP_PORT);
+    if (!serverRunning) {
+      console.error('Error: Daemon not running. Start it on the host:');
+      console.error('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
+      process.exit(1);
+    }
+    try {
+      const result = await proxyPostContainer(DEFAULT_HTTP_PORT, '/api/reindex', { root });
+      if (result.error) {
+        console.error('Error:', result.error);
+        process.exit(1);
+      }
+      console.log(`✅ Reindex started in background on daemon for ${result.root}`);
+      return;
+    } catch (err) {
+      console.error('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+  }
+
   const resolvedDbPath = resolveDbPath(globalOpts.dbPath, root);
-  const store = createStore(resolvedDbPath);
+  const store = await createStore(resolvedDbPath);
   const projectHash = crypto.createHash('sha256').update(root).digest('hex').substring(0, 12);
 
   const config = loadCollectionConfig(globalOpts.configPath);
@@ -1987,7 +2197,7 @@ async function handleReindex(globalOpts: GlobalOptions, commandArgs: string[]): 
   const codebaseConfig = wsConfig?.codebase ?? { enabled: true };
 
   console.log(`Reindexing codebase: ${root}`);
-  const db = new Database(resolvedDbPath);
+  const db = openDatabase(resolvedDbPath);
   const stats = await indexCodebase(store, root, codebaseConfig, projectHash, undefined, db);
   console.log(`  Files: ${stats.filesIndexed} indexed, ${stats.filesSkippedUnchanged} unchanged`);
 
@@ -2016,7 +2226,7 @@ async function handleCache(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   }
 
   log('cli', 'cache subcommand=' + subcommand);
-  const store = createStore(globalOpts.dbPath);
+  const store = await createStore(globalOpts.dbPath);
 
   switch (subcommand) {
     case 'clear': {
@@ -2383,12 +2593,11 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       let totalVectors = 0;
       let dbCount = 0;
 
-      const Database = (await import('better-sqlite3')).default;
       const sqliteVec = await import('sqlite-vec');
 
       for (const sqliteFile of sqliteFiles) {
         const dbPath = path.join(dataDir, sqliteFile);
-        const db = new Database(dbPath);
+        const db = openDatabase(dbPath);
 
         try {
           sqliteVec.load(db);
@@ -2556,7 +2765,6 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       console.log('Verifying migration...');
       console.log('═══════════════════════════════════════════════════');
 
-      const Database = (await import('better-sqlite3')).default;
       const sqliteVec = await import('sqlite-vec');
 
       let totalVectors = 0;
@@ -2566,7 +2774,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
 
       for (const sqliteFile of sqliteFiles) {
         const dbPath = path.join(dataDir, sqliteFile);
-        const db = new Database(dbPath);
+        const db = openDatabase(dbPath);
 
         try {
           sqliteVec.load(db);
@@ -2758,7 +2966,6 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         return;
       }
 
-      const Database = (await import('better-sqlite3')).default;
       const sqliteVec = await import('sqlite-vec');
 
       let cleanedCount = 0;
@@ -2767,7 +2974,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       for (const sqliteFile of sqliteFiles) {
         const dbPath = path.join(dataDir, sqliteFile);
         const statBefore = fs.statSync(dbPath);
-        const db = new Database(dbPath);
+        const db = openDatabase(dbPath);
 
         try {
           sqliteVec.load(db);
@@ -3065,7 +3272,7 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
       const wsName = extractWorkspaceName(dbFile);
       let docs = 0;
       try {
-        const readDb = new Database(dbFile, { readonly: true });
+        const readDb = openDatabase(dbFile, { readonly: true });
         try {
           docs = (readDb.prepare('SELECT COUNT(*) as count FROM documents WHERE active = 1').get() as { count: number }).count;
         } catch { /* ignore */ }
@@ -3097,13 +3304,13 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
     process.exit(1);
   }
 
-  const store = createStore(globalOpts.dbPath);
+  const store = await createStore(globalOpts.dbPath);
   try {
     const resolved = resolveWorkspaceIdentifier(identifier, config, store);
     const { projectHash, workspacePath } = resolved;
 
     if (dryRun) {
-      const db = new Database(globalOpts.dbPath, { readonly: true });
+      const db = openDatabase(globalOpts.dbPath, { readonly: true });
       const count = (table: string, col: string = 'project_hash') => {
         try {
           return (db.prepare(`SELECT COUNT(*) as cnt FROM ${table} WHERE ${col} = ?`).get(projectHash) as { cnt: number }).cnt;
@@ -3194,7 +3401,7 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
     }
     console.log(`  total rows:       ${totalDeleted}`);
 
-    const db = new Database(globalOpts.dbPath, { readonly: true });
+    const db = openDatabase(globalOpts.dbPath, { readonly: true });
     const tables = ['documents', 'file_edges', 'symbols', 'code_symbols', 'symbol_edges', 'execution_flows', 'llm_cache'];
     let remaining = 0;
     for (const table of tables) {
@@ -3216,7 +3423,7 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
       const wsDbPath = resolveWorkspaceDbPath(dataDir, workspacePath);
       if (fs.existsSync(wsDbPath) && wsDbPath !== globalOpts.dbPath) {
         try {
-          const wsDb = new Database(wsDbPath, { readonly: true });
+          const wsDb = openDatabase(wsDbPath, { readonly: true });
           let wsRemaining = 0;
           try {
             wsRemaining = (wsDb.prepare('SELECT COUNT(*) as count FROM documents WHERE active = 1').get() as { count: number }).count;
@@ -3243,25 +3450,25 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
 
 async function handleConsolidate(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   log('cli', 'consolidate');
-  const store = createStore(globalOpts.dbPath);
+  const store = await createStore(globalOpts.dbPath);
   const config = loadCollectionConfig(globalOpts.configPath);
-  
+
   if (!config?.consolidation?.enabled) {
     console.log('Consolidation is not enabled. Set consolidation.enabled=true in config.yml');
     store.close();
     return;
   }
-  
+
   console.log('Consolidation requires an LLM provider. Configure consolidation.model and consolidation.endpoint in config.yml');
   store.close();
 }
 
 async function handleLearning(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const subcommand = commandArgs[0];
-  
+
   if (subcommand === 'rollback') {
     const versionId = commandArgs[1] ? parseInt(commandArgs[1], 10) : undefined;
-    const store = createStore(globalOpts.dbPath);
+    const store = await createStore(globalOpts.dbPath);
     try {
       if (versionId) {
         const version = store.getConfigVersion(versionId);
@@ -3286,7 +3493,7 @@ async function handleLearning(globalOpts: GlobalOptions, commandArgs: string[]):
     }
     return;
   }
-  
+
   console.error('Usage: nano-brain learning rollback [version_id]');
   console.error('');
   console.error('Commands:');
@@ -3296,9 +3503,9 @@ async function handleLearning(globalOpts: GlobalOptions, commandArgs: string[]):
 
 async function main() {
   const args = process.argv.slice(2);
-  
+
   const globalOpts = parseGlobalOptions(args);
-  
+
   const cliConfig = loadCollectionConfig(globalOpts.configPath);
   initLogger(cliConfig ?? undefined);
 
@@ -3314,7 +3521,7 @@ async function main() {
   if (command !== 'init' && !isDaemonMode) {
     globalOpts.dbPath = resolveDbPath(globalOpts.dbPath, process.cwd());
   }
-  
+
   switch (command) {
     case 'mcp':
       return handleMcp(globalOpts, commandArgs);
