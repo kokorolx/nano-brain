@@ -10,7 +10,12 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import * as http from 'http';
-import type { Store, SearchResult, IndexHealth, Collection, StorageConfig, CodebaseConfig, EmbeddingConfig, WatcherConfig, SearchConfig } from './types.js'
+import type { Store, SearchResult, IndexHealth, Collection, StorageConfig, CodebaseConfig, EmbeddingConfig, WatcherConfig, SearchConfig, ConsolidationConfig, ProactiveConfig } from './types.js'
+import { DEFAULT_PROACTIVE_CONFIG } from './types.js'
+import { extractEntitiesFromMemory } from './entity-extraction.js'
+import { createLLMProvider } from './llm-provider.js';
+import { ConsolidationAgent } from './consolidation.js';
+import { ConsolidationWorker } from './consolidation-worker.js';
 import type { SearchProviders } from './search.js';
 import { hybridSearch, parseSearchConfig } from './search.js';
 import { findCycles } from './graph.js';
@@ -19,6 +24,7 @@ import { log, initLogger } from './logger.js';
 import { loadCollectionConfig, getCollections, scanCollectionFiles, getWorkspaceConfig } from './collections.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth, checkOpenAIHealth } from './embeddings.js';
 import { createReranker } from './reranker.js';
+import { createLLMQueryExpander } from './expansion.js';
 import { startWatcher } from './watcher.js';
 import { parseStorageConfig } from './storage.js';
 import { indexCodebase, getCodebaseStats, embedPendingCodebase } from './codebase.js'
@@ -27,6 +33,9 @@ import Database from 'better-sqlite3'
 import { SymbolGraph, type ContextResult, type ImpactResult, type DetectChangesResult } from './symbol-graph.js'
 import { ResultCache } from './cache.js'
 import { detectReformulation } from './telemetry.js'
+import { categorize } from './categorizer.js'
+import { categorizeMemory } from './llm-categorizer.js'
+import { parseCategorizationConfig } from './types.js'
 
 let maintenanceMode = false;
 let maintenanceTimer: NodeJS.Timeout | null = null;
@@ -77,6 +86,9 @@ export function resolveWorkspace(deps: ServerDeps, filePath?: string, workspaceP
     for (const [wsPath, _wsConfig] of Object.entries(deps.allWorkspaces)) {
       const wsHash = crypto.createHash('sha256').update(wsPath).digest('hex').substring(0, 12);
       if (workspaceParam === wsHash || workspaceParam === wsPath) {
+        if (wsHash === deps.currentProjectHash) {
+          return { store: deps.store, workspaceRoot: deps.workspaceRoot, projectHash: deps.currentProjectHash, needsClose: false };
+        }
         const wsStore = openWorkspaceStore(deps.dataDir, wsPath);
         if (wsStore) {
           return { store: wsStore, workspaceRoot: wsPath, projectHash: wsHash, needsClose: true };
@@ -94,6 +106,9 @@ export function resolveWorkspace(deps: ServerDeps, filePath?: string, workspaceP
     }
     if (bestMatch) {
       const wsHash = crypto.createHash('sha256').update(bestMatch.wsPath).digest('hex').substring(0, 12);
+      if (wsHash === deps.currentProjectHash) {
+        return { store: deps.store, workspaceRoot: deps.workspaceRoot, projectHash: deps.currentProjectHash, needsClose: false };
+      }
       const wsStore = openWorkspaceStore(deps.dataDir, bestMatch.wsPath);
       if (wsStore) {
         return { store: wsStore, workspaceRoot: bestMatch.wsPath, projectHash: wsHash, needsClose: true };
@@ -164,6 +179,15 @@ function requireDaemonWorkspace(
   return { error: `Could not resolve workspace from file_path: ${filePath}. Available workspaces:\n${formatAvailableWorkspaces(deps)}` }
 }
 
+function attachTagsToResults(results: SearchResult[], store: Store): SearchResult[] {
+  return results.map(r => {
+    const docId = typeof r.id === 'string' ? parseInt(r.id, 10) : r.id;
+    if (isNaN(docId)) return r;
+    const tags = store.getDocumentTags(docId);
+    return tags.length > 0 ? { ...r, tags } : r;
+  });
+}
+
 export function formatSearchResults(results: SearchResult[]): string {
   if (results.length === 0) {
     return 'No results found.';
@@ -173,6 +197,9 @@ export function formatSearchResults(results: SearchResult[]): string {
     let output = `### ${i + 1}. ${r.title} (${r.docid})\n` +
       `**Path:** ${r.path} | **Score:** ${r.score.toFixed(3)} | **Lines:** ${r.startLine}-${r.endLine}\n`;
     
+    if (r.tags && r.tags.length > 0) {
+      output += `**Tags:** ${r.tags.join(', ')}\n`;
+    }
     if (r.symbols && r.symbols.length > 0) {
       output += `**Symbols:** ${r.symbols.join(', ')}\n`;
     }
@@ -188,6 +215,26 @@ export function formatSearchResults(results: SearchResult[]): string {
   }).join('\n---\n\n');
 }
 
+function abbreviateTag(tag: string): string {
+  const parts = tag.split(':');
+  if (parts.length === 2) {
+    const prefix = parts[0];
+    const name = parts[1];
+    const shortName = name.split('-')[0];
+    return `${prefix}:${shortName}`;
+  }
+  return tag.split('-')[0];
+}
+
+function formatTagsCompact(tags: string[]): string {
+  if (tags.length === 0) return '';
+  if (tags.length <= 3) {
+    return ` [${tags.map(abbreviateTag).join(', ')}]`;
+  }
+  const first2 = tags.slice(0, 2).map(abbreviateTag);
+  return ` [${first2.join(', ')} +${tags.length - 2}]`;
+}
+
 export function formatCompactResults(results: SearchResult[], cacheKey: string): string {
   if (results.length === 0) {
     return 'No results found.';
@@ -199,9 +246,10 @@ export function formatCompactResults(results: SearchResult[], cacheKey: string):
     const score = r.score.toFixed(3);
     const title = r.title.replace(/[|—]/g, '-');
     const symbols = r.symbols && r.symbols.length > 0 ? ` [${r.symbols.join(', ')}]` : '';
+    const tags = r.tags && r.tags.length > 0 ? formatTagsCompact(r.tags) : '';
     const firstLine = r.snippet.split('\n')[0] || '';
     const truncated = firstLine.length > 80 ? firstLine.substring(0, 80) + '…' : firstLine;
-    return `${i + 1}. [${score}] ${title} (${r.docid}) — ${r.path}:${r.startLine}${symbols} | ${truncated}`;
+    return `${i + 1}. [${score}] ${title} (${r.docid}) — ${r.path}:${r.startLine}${symbols}${tags} | ${truncated}`;
   });
 
   return header + '\n\n' + lines.join('\n');
@@ -280,6 +328,11 @@ export function formatStatus(
       lines.push(`  - ${ws.projectHash}: ${ws.count} docs`)
     }
   }
+  if (health.extractedFacts !== undefined && health.extractedFacts > 0) {
+    lines.push(``)
+    lines.push(`**Extracted Facts:**`)
+    lines.push(`  - Count: ${health.extractedFacts}`)
+  }
   return lines.join('\n')
 }
 
@@ -342,7 +395,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       }
       const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
       const parsedTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : undefined;
-      const results = store.searchFTS(query, {
+      const rawResults = store.searchFTS(query, {
         limit,
         collection,
         projectHash: effectiveWorkspace,
@@ -350,6 +403,8 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         since,
         until,
       });
+      const results = attachTagsToResults(rawResults, store);
+      try { store.trackAccess(results.map(r => typeof r.id === 'string' ? parseInt(r.id, 10) : r.id)); } catch { /* non-critical */ }
       if (compact) {
         const cacheKey = resultCache.set(results, query);
         return {
@@ -410,7 +465,9 @@ export function createMcpServer(deps: ServerDeps): McpServer {
             embedding = result.embedding;
             store.setQueryEmbeddingCache(query, embedding);
           }
-          const results = await store.searchVecAsync(query, embedding, searchOpts);
+          const rawResults = await store.searchVecAsync(query, embedding, searchOpts);
+          const results = attachTagsToResults(rawResults, store);
+          try { store.trackAccess(results.map(r => typeof r.id === 'string' ? parseInt(r.id, 10) : r.id)); } catch { /* non-critical */ }
           if (compact) {
             const cacheKey = resultCache.set(results, query);
             return { content: [{ type: 'text', text: prependWarning(formatCompactResults(results, cacheKey)) }] };
@@ -424,7 +481,8 @@ export function createMcpServer(deps: ServerDeps): McpServer {
             ],
           };
         } catch (err) {
-          const fallbackResults = store.searchFTS(query, searchOpts);
+          const rawFallbackResults = store.searchFTS(query, searchOpts);
+          const fallbackResults = attachTagsToResults(rawFallbackResults, store);
           if (compact) {
             const cacheKey = resultCache.set(fallbackResults, query);
             return { content: [{ type: 'text', text: prependWarning(`⚠️  Vector search failed, falling back to FTS: ${err instanceof Error ? err.message : String(err)}\n\n${formatCompactResults(fallbackResults, cacheKey)}`) }] };
@@ -439,7 +497,8 @@ export function createMcpServer(deps: ServerDeps): McpServer {
           };
         }
       } else {
-        const fallbackResults = store.searchFTS(query, searchOpts);
+        const rawFallbackResults = store.searchFTS(query, searchOpts);
+        const fallbackResults = attachTagsToResults(rawFallbackResults, store);
         if (compact) {
           const cacheKey = resultCache.set(fallbackResults, query);
           return { content: [{ type: 'text', text: prependWarning(`⚠️  Embedder not available, falling back to FTS\n\n${formatCompactResults(fallbackResults, cacheKey)}`) }] };
@@ -482,11 +541,12 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       const effectiveWorkspace = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
       const parsedTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : undefined;
       const sessionId = crypto.createHash('sha256').update(query + Date.now().toString()).digest('hex').substring(0, 12);
-      const results = await hybridSearch(
+      const rawResults = await hybridSearch(
         store,
         { query, limit, collection, minScore, projectHash: effectiveWorkspace, tags: parsedTags, since, until, searchConfig: deps.searchConfig, db: deps.db, sessionId },
         providers
       );
+      const results = attachTagsToResults(rawResults, store);
       
       try {
         const recentQueries = store.getRecentQueries(sessionId);
@@ -710,6 +770,9 @@ export function createMcpServer(deps: ServerDeps): McpServer {
     },
     async ({ content, supersedes, tags, workspace }) => {
       if (checkReady()) return WARMUP_ERROR;
+      if (!content?.trim()) {
+        return { content: [{ type: 'text', text: 'Error: content must not be empty' }], isError: true };
+      }
       log('mcp', 'memory_write content_length=' + content.length);
       
       const wsResult = requireDaemonWorkspace(deps, workspace)
@@ -742,27 +805,119 @@ export function createMcpServer(deps: ServerDeps): McpServer {
           }
         }
         
+        const fileContent = fs.readFileSync(targetPath, 'utf-8');
+        const title = path.basename(targetPath, path.extname(targetPath));
+        const hash = crypto.createHash('sha256').update(fileContent).digest('hex');
+        effectiveStore.insertContent(hash, fileContent);
+        const stats = fs.statSync(targetPath);
+        const docId = effectiveStore.insertDocument({
+          collection: 'memory',
+          path: targetPath,
+          title,
+          hash,
+          createdAt: stats.birthtime.toISOString(),
+          modifiedAt: stats.mtime.toISOString(),
+          active: true,
+          projectHash: effectiveProjectHash,
+        });
+
         let tagInfo = '';
-        if (tags) {
-          const fileContent = fs.readFileSync(targetPath, 'utf-8');
-          const title = path.basename(targetPath, path.extname(targetPath));
-          const hash = crypto.createHash('sha256').update(fileContent).digest('hex');
-          effectiveStore.insertContent(hash, fileContent);
-          const stats = fs.statSync(targetPath);
-          const docId = effectiveStore.insertDocument({
-            collection: 'memory',
-            path: targetPath,
-            title,
-            hash,
-            createdAt: stats.birthtime.toISOString(),
-            modifiedAt: stats.mtime.toISOString(),
-            active: true,
-            projectHash: effectiveProjectHash,
-          });
-          const parsedTags = tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0);
-          if (parsedTags.length > 0) {
-            effectiveStore.insertTags(docId, parsedTags);
-            tagInfo = `\n📌 Tags: ${parsedTags.join(', ')}`;
+        const autoTags = categorize(content);
+        const userTags = tags ? tags.split(',').map(t => t.trim().toLowerCase()).filter(t => t.length > 0) : [];
+        const allTags = [...new Set([...userTags, ...autoTags])];
+        if (allTags.length > 0) {
+          effectiveStore.insertTags(docId, allTags);
+          tagInfo = `\n📌 Tags: ${allTags.join(', ')}`;
+        }
+
+        let consolidationInfo = '';
+        const freshConfig = loadCollectionConfig(deps.configPath);
+        const consolidationConfig = freshConfig?.consolidation;
+        if (consolidationConfig?.enabled && docId > 0) {
+          const queueId = effectiveStore.enqueueConsolidation(docId);
+          if (queueId > 0) {
+            consolidationInfo = `\n🔄 Consolidation: pending`;
+          }
+        }
+
+        let proactiveInfo = '';
+        const proactiveConfig: ProactiveConfig = { ...DEFAULT_PROACTIVE_CONFIG, ...freshConfig?.proactive };
+        if (proactiveConfig.enabled && providers.embedder) {
+          try {
+            const maxSuggestions = proactiveConfig.max_suggestions || 3;
+            let embedding: number[];
+            const cached = effectiveStore.getQueryEmbeddingCache(content.substring(0, 500));
+            if (cached) {
+              embedding = cached;
+            } else {
+              const result = await providers.embedder.embed(content.substring(0, 500));
+              embedding = result.embedding;
+            }
+            const relatedResults = await effectiveStore.searchVecAsync(content.substring(0, 100), embedding, {
+              limit: maxSuggestions,
+              collection: 'memory',
+              projectHash: effectiveProjectHash,
+            });
+            if (relatedResults.length > 0) {
+              const relatedList = relatedResults.map(r => `  - ${r.title} (${r.docid})`).join('\n');
+              proactiveInfo = `\n\n📎 **Related memories:**\n${relatedList}`;
+            }
+          } catch (err) {
+            log('mcp', 'Proactive surfacing failed: ' + (err instanceof Error ? err.message : String(err)));
+          }
+        }
+
+        if (consolidationConfig?.enabled && docId > 0) {
+          const llmProvider = createLLMProvider(consolidationConfig as ConsolidationConfig);
+          if (llmProvider) {
+            const capturedProjectHash = effectiveProjectHash;
+            extractEntitiesFromMemory(content, llmProvider).then(extractionResult => {
+              if (extractionResult.entities.length > 0 || extractionResult.relationships.length > 0) {
+                for (const entity of extractionResult.entities) {
+                  store.insertOrUpdateEntity({
+                    name: entity.name,
+                    type: entity.type as 'tool' | 'service' | 'person' | 'concept' | 'decision' | 'file' | 'library',
+                    description: entity.description,
+                    projectHash: capturedProjectHash,
+                    firstLearnedAt: new Date().toISOString(),
+                    lastConfirmedAt: new Date().toISOString(),
+                  });
+                }
+
+                for (const rel of extractionResult.relationships) {
+                  const sourceEntity = store.getEntityByName(rel.sourceName, undefined, capturedProjectHash);
+                  const targetEntity = store.getEntityByName(rel.targetName, undefined, capturedProjectHash);
+                  if (sourceEntity && targetEntity) {
+                    store.insertEdge({
+                      sourceId: sourceEntity.id,
+                      targetId: targetEntity.id,
+                      edgeType: rel.edgeType as 'uses' | 'depends_on' | 'decided_by' | 'related_to' | 'replaces' | 'configured_with',
+                      projectHash: capturedProjectHash,
+                    });
+                  }
+                }
+
+                log('mcp', 'Entity extraction complete: ' + extractionResult.entities.length + ' entities, ' + extractionResult.relationships.length + ' relationships');
+              }
+            }).catch(err => {
+              log('mcp', 'Entity extraction failed: ' + (err instanceof Error ? err.message : String(err)));
+            });
+          }
+        }
+
+        const categorizationConfig = parseCategorizationConfig(freshConfig?.categorization);
+        if (categorizationConfig.llm_enabled && docId > 0) {
+          const llmProviderForCategorization = createLLMProvider(consolidationConfig as ConsolidationConfig);
+          if (llmProviderForCategorization) {
+            const capturedDocId = docId;
+            categorizeMemory(content, llmProviderForCategorization, categorizationConfig).then(llmTags => {
+              if (llmTags.length > 0) {
+                store.insertTags(capturedDocId, llmTags);
+                log('mcp', 'LLM categorization complete: ' + llmTags.join(', '));
+              }
+            }).catch(err => {
+              log('mcp', 'LLM categorization failed: ' + (err instanceof Error ? err.message : String(err)));
+            });
           }
         }
         
@@ -770,7 +925,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
           content: [
             {
               type: 'text',
-              text: `✅ Written to ${targetPath} [${workspaceName}]${supersedeWarning}${tagInfo}`,
+              text: `✅ Written to ${targetPath} [${workspaceName}]${supersedeWarning}${tagInfo}${consolidationInfo}${proactiveInfo}`,
             },
           ],
         };
@@ -971,7 +1126,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         symbolGraphDbNeedsClose = true;
       }
       
-      console.error(`[codebase-debug] symbolGraphDb=${symbolGraphDbNeedsClose ? 'workspace-specific' : 'startup'} root=${effectiveRoot} hash=${effectiveProjectHash}`)
+      log('codebase-debug', `symbolGraphDb=${symbolGraphDbNeedsClose ? 'workspace-specific' : 'startup'} root=${effectiveRoot} hash=${effectiveProjectHash}`, 'error')
       ;(async () => {
         try {
           const result = await indexCodebase(
@@ -982,13 +1137,13 @@ export function createMcpServer(deps: ServerDeps): McpServer {
             providers.embedder,
             symbolGraphDb
           )
-          console.error(`[codebase] Indexing complete: ${result.filesScanned} scanned, ${result.filesIndexed} indexed, ${result.filesSkippedUnchanged} unchanged`)
+          log('codebase', `Indexing complete: ${result.filesScanned} scanned, ${result.filesIndexed} indexed, ${result.filesSkippedUnchanged} unchanged`)
           if (providers.embedder) {
             const embedded = await embedPendingCodebase(storeToUse, providers.embedder, 50, effectiveProjectHash)
-            console.error(`[codebase] Embedding complete: ${embedded} chunks embedded`)
+            log('codebase', `Embedding complete: ${embedded} chunks embedded`)
           }
         } catch (err) {
-          console.error(`[codebase] Indexing failed:`, err)
+          log('codebase', `Indexing failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
         } finally {
           if (symbolGraphDbNeedsClose && symbolGraphDb) { symbolGraphDb.close() }
           if (needsClose) storeToUse.close();
@@ -1745,10 +1900,106 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         return { content: [{ type: 'text', text: wsResult.error }], isError: true };
       }
       
+      const effectiveStore = wsResult.store;
+      
       try {
+        const config = loadCollectionConfig(deps.configPath);
+        
+        if (!config?.consolidation?.enabled) {
+          return {
+            content: [{ type: 'text', text: 'Consolidation is not enabled. Set consolidation.enabled=true in config.yml' }],
+          };
+        }
+        
+        const consolidationConfig = config.consolidation as ConsolidationConfig;
+        const provider = createLLMProvider(consolidationConfig);
+        
+        if (!provider) {
+          return {
+            content: [{ type: 'text', text: 'No API key configured. Set consolidation.apiKey in config.yml or CONSOLIDATION_API_KEY env var' }],
+          };
+        }
+        
+        const agent = new ConsolidationAgent(effectiveStore, {
+          llmProvider: provider,
+          maxMemoriesPerCycle: consolidationConfig.max_memories_per_cycle,
+          minMemoriesThreshold: consolidationConfig.min_memories_threshold,
+          confidenceThreshold: consolidationConfig.confidence_threshold,
+        });
+        
+        const results = await agent.runConsolidationCycle();
+        
+        if (results.length === 0) {
+          return {
+            content: [{ type: 'text', text: 'No memories to consolidate' }],
+          };
+        }
+        
         return {
-          content: [{ type: 'text', text: 'Consolidation is not configured. Set consolidation.enabled=true and configure an LLM provider in config.yml.' }],
+          content: [{ type: 'text', text: `Consolidation complete: ${results.length} consolidation(s) created` }],
         };
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        log('mcp', 'memory_consolidate failed: ' + errorMsg);
+        return {
+          content: [{ type: 'text', text: `Consolidation failed: ${errorMsg}` }],
+          isError: true,
+        };
+      } finally {
+        if (wsResult.needsClose) wsResult.store.close();
+      }
+    }
+  );
+
+  server.tool(
+    'memory_consolidation_status',
+    'Show consolidation queue status and recent activity',
+    {
+      workspace: z.string().optional().describe('Workspace path or hash. Required in daemon mode.'),
+    },
+    async ({ workspace }) => {
+      if (checkReady()) return WARMUP_ERROR;
+      log('mcp', 'memory_consolidation_status');
+      
+      const wsResult = requireDaemonWorkspace(deps, workspace);
+      if ('error' in wsResult) {
+        return { content: [{ type: 'text', text: wsResult.error }], isError: true };
+      }
+      
+      try {
+        const effectiveStore = wsResult.store;
+        const queueStats = effectiveStore.getQueueStats();
+        const recentLogs = effectiveStore.getRecentConsolidationLogs(10);
+        
+        const config = loadCollectionConfig(deps.configPath);
+        const consolidationEnabled = config?.consolidation?.enabled ?? false;
+        
+        let text = '## Consolidation Status\n\n';
+        text += `**Enabled:** ${consolidationEnabled ? 'Yes' : 'No'}\n`;
+        text += '\n### Queue\n';
+        text += `- Pending: ${queueStats.pending}\n`;
+        text += `- Processing: ${queueStats.processing}\n`;
+        text += `- Completed: ${queueStats.completed}\n`;
+        text += `- Failed: ${queueStats.failed}\n`;
+        
+        if (recentLogs.length > 0) {
+          text += '\n### Recent Activity\n';
+          for (const log of recentLogs) {
+            const targetInfo = log.target_doc_id ? ` → doc ${log.target_doc_id}` : '';
+            text += `- [${log.created_at}] doc ${log.document_id}: **${log.action}**${targetInfo}`;
+            if (log.reason) {
+              text += ` — ${log.reason}`;
+            }
+            if (log.tokens_used > 0) {
+              text += ` (${log.tokens_used} tokens)`;
+            }
+            text += '\n';
+          }
+        } else {
+          text += '\n_No recent consolidation activity._\n';
+        }
+        
+        return { content: [{ type: 'text', text }] };
       } finally {
         if (wsResult.needsClose) wsResult.store.close();
       }
@@ -1927,6 +2178,374 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       }
     }
   );
+
+  server.tool(
+    'memory_graph_query',
+    'Traverse the knowledge graph starting from an entity',
+    {
+      entity: z.string().describe('Entity name to start traversal from'),
+      maxDepth: z.number().optional().default(3).describe('Maximum traversal depth (1-10)'),
+      relationshipTypes: z.array(z.string()).optional().describe('Filter by relationship types'),
+      workspace: z.string().optional().describe('Workspace path or hash. Required in daemon mode.'),
+    },
+    async ({ entity, maxDepth, relationshipTypes, workspace }) => {
+      if (checkReady()) return WARMUP_ERROR;
+      log('mcp', 'memory_graph_query entity="' + entity + '" maxDepth=' + maxDepth);
+
+      const wsResult = requireDaemonWorkspace(deps, workspace);
+      if ('error' in wsResult) {
+        return { content: [{ type: 'text', text: wsResult.error }], isError: true };
+      }
+
+      const effectiveStore = wsResult.store;
+      const effectiveProjectHash = wsResult.projectHash;
+      const clampedDepth = Math.min(Math.max(maxDepth ?? 3, 1), 10);
+
+      try {
+        const db = effectiveStore.getDb();
+        const entityRow = db.prepare(`
+          SELECT id, name, type, description, first_learned_at, last_confirmed_at, contradicted_at
+          FROM memory_entities
+          WHERE name = ? AND project_hash = ?
+        `).get(entity, effectiveProjectHash) as {
+          id: number;
+          name: string;
+          type: string;
+          description: string | null;
+          first_learned_at: string;
+          last_confirmed_at: string;
+          contradicted_at: string | null;
+        } | undefined;
+
+        if (!entityRow) {
+          const similarRows = db.prepare(`
+            SELECT name, type FROM memory_entities
+            WHERE project_hash = ? AND name LIKE ?
+            LIMIT 5
+          `).all(effectiveProjectHash, '%' + entity + '%') as Array<{ name: string; type: string }>;
+
+          if (similarRows.length > 0) {
+            const suggestions = similarRows.map(r => `- ${r.name} (${r.type})`).join('\n');
+            return { content: [{ type: 'text', text: `Entity not found: "${entity}"\n\nDid you mean:\n${suggestions}` }] };
+          }
+          return { content: [{ type: 'text', text: `Entity not found: "${entity}"` }] };
+        }
+
+        const lines: string[] = [];
+        lines.push(`## ${entityRow.name} (${entityRow.type})`);
+        if (entityRow.description) {
+          lines.push(`**Description:** ${entityRow.description}`);
+        }
+        lines.push(`**First learned:** ${entityRow.first_learned_at}`);
+        lines.push(`**Last confirmed:** ${entityRow.last_confirmed_at}`);
+        if (entityRow.contradicted_at) {
+          lines.push(`**⚠️ Contradicted:** ${entityRow.contradicted_at}`);
+        }
+        lines.push('');
+
+        const visited = new Set<number>([entityRow.id]);
+        const queue: Array<{ id: number; depth: number }> = [{ id: entityRow.id, depth: 0 }];
+        const byDepth: Record<number, Array<{ name: string; type: string; edgeType: string; direction: string }>> = {};
+
+        let typeFilter = '';
+        if (relationshipTypes && relationshipTypes.length > 0) {
+          const placeholders = relationshipTypes.map(() => '?').join(',');
+          typeFilter = ` AND e.edge_type IN (${placeholders})`;
+        }
+
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          if (current.depth >= clampedDepth) continue;
+
+          const outgoingQuery = `
+            SELECT e.target_id, e.edge_type, me.name, me.type
+            FROM memory_edges e
+            JOIN memory_entities me ON e.target_id = me.id
+            WHERE e.source_id = ? AND e.project_hash = ?${typeFilter}
+          `;
+          const incomingQuery = `
+            SELECT e.source_id, e.edge_type, me.name, me.type
+            FROM memory_edges e
+            JOIN memory_entities me ON e.source_id = me.id
+            WHERE e.target_id = ? AND e.project_hash = ?${typeFilter}
+          `;
+
+          const outParams = relationshipTypes ? [current.id, effectiveProjectHash, ...relationshipTypes] : [current.id, effectiveProjectHash];
+          const inParams = relationshipTypes ? [current.id, effectiveProjectHash, ...relationshipTypes] : [current.id, effectiveProjectHash];
+
+          const outgoing = db.prepare(outgoingQuery).all(...outParams) as Array<{ target_id: number; edge_type: string; name: string; type: string }>;
+          const incoming = db.prepare(incomingQuery).all(...inParams) as Array<{ source_id: number; edge_type: string; name: string; type: string }>;
+
+          const nextDepth = current.depth + 1;
+          if (!byDepth[nextDepth]) byDepth[nextDepth] = [];
+
+          for (const row of outgoing) {
+            byDepth[nextDepth].push({ name: row.name, type: row.type, edgeType: row.edge_type, direction: '→' });
+            if (!visited.has(row.target_id)) {
+              visited.add(row.target_id);
+              queue.push({ id: row.target_id, depth: nextDepth });
+            }
+          }
+
+          for (const row of incoming) {
+            byDepth[nextDepth].push({ name: row.name, type: row.type, edgeType: row.edge_type, direction: '←' });
+            if (!visited.has(row.source_id)) {
+              visited.add(row.source_id);
+              queue.push({ id: row.source_id, depth: nextDepth });
+            }
+          }
+        }
+
+        for (const [depth, items] of Object.entries(byDepth)) {
+          if (items.length > 0) {
+            lines.push(`### Depth ${depth} (${items.length})`);
+            for (const item of items.slice(0, 20)) {
+              lines.push(`  ${item.direction} ${item.name} (${item.type}) [${item.edgeType}]`);
+            }
+            if (items.length > 20) {
+              lines.push(`  ... and ${items.length - 20} more`);
+            }
+            lines.push('');
+          }
+        }
+
+        if (Object.keys(byDepth).length === 0) {
+          lines.push('_No connected entities found._');
+        }
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('no such table')) {
+          return { content: [{ type: 'text', text: 'Knowledge graph not initialized. Entity extraction will populate it as memories are written.' }] };
+        }
+        throw err;
+      } finally {
+        if (wsResult.needsClose) wsResult.store.close();
+      }
+    }
+  );
+
+  server.tool(
+    'memory_related',
+    'Find memories related to a topic with entity context enrichment',
+    {
+      topic: z.string().describe('Topic to find related memories for'),
+      collection: z.string().optional().describe('Filter by collection'),
+      limit: z.number().optional().default(5).describe('Max results (1-10)'),
+      workspace: z.string().optional().describe('Workspace path or hash. Required in daemon mode.'),
+    },
+    async ({ topic, collection, limit, workspace }) => {
+      if (checkReady()) return WARMUP_ERROR;
+      log('mcp', 'memory_related topic="' + topic + '" limit=' + limit);
+      if (deps.daemon && !workspace) {
+        return { content: [{ type: 'text', text: `workspace parameter is required in daemon mode.\n\nAvailable workspaces:\n${formatAvailableWorkspaces(deps)}` }], isError: true };
+      }
+      const effectiveProjectHash = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
+      const clampedLimit = Math.min(Math.max(limit ?? 5, 1), 10);
+
+      const searchResults = await hybridSearch(
+        store,
+        {
+          query: topic,
+          limit: clampedLimit,
+          collection,
+          projectHash: effectiveProjectHash,
+          searchConfig: deps.searchConfig,
+          db: deps.db,
+          internal: true,
+        },
+        providers
+      ).catch(() => [] as import('./types.js').SearchResult[]);
+
+      if (searchResults.length === 0) {
+        return { content: [{ type: 'text', text: 'No related memories found for: ' + topic }] };
+      }
+
+      const lines: string[] = [];
+      lines.push(`## Related Memories: "${topic}"`);
+      lines.push('');
+
+      for (let i = 0; i < searchResults.length; i++) {
+        const r = searchResults[i];
+        lines.push(`### ${i + 1}. ${r.title} (${r.docid})`);
+        lines.push(`**Score:** ${r.score.toFixed(3)} | **Path:** ${r.path}`);
+
+        try {
+          const docEntities = store.getDb().prepare(`
+            SELECT DISTINCT me.name, me.type
+            FROM memory_edges edge
+            JOIN memory_entities me ON (edge.source_id = me.id OR edge.target_id = me.id)
+            WHERE edge.source_id = ? OR edge.target_id = ?
+            LIMIT 5
+          `).all(parseInt(r.id), parseInt(r.id)) as Array<{ name: string; type: string }>;
+
+          if (docEntities.length > 0) {
+            const entityList = docEntities.map(e => `${e.name} (${e.type})`).join(', ');
+            lines.push(`**Entities:** ${entityList}`);
+          }
+        } catch {
+        }
+
+        const snippet = r.snippet.length > 200 ? r.snippet.substring(0, 200) + '...' : r.snippet;
+        lines.push(`\n${snippet}\n`);
+      }
+
+      return { content: [{ type: 'text', text: lines.join('\n') }] };
+    }
+  );
+
+  server.tool(
+    'memory_timeline',
+    'Show chronological timeline of memories for a topic',
+    {
+      topic: z.string().describe('Topic to show timeline for'),
+      startDate: z.string().optional().describe('Filter start date (ISO format)'),
+      endDate: z.string().optional().describe('Filter end date (ISO format)'),
+      workspace: z.string().optional().describe('Workspace path or hash. Required in daemon mode.'),
+    },
+    async ({ topic, startDate, endDate, workspace }) => {
+      if (checkReady()) return WARMUP_ERROR;
+      log('mcp', 'memory_timeline topic="' + topic + '" startDate=' + (startDate || '') + ' endDate=' + (endDate || ''));
+      if (deps.daemon && !workspace) {
+        return { content: [{ type: 'text', text: `workspace parameter is required in daemon mode.\n\nAvailable workspaces:\n${formatAvailableWorkspaces(deps)}` }], isError: true };
+      }
+      const effectiveProjectHash = workspace === 'all' ? 'all' : (workspace || currentProjectHash);
+
+      try {
+        const db = store.getDb();
+
+        let entityIds: number[] = [];
+        try {
+          const entityRows = db.prepare(`
+            SELECT id FROM memory_entities
+            WHERE project_hash = ? AND (name LIKE ? OR description LIKE ?)
+          `).all(effectiveProjectHash, '%' + topic + '%', '%' + topic + '%') as Array<{ id: number }>;
+          entityIds = entityRows.map(r => r.id);
+        } catch {
+        }
+
+        let dateFilter = '';
+        const params: (string | number)[] = [effectiveProjectHash];
+        if (startDate) {
+          dateFilter += ' AND d.modified_at >= ?';
+          params.push(startDate);
+        }
+        if (endDate) {
+          dateFilter += ' AND d.modified_at <= ?';
+          params.push(endDate);
+        }
+
+        let query: string;
+        if (entityIds.length > 0) {
+          const placeholders = entityIds.map(() => '?').join(',');
+          query = `
+            SELECT DISTINCT d.id, d.title, d.path, d.modified_at, d.superseded_by,
+              CASE
+                WHEN d.superseded_by IS NOT NULL THEN 'superseded'
+                ELSE 'active'
+              END as status
+            FROM documents d
+            LEFT JOIN memory_edges me ON (me.source_id = d.id OR me.target_id = d.id)
+            WHERE d.project_hash = ? AND d.active = 1
+              AND (me.source_id IN (${placeholders}) OR me.target_id IN (${placeholders}) OR d.title LIKE ? OR d.path LIKE ?)
+              ${dateFilter}
+            ORDER BY d.modified_at DESC
+            LIMIT 20
+          `;
+          params.push(...entityIds, ...entityIds, '%' + topic + '%', '%' + topic + '%');
+        } else {
+          query = `
+            SELECT d.id, d.title, d.path, d.modified_at, d.superseded_by,
+              CASE
+                WHEN d.superseded_by IS NOT NULL THEN 'superseded'
+                ELSE 'active'
+              END as status
+            FROM documents d
+            WHERE d.project_hash = ? AND d.active = 1
+              AND (d.title LIKE ? OR d.path LIKE ?)
+              ${dateFilter}
+            ORDER BY d.modified_at DESC
+            LIMIT 20
+          `;
+          params.push('%' + topic + '%', '%' + topic + '%');
+        }
+
+        const rows = db.prepare(query).all(...params) as Array<{
+          id: number;
+          title: string;
+          path: string;
+          modified_at: string;
+          superseded_by: number | null;
+          status: string;
+        }>;
+
+        if (rows.length === 0) {
+          return { content: [{ type: 'text', text: `No timeline entries found for: "${topic}"` }] };
+        }
+
+        const lines: string[] = [];
+        lines.push(`## Timeline: "${topic}"`);
+        if (startDate || endDate) {
+          lines.push(`**Date range:** ${startDate || 'beginning'} to ${endDate || 'now'}`);
+        }
+        lines.push('');
+
+        for (const row of rows) {
+          const date = row.modified_at.split('T')[0];
+          const statusIcon = row.status === 'superseded' ? '~~' : '';
+          const supersededNote = row.superseded_by ? ` (superseded by #${row.superseded_by})` : '';
+          lines.push(`- **${date}** ${statusIcon}${row.title}${statusIcon}${supersededNote}`);
+          lines.push(`  ${row.path}`);
+        }
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('no such table')) {
+          const db = store.getDb();
+          let dateFilter = '';
+          const params: string[] = [effectiveProjectHash];
+          if (startDate) {
+            dateFilter += ' AND modified_at >= ?';
+            params.push(startDate);
+          }
+          if (endDate) {
+            dateFilter += ' AND modified_at <= ?';
+            params.push(endDate);
+          }
+
+          const rows = db.prepare(`
+            SELECT id, title, path, modified_at, superseded_by
+            FROM documents
+            WHERE project_hash = ? AND active = 1 AND (title LIKE ? OR path LIKE ?)
+            ${dateFilter}
+            ORDER BY modified_at DESC
+            LIMIT 20
+          `).all(...params, '%' + topic + '%', '%' + topic + '%') as Array<{
+            id: number;
+            title: string;
+            path: string;
+            modified_at: string;
+            superseded_by: number | null;
+          }>;
+
+          if (rows.length === 0) {
+            return { content: [{ type: 'text', text: `No timeline entries found for: "${topic}"` }] };
+          }
+
+          const lines: string[] = [];
+          lines.push(`## Timeline: "${topic}"`);
+          lines.push('');
+          for (const row of rows) {
+            const date = row.modified_at.split('T')[0];
+            lines.push(`- **${date}** ${row.title}`);
+            lines.push(`  ${row.path}`);
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+        throw err;
+      }
+    }
+  );
   
   return server;
 }
@@ -1938,13 +2557,13 @@ export function createRejectionThreshold(limit: number, windowMs: number): { han
   let onExit: (() => void) | null = null;
   const handler = (err: unknown) => {
     const error = err instanceof Error ? err : new Error(String(err));
-    console.error('[memory] Unhandled rejection:', error.message);
-    if (error.stack) console.error(error.stack);
+    log('server', `Unhandled rejection: ${error.message}`, 'error');
+    if (error.stack) log('server', error.stack, 'error');
     log('server', `Unhandled rejection: ${error.message}`);
     count++;
     setTimeout(() => { count = Math.max(0, count - 1); }, windowMs).unref();
     if (count >= limit) {
-      console.error(`[memory] Rejection threshold exceeded (${count} in ${windowMs}ms) — exiting`);
+      log('server', `Rejection threshold exceeded (${count} in ${windowMs}ms) — exiting`, 'error');
       log('server', `Rejection threshold exceeded (${count} in ${windowMs}ms) — exiting`);
       if (onExit) onExit(); else process.exit(1);
     }
@@ -1965,8 +2584,8 @@ export async function startServer(options: ServerOptions): Promise<void> {
       log('server', `Ignoring EPIPE: ${err.message}`);
       return;
     }
-    try { console.error('[memory] Uncaught exception:', err.message); } catch {}
-    try { if (err.stack) console.error(err.stack); } catch {}
+    try { log('server', `Uncaught exception: ${err.message}`, 'error'); } catch {}
+    try { if (err.stack) log('server', err.stack, 'error'); } catch {}
     log('server', `Uncaught exception: ${err.message}\n${err.stack || ''}`);
     if (cleanupRef) cleanupRef(); else process.exit(1);
   });
@@ -1992,11 +2611,11 @@ export async function startServer(options: ServerOptions): Promise<void> {
     if (cwdMatch) {
       resolvedWorkspaceRoot = cwdMatch;
       log('server', 'Daemon mode: cwd matches configured workspace');
-      console.error(`[memory] Daemon mode: workspace from cwd = ${resolvedWorkspaceRoot}`);
+      log('server', `Daemon mode: workspace from cwd = ${resolvedWorkspaceRoot}`);
     } else {
       resolvedWorkspaceRoot = configuredWorkspaces[0];
       log('server', 'Daemon mode: cwd does not match any workspace, using first configured');
-      console.error(`[memory] Daemon mode: primary workspace = ${resolvedWorkspaceRoot}`);
+      log('server', `Daemon mode: primary workspace = ${resolvedWorkspaceRoot}`);
     }
   } else {
     resolvedWorkspaceRoot = root || process.cwd();
@@ -2008,9 +2627,9 @@ export async function startServer(options: ServerOptions): Promise<void> {
   const effectiveDbPath = isDefaultDb ? resolveWorkspaceDbPath(path.dirname(dbPath), resolvedWorkspaceRoot) : dbPath;
   setProjectLabelDataDir(path.dirname(effectiveDbPath));
   log('server', 'Workspace path=' + resolvedWorkspaceRoot + ' hash=' + currentProjectHash);
-  console.error(`[memory] Workspace: ${resolvedWorkspaceRoot} (${currentProjectHash})`);
+  log('server', `Workspace: ${resolvedWorkspaceRoot} (${currentProjectHash})`);
   log('server', 'Database path=' + effectiveDbPath);
-  console.error(`[memory] Database: ${effectiveDbPath}`);
+  log('server', `Database: ${effectiveDbPath}`);
   log('server', 'Config path=' + finalConfigPath);
   const store = createStore(effectiveDbPath);
   const symbolGraphDb = store.getDb();
@@ -2018,7 +2637,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
   const validateInterval = (value: number | undefined, name: string, defaultVal: number): number => {
     if (value === undefined) return defaultVal;
     if (value <= 0 || value > 3600) {
-      console.error(`[memory] Warning: intervals.${name}=${value} invalid (must be 1-3600), using default ${defaultVal}`);
+      log('server', `Warning: intervals.${name}=${value} invalid (must be 1-3600), using default ${defaultVal}`, 'warn');
       return defaultVal;
     }
     return value;
@@ -2036,23 +2655,23 @@ export async function startServer(options: ServerOptions): Promise<void> {
       vectorStore = createVectorStore(config.vector);
       vectorStore.health().then((health) => {
         log('server', 'vector provider=' + health.provider + ' ok=' + health.ok + ' vectors=' + health.vectorCount);
-        console.error(`[memory] Vector store: ${health.provider} (ok=${health.ok}, vectors=${health.vectorCount})`);
+        log('server', `Vector store: ${health.provider} (ok=${health.ok}, vectors=${health.vectorCount})`);
         if (health.dimensions && configuredDimensions && health.dimensions !== configuredDimensions) {
-          console.error(`[memory] FATAL: Vector dimension mismatch! Configured=${configuredDimensions}, Qdrant collection=${health.dimensions}`);
-          console.error(`[memory] Either update config.yml vector.dimensions or recreate the Qdrant collection.`);
-          if (cleanupRef) cleanupRef(); else process.exit(1);
+          log('server', 'vector dimension mismatch config=' + configuredDimensions + ' qdrant=' + health.dimensions);
+          log('server', `Vector dimension mismatch: config=${configuredDimensions}, qdrant=${health.dimensions}`, 'warn');
+          log('server', 'Will validate against embedder dimensions after provider loads.', 'warn');
         }
       }).catch((err) => {
         log('server', 'vector health check failed error=' + (err instanceof Error ? err.message : String(err)));
-        console.error(`[memory] Vector store health check failed:`, err);
+        log('server', `Vector store health check failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       });
     } catch (err) {
       log('server', 'vector store creation failed error=' + (err instanceof Error ? err.message : String(err)));
-      console.error(`[memory] Vector store creation failed:`, err);
+      log('server', `Vector store creation failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
   } else {
     log('server', 'vector provider=sqlite-vec (default)');
-    console.error(`[memory] Vector store: sqlite-vec (default)`);
+    log('server', 'Vector store: sqlite-vec (default)');
   }
   
   if (vectorStore) {
@@ -2118,7 +2737,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
             const nameA = path.basename(wsPaths[i])
             const nameB = path.basename(wsPaths[j])
             log('server', `WARNING: Overlapping workspaces detected: ${nameB} is inside ${nameA} — consider removing one`)
-            console.warn(`[config] Overlapping workspaces: ${nameB} is inside ${nameA} — consider removing one`)
+            log('config', `Overlapping workspaces: ${nameB} is inside ${nameA} — consider removing one`, 'warn')
           }
         }
       }
@@ -2144,7 +2763,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
       dataDir: path.dirname(effectiveDbPath),
       onUpdate: (filePath) => {
         if (!daemon) {
-          console.error(`[watcher] File changed: ${filePath}`);
+          log('watcher', `File changed: ${filePath}`);
         }
       },
       codebaseConfig: resolvedCodebaseConfig,
@@ -2156,12 +2775,17 @@ export async function startServer(options: ServerOptions): Promise<void> {
   const sseSessions = new Map<string, { transport: SSEServerTransport; server: McpServer }>();
   const streamableSessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
   let httpServer: http.Server | null = null;
+  let consolidationWorker: ConsolidationWorker | null = null;
   
   const cleanup = async () => {
     log('server', 'Shutting down');
     
     if (httpServer) {
       httpServer.close();
+    }
+    
+    if (consolidationWorker) {
+      await consolidationWorker.stop();
     }
     
     await new Promise(resolve => setTimeout(resolve, 5000));
@@ -2327,6 +2951,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
             return;
           }
           const results = store.searchFTS(query, { limit: limit || 10, projectHash: currentProjectHash });
+          try { store.trackAccess(results.map((r: { id: string | number }) => typeof r.id === 'string' ? parseInt(r.id, 10) : r.id)); } catch { /* non-critical */ }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ results }));
         } catch (err) {
@@ -2533,21 +3158,21 @@ export async function startServer(options: ServerOptions): Promise<void> {
     
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(`[memory] nano-brain already running on port ${httpPort}`);
+        log('server', `nano-brain already running on port ${httpPort}`, 'error');
         process.exit(0);
       }
       throw err;
     });
     
     httpServer.listen(httpPort, httpHost, () => {
-      console.error(`MCP server listening on http://${httpHost}:${httpPort}`);
-      console.error(`  SSE endpoint: GET /sse, POST /messages?sessionId=<id>`);
-      console.error(`  Streamable HTTP endpoint: /mcp`);
+      log('server', `MCP server listening on http://${httpHost}:${httpPort}`);
+      log('server', `SSE endpoint: GET /sse, POST /messages?sessionId=<id>`);
+      log('server', `Streamable HTTP endpoint: /mcp`);
     });
   } else {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error('MCP server started on stdio');
+    log('server', 'MCP server started on stdio');
   }
   
   Promise.all([
@@ -2557,15 +3182,25 @@ export async function startServer(options: ServerOptions): Promise<void> {
         store.modelStatus.embedding = loadedEmbedder ? loadedEmbedder.getModel() : 'missing';
         if (loadedEmbedder) {
           store.ensureVecTable(loadedEmbedder.getDimensions());
+          if (vectorStore) {
+            vectorStore.health().then((health) => {
+              if (health.ok && health.dimensions && health.dimensions !== loadedEmbedder.getDimensions()) {
+                log('server', `DIMENSION MISMATCH: qdrant=${health.dimensions}, embedder=${loadedEmbedder.getDimensions()}`, 'error');
+                log('server', 'Vector search DISABLED. Run: npx nano-brain recreate-vectors', 'error');
+                log('server', 'dimension mismatch qdrant=' + health.dimensions + ' embedder=' + loadedEmbedder.getDimensions() + ' — disabling vector search');
+                store.setVectorStore(null);
+              }
+            }).catch(() => {});
+          }
         }
         log('server', 'Embedding provider initialized model=' + store.modelStatus.embedding);
-        console.error(`[memory] Embedding model: ${store.modelStatus.embedding}`);
+        log('server', `Embedding model: ${store.modelStatus.embedding}`);
         startFileWatcher();
       })
       .catch((err) => {
         store.modelStatus.embedding = 'failed';
         log('server', 'Embedding provider failed error=' + (err instanceof Error ? err.message : String(err)));
-        console.error('[memory] Embedding model failed:', err);
+        log('server', `Embedding model failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
         startFileWatcher();
       }),
     createReranker({
@@ -2577,17 +3212,39 @@ export async function startServer(options: ServerOptions): Promise<void> {
         providers.reranker = loadedReranker;
         store.modelStatus.reranker = loadedReranker ? (config?.reranker?.model || 'rerank-2.5-lite') : 'disabled';
         log('server', 'Reranker initialized model=' + store.modelStatus.reranker);
-        console.error(`[memory] Reranker model: ${store.modelStatus.reranker}`);
+        log('server', `Reranker model: ${store.modelStatus.reranker}`);
       })
       .catch((err) => {
         store.modelStatus.reranker = 'failed';
         log('server', 'Reranker failed error=' + (err instanceof Error ? err.message : String(err)));
-        console.error('[memory] Reranker model failed:', err);
+        log('server', `Reranker model failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }),
   ]).then(() => {
     readyState.value = true;
     log('server', 'Server ready (Phase 2 complete)');
-    console.error('[memory] Server ready');
+    log('server', 'Server ready');
+
+    if (config?.consolidation?.enabled) {
+      const consolidationConfig = config.consolidation as import('./types.js').ConsolidationConfig;
+      const llmProvider = createLLMProvider(consolidationConfig);
+      if (llmProvider) {
+        consolidationWorker = new ConsolidationWorker({
+          store,
+          llmProvider,
+          pollingIntervalMs: consolidationConfig.interval_ms ?? 5000,
+          maxCandidates: consolidationConfig.max_memories_per_cycle ?? 5,
+        });
+        consolidationWorker.start();
+        log('server', 'Consolidation worker started');
+        
+        providers.expander = createLLMQueryExpander(llmProvider);
+        store.modelStatus.expander = 'llm:' + (llmProvider.model ?? 'unknown');
+        log('server', 'Query expander enabled with LLM');
+      } else {
+        log('server', 'Consolidation enabled but no LLM provider configured');
+        log('server', 'Consolidation enabled but no LLM provider configured', 'warn');
+      }
+    }
   });
 
   // Ollama reconnect — retry if fell back to local GGUF at startup
@@ -2626,7 +3283,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
             store.ensureVecTable(newProvider.getDimensions());
             if (oldProvider && 'dispose' in oldProvider) (oldProvider as { dispose(): void }).dispose();
             log('server', 'Reconnected to Ollama url=' + ollamaUrl + ' model=' + ollamaModel);
-            console.error(`[memory] Reconnected to Ollama at ${ollamaUrl} — switched from local GGUF`);
+            log('server', `Reconnected to Ollama at ${ollamaUrl} — switched from local GGUF`);
             startedWithLocalGGUF = false;
             clearInterval(reconnectTimer);
           }

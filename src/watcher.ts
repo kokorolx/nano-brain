@@ -1,16 +1,19 @@
 import { watch, type FSWatcher } from 'chokidar';
-import type { Store, Collection, StorageConfig, CodebaseConfig } from './types.js'
+import type { Store, Collection, StorageConfig, CodebaseConfig, PruningConfig } from './types.js'
 import { scanCollectionFiles } from './collections.js';
 import { indexDocument, computeHash, extractProjectHashFromPath, openWorkspaceStore, resolveWorkspaceDbPath } from './store.js';
 import { harvestSessions } from './harvester.js';
 import { checkDiskSpace, evictExpiredSessions, evictBySize } from './storage.js';
 import { indexCodebase, mergeExcludePatterns, resolveExtensions, embedPendingCodebase } from './codebase.js'
+import { runPruningCycle, hardDeletePrunedEntities } from './pruning.js';
 import { log } from './logger.js';
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+
+const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
 
 export interface WatcherOptions {
   store: Store
@@ -42,6 +45,8 @@ export interface WatcherOptions {
   workspaceProfile?: import('./workspace-profile.js').WorkspaceProfile
   sequenceAnalyzer?: import('./sequence-analyzer.js').SequenceAnalyzer
   proactiveConfig?: import('./types.js').ProactiveConfig
+  preferencesConfig?: import('./types.js').PreferenceConfig
+  pruningConfig?: PruningConfig
 }
 
 export interface Watcher {
@@ -111,6 +116,8 @@ export function startWatcher(options: WatcherOptions): Watcher {
   let consolidationTimeout: NodeJS.Timeout | null = null;
   let importanceTimeout: NodeJS.Timeout | null = null;
   let sequenceTimeout: NodeJS.Timeout | null = null;
+  let pruningSoftDeleteTimeout: NodeJS.Timeout | null = null;
+  let pruningHardDeleteTimeout: NodeJS.Timeout | null = null;
 
   const handleFileChange = (filePath: string) => {
     if (stopped) return
@@ -155,7 +162,8 @@ export function startWatcher(options: WatcherOptions): Watcher {
         try {
           const files = await scanCollectionFiles(collection)
           const activePaths: string[] = []
-          for (const filePath of files) {
+          for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
+            const filePath = files[fileIdx];
             if (!fs.existsSync(filePath)) continue
             
             const content = fs.readFileSync(filePath, 'utf-8')
@@ -171,14 +179,19 @@ export function startWatcher(options: WatcherOptions): Watcher {
             }
             
             activePaths.push(filePath)
+            
+            if (fileIdx % 20 === 0) await yieldToEventLoop();
           }
           
+          await yieldToEventLoop();
           store.bulkDeactivateExcept(collection.name, activePaths)
+          await yieldToEventLoop();
         } catch (err) {
           log('watcher', `Collection scan failed for ${collection.name}: ${err}`)
         }
       }
       
+      await yieldToEventLoop();
       if (codebaseConfig?.enabled) {
         try {
           await indexCodebase(store, workspaceRoot, codebaseConfig, projectHash, embedder, db)
@@ -237,7 +250,8 @@ export function startWatcher(options: WatcherOptions): Watcher {
       
       const files = await scanCollectionFiles(collection);
       
-      for (const filePath of files) {
+      for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
+        const filePath = files[fileIdx];
         if (!fs.existsSync(filePath)) continue;
         
         const existingDoc = store.findDocument(filePath);
@@ -251,12 +265,14 @@ export function startWatcher(options: WatcherOptions): Watcher {
           dirty = true;
           pendingPaths.add(filePath);
         }
+        
+        if (fileIdx % 20 === 0) await yieldToEventLoop();
       }
     }
     
     if (mismatches > 0) {
       log('watcher', 'Integrity check found ' + mismatches + ' mismatches')
-      console.log(`Integrity check: ${mismatches} file(s) need re-indexing`);
+      log('watcher', `Integrity check: ${mismatches} file(s) need re-indexing`);
     }
   };
 
@@ -298,7 +314,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
       },
     })
     watcher.on('error', (err: unknown) => {
-      console.error(`[watcher] Error: ${err instanceof Error ? err.message : String(err)}`)
+      log('watcher', `Error: ${err instanceof Error ? err.message : String(err)}`, 'error')
     })
     watcher.on('add', (filePath) => {
       if (filePath.endsWith('.md') || isCodebaseFile(filePath)) {
@@ -329,7 +345,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
       if (storageConfig) {
         const diskCheck = checkDiskSpace(outputDir, storageConfig.minFreeDisk);
         if (!diskCheck.ok) {
-          console.warn(`[storage] Disk space critically low (<${Math.round(storageConfig.minFreeDisk / 1024 / 1024)}MB free), skipping writes`);
+          log('storage', `Disk space critically low (<${Math.round(storageConfig.minFreeDisk / 1024 / 1024)}MB free), skipping writes`, 'warn');
           return;
         }
       }
@@ -349,13 +365,13 @@ export function startWatcher(options: WatcherOptions): Watcher {
           const expiredCount = evictExpiredSessions(outputDir, storageConfig.retention, store);
           if (expiredCount > 0) {
             log('watcher', 'Storage eviction: ' + expiredCount + ' expired session(s)')
-            console.log(`[storage] Evicted ${expiredCount} expired session(s)`);
+            log('storage', `Evicted ${expiredCount} expired session(s)`);
           }
           
           const sizeEvictedCount = evictBySize(outputDir, dbPath, storageConfig.maxSize, store);
           if (sizeEvictedCount > 0) {
             log('watcher', 'Storage eviction: ' + sizeEvictedCount + ' session(s) due to size limit')
-            console.log(`[storage] Evicted ${sizeEvictedCount} session(s) due to size limit`);
+            log('storage', `Evicted ${sizeEvictedCount} session(s) due to size limit`);
           }
         }
         
@@ -364,7 +380,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
           const orphansDeleted = store.cleanOrphanedEmbeddings();
           if (orphansDeleted > 0) {
             log('watcher', 'Orphan cleanup: ' + orphansDeleted + ' orphaned embedding(s)')
-            console.log(`[storage] Cleaned ${orphansDeleted} orphaned embedding(s)`);
+            log('storage', `Cleaned ${orphansDeleted} orphaned embedding(s)`);
           }
         }
         
@@ -374,10 +390,10 @@ export function startWatcher(options: WatcherOptions): Watcher {
             log('watcher', 'Telemetry purge: ' + purged + ' old record(s)');
           }
         } catch (err) {
-          console.warn('[watcher] Telemetry purge failed:', err);
+          log('watcher', `Telemetry purge failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
         }
       } catch (err) {
-        console.warn('Session harvest failed:', err);
+        log('watcher', `Session harvest failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     }, sessionPollMs);
 
@@ -401,7 +417,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
             let count = await embedPendingCodebase(store, embedder, 50, projectHash);
             if (count > 0) {
               log('watcher', 'Embedding cycle: ' + count + ' document(s) embedded')
-              console.log(`[embed] Embedded ${count} document(s)`);
+              log('embed', `Embedded ${count} document(s)`);
             }
 
             if (allWorkspaces && dataDir) {
@@ -421,7 +437,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
                     if (wsCount > 0) {
                       count += wsCount;
                       log('watcher', `Embedded ${wsCount} doc(s) for workspace: ${path.basename(wsPath)}`);
-                      console.log(`[embed] Embedded ${wsCount} doc(s) for ${path.basename(wsPath)}`);
+                      log('embed', `Embedded ${wsCount} doc(s) for ${path.basename(wsPath)}`);
                     }
                   } finally {
                     wsStore.close();
@@ -446,15 +462,15 @@ export function startWatcher(options: WatcherOptions): Watcher {
             consecutiveFailures++;
             // Detect SQLITE_CORRUPT and trigger recovery instead of endless retry
             if (err && typeof err === 'object' && 'code' in err && (err as any).code === 'SQLITE_CORRUPT') {
-              console.error('[embed] SQLITE_CORRUPT detected — database is corrupted. Restart the daemon to trigger recovery.');
+              log('embed', 'SQLITE_CORRUPT detected — database is corrupted. Restart the daemon to trigger recovery.', 'error');
               log('watcher', `SQLITE_CORRUPT in embedding cycle: ${err}. Daemon restart needed for recovery.`);
               // Stop retrying — the DB is corrupt, retrying will just spam errors
               return;
             }
             if (consecutiveFailures >= 5) {
-              console.warn(`[embed] WARNING: ${consecutiveFailures} consecutive embedding failures. Check embedding provider configuration. Last error:`, err);
+              log('embed', `WARNING: ${consecutiveFailures} consecutive embedding failures. Check embedding provider configuration. Last error: ${err instanceof Error ? err.message : String(err)}`, 'warn');
             } else {
-              console.warn('[embed] Embedding cycle failed:', err);
+              log('embed', `Embedding cycle failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
             }
           } finally {
             isEmbedding = false;
@@ -495,7 +511,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
                 const dropPercent = (prevVersion.expand_rate - latestVersion.expand_rate) / prevVersion.expand_rate;
                 if (dropPercent > 0.3) {
                   log('watcher', 'Expand rate dropped ' + Math.round(dropPercent * 100) + '%, rolling back to version ' + prevVersion.version_id);
-                  console.warn('[learning] Automatic rollback triggered: expand rate dropped ' + Math.round(dropPercent * 100) + '%');
+                  log('learning', 'Automatic rollback triggered: expand rate dropped ' + Math.round(dropPercent * 100) + '%', 'warn');
                 }
               }
             }
@@ -508,10 +524,19 @@ export function startWatcher(options: WatcherOptions): Watcher {
                 options.workspaceProfile.updateFromTelemetry(projectHash);
               }
             } catch (profileErr) {
-              console.warn('[watcher] Profile population failed:', profileErr);
+              log('watcher', `Profile population failed: ${profileErr instanceof Error ? profileErr.message : String(profileErr)}`, 'warn');
+            }
+
+            if (options.preferencesConfig?.enabled) {
+              try {
+                const { updatePreferenceWeights } = await import('./preference-model.js');
+                updatePreferenceWeights(store, projectHash, options.preferencesConfig);
+              } catch (prefErr) {
+                log('watcher', `Preference update failed: ${prefErr instanceof Error ? prefErr.message : String(prefErr)}`, 'warn');
+              }
             }
           } catch (err) {
-            console.warn('[watcher] Learning cycle failed:', err);
+            log('watcher', `Learning cycle failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
           } finally {
             scheduleLearningCycle();
           }
@@ -533,7 +558,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
               log('watcher', 'Consolidation: ' + results.length + ' consolidation(s) created');
             }
           } catch (err) {
-            console.warn('[watcher] Consolidation cycle failed:', err);
+            log('watcher', `Consolidation cycle failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
           } finally {
             scheduleConsolidation();
           }
@@ -555,7 +580,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
               log('watcher', 'Importance: ' + updated + ' score(s) updated');
             }
           } catch (err) {
-            console.warn('[watcher] Importance update failed:', err);
+            log('watcher', `Importance update failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
           } finally {
             scheduleImportanceUpdate();
           }
@@ -574,7 +599,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
             await options.sequenceAnalyzer!.runAnalysisCycle(projectHash);
             log('watcher', 'Sequence analysis cycle complete');
           } catch (err) {
-            console.warn('[watcher] Sequence analysis failed:', err);
+            log('watcher', `Sequence analysis failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
           } finally {
             scheduleSequenceAnalysis();
           }
@@ -582,12 +607,55 @@ export function startWatcher(options: WatcherOptions): Watcher {
       };
       scheduleSequenceAnalysis();
     }
+
+    const pruningConfig = options.pruningConfig;
+    if (pruningConfig?.enabled) {
+      const softDeleteInterval = pruningConfig.interval_ms;
+      const hardDeleteInterval = 7 * 24 * 60 * 60 * 1000;
+
+      const scheduleSoftDeleteCycle = () => {
+        if (stopped) return;
+        pruningSoftDeleteTimeout = setTimeout(() => {
+          if (stopped) return;
+          try {
+            const result = runPruningCycle(store, pruningConfig, projectHash);
+            const total = result.contradictedPruned + result.orphansPruned;
+            if (total > 0) {
+              log('watcher', `Pruning soft-delete: ${result.contradictedPruned} contradicted, ${result.orphansPruned} orphans`);
+            }
+          } catch (err) {
+            log('watcher', `Pruning soft-delete failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+          } finally {
+            scheduleSoftDeleteCycle();
+          }
+        }, softDeleteInterval);
+      };
+      scheduleSoftDeleteCycle();
+
+      const scheduleHardDeleteCycle = () => {
+        if (stopped) return;
+        pruningHardDeleteTimeout = setTimeout(() => {
+          if (stopped) return;
+          try {
+            const deleted = hardDeletePrunedEntities(store, pruningConfig, projectHash);
+            if (deleted > 0) {
+              log('watcher', `Pruning hard-delete: ${deleted} entities permanently removed`);
+            }
+          } catch (err) {
+            log('watcher', `Pruning hard-delete failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+          } finally {
+            scheduleHardDeleteCycle();
+          }
+        }, hardDeleteInterval);
+      };
+      scheduleHardDeleteCycle();
+    }
   };
 
   setupWatcher();
   setupPolling();
   startupIntegrityCheck().catch(err => {
-    console.warn('Startup integrity check failed:', err);
+    log('watcher', `Startup integrity check failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
   });
 
   if (embedder) {
@@ -596,10 +664,10 @@ export function startWatcher(options: WatcherOptions): Watcher {
       try {
         const count = await embedPendingCodebase(store, embedder, 50, projectHash);
         if (count > 0) {
-          console.log(`[embed] Initial embedding: ${count} document(s)`);
+          log('embed', `Initial embedding: ${count} document(s)`);
         }
       } catch (err) {
-        console.warn('[embed] Initial embedding failed:', err);
+        log('embed', `Initial embedding failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       } finally {
         isEmbedding = false;
       }
@@ -648,6 +716,16 @@ export function startWatcher(options: WatcherOptions): Watcher {
       if (sequenceTimeout) {
         clearTimeout(sequenceTimeout);
         sequenceTimeout = null;
+      }
+
+      if (pruningSoftDeleteTimeout) {
+        clearTimeout(pruningSoftDeleteTimeout);
+        pruningSoftDeleteTimeout = null;
+      }
+
+      if (pruningHardDeleteTimeout) {
+        clearTimeout(pruningHardDeleteTimeout);
+        pruningHardDeleteTimeout = null;
       }
       
       if (watcher) {

@@ -1,5 +1,100 @@
 # Changelog
 
+## [2026.5.2] - 2026-03-13
+
+### Changed
+
+- **All logging to file only**: Replaced 654 `console.*` calls across 13 source files with structured `log()` (file-only) and `cliOutput()`/`cliError()` (stdout/stderr + file). Server-side files produce zero console output. CLI output goes to both terminal and log file.
+- New exports from `logger.ts`: `cliOutput()` (stdout + file), `cliError()` (stderr + file)
+
+## [2026.5.1] - 2026-03-13
+
+### Fixed
+
+- **trackAccess wired into all MCP search tools**: `memory_search` and `memory_vsearch` now call `trackAccess()` after returning results. Previously only `/api/search` and `hybridSearch` (used by `memory_query`) tracked access.
+- **Internal query exclusion**: Added `internal` flag to `hybridSearch` options. Internal callers (`memory_related`, proactive surfacing) pass `internal: true` to skip access tracking, preventing inflated counts from supplementary queries.
+- **Config validation**: `applyUsageBoost` now clamps `usageBoostWeight` to [0, 1] and `decayHalfLifeDays` to minimum 1. Invalid values are silently corrected instead of producing unexpected results.
+- **Eviction respects decay.enabled**: `evictLowAccessDocuments` now accepts `decayEnabled` parameter. When false, falls back to age-only ordering instead of always using access-aware sorting.
+
+### Added
+
+- **test/phase1-gaps.test.ts**: 4 new tests covering eviction fallback (decay enabled vs disabled), schema migration (v4→v5 column addition), and performance (1000 docs, 10 FTS queries < 5s).
+
+## [2026.5.0] - 2026-03-13
+
+### Added
+
+- **Memory Intelligence (Phase 1)**: Relevance decay, auto-categorization, and usage-based search boosting.
+  - `access_count` and `last_accessed_at` tracking on all documents (schema v5)
+  - `computeDecayScore()` — exponential decay based on time since last access (configurable half-life)
+  - `applyUsageBoost()` — `log2(1 + access_count) * decayScore * boostWeight` in search pipeline
+  - Auto-categorizer (`src/categorizer.ts`) — keyword/regex classification into 7 categories on `memory_write`: architecture-decision, debugging-insight, tool-config, pattern, preference, context, workflow (all prefixed with `auto:`)
+  - `evictLowAccessDocuments()` — document-level eviction prioritizing low-access memories
+  - `DecayConfig` and `usage_boost_weight` in `SearchConfig` (default 0.15)
+
+- **Knowledge Graph (Phase 3)**: Entity-relationship memory graph with proactive surfacing and temporal reasoning.
+  - `memory_entities` and `memory_edges` tables (schema v6) with case-insensitive deduplication
+  - `MemoryGraph` class — BFS traversal with configurable depth (max 10), relationship type filtering, fuzzy entity search
+  - LLM-based entity extraction from memory content (async, non-blocking)
+  - Temporal metadata: `first_learned_at`, `last_confirmed_at`, `contradicted_at` on entities
+  - Contradiction detection integrated into consolidation flow
+  - Proactive surfacing on `memory_write` — appends related memories via vector similarity
+  - **New MCP tool `memory_graph_query`**: Traverse entity relationships
+  - **New MCP tool `memory_related`**: Find related memories with entity context enrichment
+  - **New MCP tool `memory_timeline`**: Chronological knowledge evolution for a topic
+
+### Fixed
+
+- **Server crash on startup**: `getCollections()` crashed when `config.collections` was undefined. Added null guards throughout `collections.ts` and `index.ts`.
+- **Search timeout when embedding provider unreachable**: 5s `Promise.race` timeout around entire vector search path (embed + Qdrant). Falls back to BM25-only results instantly. Reduced single query embed timeout from 30s to 10s.
+- **Event loop blocking during background work**: Added `setImmediate()` yield points across harvester.ts, codebase.ts, and watcher.ts. Split `bulkDeactivateExcept` into 200-path batches.
+- **DB lifecycle race in `memory_write`**: Entity extraction was using `setTimeout` with a store that got closed by `finally`. Refactored to fire-and-forget Promise using the primary store.
+- **`resolveWorkspace` opened new DB on every MCP call**: Even for the primary workspace, `requireDaemonWorkspace` was opening a fresh SQLite connection + full schema migration. Added primary workspace shortcut.
+- **Broken `memory_edges.memory_id` column reference**: Fixed SQL in `memory_related` and `memory_timeline` to use `source_id`/`target_id`.
+- **Empty content accepted by `memory_write`**: Now rejects empty/whitespace-only content.
+- **/api/search bypasses access tracking**: Added `trackAccess()` to HTTP API handler.
+
+### Changed
+
+- Search pipeline order: rrfFuse → topRankBonus → centralityBoost → **usageBoost** → supersedeDemotion → importanceScorer → reranking
+- `CollectionConfig.collections` is now optional in type definition
+
+## [2026.5.0-rc.2] - 2026-03-12
+
+### Fixed
+
+- **Server crash on startup**: `serve start` crashed with `TypeError: Cannot convert undefined or null to object` at `getCollections()` when `config.collections` was undefined. Added null guards to all `config.collections` access in `collections.ts` and `index.ts`. Made `CollectionConfig.collections` optional in type definition.
+
+## [2026.5.0-rc.1] - 2026-03-12
+
+### Added
+
+- **Memory Intelligence Phase 1**: Relevance decay, auto-categorization, and usage-based search boosting.
+  - `access_count` and `last_accessed_at` tracking on all documents (schema v5)
+  - `computeDecayScore()` — exponential decay based on time since last access (configurable half-life)
+  - `applyUsageBoost()` — `log2(1 + access_count) * decayScore * boostWeight` in search pipeline
+  - Auto-categorizer (`src/categorizer.ts`) — keyword/regex classification into 7 categories on `memory_write` (architecture-decision, debugging-insight, tool-config, pattern, preference, context, workflow), all prefixed with `auto:`
+  - Access tracking wired into `hybridSearch` — every search result increments access_count
+  - `evictLowAccessDocuments()` — document-level eviction prioritizing low-access memories
+  - `DecayConfig` type with `enabled`, `halfLife`, `boostWeight` fields
+  - `usage_boost_weight` added to `SearchConfig` (default 0.15)
+
+- **Knowledge Graph Phase 3**: Entity-relationship memory graph with proactive surfacing and temporal reasoning.
+  - `memory_entities` and `memory_edges` tables (schema v6) with case-insensitive deduplication
+  - `MemoryGraph` class (`src/memory-graph.ts`) — BFS traversal with configurable depth (max 10), relationship type filtering, fuzzy entity search
+  - LLM-based entity extraction (`src/entity-extraction.ts`) — extracts entities (tool, service, person, concept, decision, file, library) and relationships (uses, depends_on, decided_by, related_to, replaces, configured_with) from memory content
+  - Entity extraction integrated into `memory_write` (async, non-blocking) when consolidation is enabled
+  - Temporal metadata: `first_learned_at`, `last_confirmed_at`, `contradicted_at`, `contradicted_by_memory_id` on entities
+  - Contradiction detection integrated into consolidation flow — marks entities as contradicted when UPDATE/DELETE actions conflict with existing facts
+  - Proactive surfacing on `memory_write` — appends related memories via vector similarity when `proactive.enabled` is true
+  - **New MCP tool `memory_graph_query`**: Traverse entity relationships with depth control and relationship type filters
+  - **New MCP tool `memory_related`**: Find related memories for a topic with entity context enrichment
+  - **New MCP tool `memory_timeline`**: Chronological timeline of knowledge evolution for a topic with date filtering
+
+### Changed
+
+- Search pipeline order: rrfFuse → topRankBonus → centralityBoost → **usageBoost** → supersedeDemotion → importanceScorer → reranking
+
 ## [2026.4.14] - 2026-03-11
 
 ### Fixed

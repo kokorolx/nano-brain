@@ -1,2 +1,6 @@
 schema: spec-driven
 created: 2026-03-07
+status: implemented
+implemented: 2026-03-13
+version: 2026.5.1
+notes: 49/49 tasks complete. All gaps fixed in v2026.5.1.

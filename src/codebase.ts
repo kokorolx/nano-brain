@@ -25,6 +25,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import fg from 'fast-glob'
 
+const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
+
 const DEFAULT_MAX_FILE_SIZE = 300 * 1024
 const DEFAULT_CODEBASE_MAX_SIZE = 2 * 1024 * 1024 * 1024
 const EMBEDDING_CONCURRENCY = parseInt(process.env.NANO_BRAIN_EMBEDDING_CONCURRENCY || '3', 10)
@@ -396,11 +398,11 @@ export async function indexCodebase(
       continue
     }
     
+    if ((i + 1) % 10 === 0) await yieldToEventLoop();
+    
     if ((i + 1) % batchSize === 0) {
       batchNum++
       log('codebase', 'Batch ' + batchNum + ': indexed ' + (i + 1) + '/' + files.length + ' files')
-      console.error(`[codebase] Batch ${batchNum}: indexed ${i + 1}/${files.length} files`)
-      await new Promise(resolve => setImmediate(resolve))
     }
   }
   
@@ -498,8 +500,7 @@ async function processSingleBatch(
 
   if (allChunks.length === 0) {
     if (emptyBodyHashes.length > 0) {
-      log('codebase', 'Marked ' + emptyBodyHashes.length + ' empty-body docs with sentinel (seq=-1)')
-      console.warn(`[embed] Skipping ${emptyBodyHashes.length} docs with empty body — FTS still covers them`)
+      log('codebase', 'Skipping ' + emptyBodyHashes.length + ' docs with empty body — FTS still covers them', 'warn')
     }
     return { embedded: 0, emptyBodyHashes }
   }
@@ -508,8 +509,7 @@ async function processSingleBatch(
   const modelName = embedder.getModel?.() || 'unknown'
 
   const batchPaths = batch.map(r => r.path.replace(/.*\//, '')).join(', ')
-  log('codebase', 'Embedding batch: ' + batch.length + ' docs, ' + allChunks.length + ' chunks')
-  console.error(`[embed] Batch ${batch.length} docs, ${allChunks.length} chunks: ${batchPaths}`)
+  log('codebase', 'Embedding batch: ' + batch.length + ' docs, ' + allChunks.length + ' chunks: ' + batchPaths)
 
   try {
     let embeddings: number[][]
@@ -521,6 +521,7 @@ async function processSingleBatch(
       for (let i = 0; i < texts.length; i++) {
         const result = await embedder.embed(texts[i])
         embeddings.push(result.embedding)
+        if (i % 5 === 0) await yieldToEventLoop();
       }
     }
 
@@ -533,8 +534,7 @@ async function processSingleBatch(
       try {
         await vectorStore.batchUpsert(points)
       } catch (err) {
-        log('codebase', 'Batch vector store upsert failed: ' + (err instanceof Error ? err.message : String(err)))
-        console.warn(`[embed] Batch vector store upsert failed, falling back to individual:`, err)
+        log('codebase', 'Batch vector store upsert failed, falling back to individual: ' + (err instanceof Error ? err.message : String(err)), 'warn')
         for (const point of points) {
           try {
             await vectorStore.upsert(point)
@@ -547,12 +547,12 @@ async function processSingleBatch(
 
     for (let i = 0; i < allChunks.length; i++) {
       store.insertEmbeddingLocal(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, modelName, allChunks[i].path)
+      if (i % 10 === 0) await yieldToEventLoop();
     }
 
     return { embedded: batch.length, emptyBodyHashes }
   } catch (err) {
-    log('codebase', 'Batch embedding failed, falling back to sequential')
-    console.warn('[embed] Batch failed, falling back to sequential:', err)
+    log('codebase', 'Batch embedding failed, falling back to sequential: ' + (err instanceof Error ? err.message : String(err)), 'warn')
     const succeededHashes = new Set<string>()
 
     for (let i = 0; i < allChunks.length; i++) {
@@ -575,16 +575,17 @@ async function processSingleBatch(
         store.insertEmbeddingLocal(allChunks[i].hash, allChunks[i].seq, allChunks[i].pos, result.model || modelName, allChunks[i].path)
         succeededHashes.add(allChunks[i].hash)
       } catch {
-        console.warn(`[embed] Skipping chunk ${allChunks[i].hash}:${allChunks[i].seq}`)
+        log('codebase', 'Skipping chunk ' + allChunks[i].hash + ':' + allChunks[i].seq, 'warn')
         continue
       }
+      
+      if (i % 5 === 0) await yieldToEventLoop();
     }
 
     for (const row of batch) {
       if (!succeededHashes.has(row.hash)) {
         failedHashes.add(row.hash)
-        log('codebase', 'All chunks failed for hash ' + row.hash.substring(0, 8))
-        console.warn(`[embed] All chunks failed for ${row.path} (${row.hash.substring(0, 8)}…) — skipping, FTS still covers it`)
+        log('codebase', 'All chunks failed for ' + row.path + ' (' + row.hash.substring(0, 8) + '…) — skipping, FTS still covers it', 'warn')
       }
     }
 
@@ -634,7 +635,7 @@ export async function embedPendingCodebase(
     }
 
     if (embedded > 0 && embedded % 50 === 0) {
-      console.log(`[embed] Embedded ${embedded} document(s)...`)
+      log('codebase', 'Embedded ' + embedded + ' document(s)...')
     }
 
     await new Promise(resolve => setImmediate(resolve))
@@ -699,7 +700,8 @@ export async function indexSymbolGraph(
   const allSymbols: Array<{ symbol: CodeSymbol; id: number; contentHash: string }> = []
   const fileSymbolMap = new Map<string, Array<{ symbol: CodeSymbol; id: number }>>()
 
-  for (const file of files) {
+  for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+    const file = files[fileIndex];
     const language = detectLanguage(file.path) as SupportedLanguage | null
     if (!language || (language !== 'ts' && language !== 'js' && language !== 'python' && language !== 'vue')) {
       filesSkipped++
@@ -719,7 +721,7 @@ export async function indexSymbolGraph(
 
     const symbols = await parseSymbols(file.path, file.content, language)
     if (symbols.length > 0 || filesProcessed < 5) {
-      console.error(`[SG-DBG] ${file.path.split('/').pop()} lang=${language} syms=${symbols.length} len=${file.content.length}`)
+      log('codebase', 'SG-DBG ' + file.path.split('/').pop() + ' lang=' + language + ' syms=' + symbols.length + ' len=' + file.content.length)
     }
     const fileSymbols: Array<{ symbol: CodeSymbol; id: number }> = []
 
@@ -741,6 +743,8 @@ export async function indexSymbolGraph(
 
     fileSymbolMap.set(file.path, fileSymbols)
     filesProcessed++
+    
+    if (fileIndex % 10 === 0) await yieldToEventLoop();
   }
 
   const symbolTable: SymbolTable = new Map()
@@ -756,7 +760,9 @@ export async function indexSymbolGraph(
     symbolIdMap.set(key, id)
   }
 
-  for (const file of files) {
+  let edgeIterationCount = 0;
+  for (let fileIdx = 0; fileIdx < files.length; fileIdx++) {
+    const file = files[fileIdx];
     const language = detectLanguage(file.path) as SupportedLanguage | null
     if (!language || (language !== 'ts' && language !== 'js' && language !== 'python' && language !== 'vue')) {
       continue
@@ -770,6 +776,9 @@ export async function indexSymbolGraph(
     const allEdges: SymbolEdge[] = [...callEdges, ...heritageEdges]
 
     for (const edge of allEdges) {
+      edgeIterationCount++;
+      if (edgeIterationCount % 100 === 0) await yieldToEventLoop();
+      
       const sourceSymbols = fileSymbols.filter(s => 
         s.symbol.startLine <= getLineForCall(edge, file.content) && 
         s.symbol.endLine >= getLineForCall(edge, file.content)
@@ -840,6 +849,8 @@ export async function indexSymbolGraph(
         edgesCreated++
       }
     }
+    
+    if (fileIdx % 10 === 0) await yieldToEventLoop();
   }
 
   log('symbol-graph', `Indexed ${symbolsIndexed} symbols, ${edgesCreated} edges from ${filesProcessed} files`)

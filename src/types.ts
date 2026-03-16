@@ -16,6 +16,9 @@ export interface SearchResult {
   symbols?: string[];
   clusterLabel?: string;
   flowCount?: number;
+  access_count?: number;
+  lastAccessedAt?: string | null;
+  tags?: string[];
 }
 
 export interface Document {
@@ -29,6 +32,8 @@ export interface Document {
   modifiedAt: string;
   active: boolean;
   projectHash?: string;
+  access_count?: number;
+  last_accessed_at?: string | null;
 }
 
 export interface MemoryChunk {
@@ -61,7 +66,7 @@ export interface Collection {
 
 export interface CollectionConfig {
   globalContext?: string
-  collections: Record<string, {
+  collections?: Record<string, {
     path: string
     pattern?: string
     context?: Record<string, string>
@@ -94,9 +99,14 @@ export interface CollectionConfig {
   telemetry?: Partial<TelemetryConfig>
   learning?: Partial<LearningConfig>
   consolidation?: Partial<ConsolidationConfig>
+  extraction?: Partial<ExtractionConfig>
   importance?: Partial<ImportanceConfig>
   intents?: Partial<IntentConfig>
   proactive?: Partial<ProactiveConfig>
+  decay?: Partial<DecayConfig>
+  categorization?: Partial<LLMCategorizationConfig>
+  preferences?: Partial<PreferenceConfig>
+  pruning?: Partial<PruningConfig>
 }
 
 export interface CodebaseConfig {
@@ -214,6 +224,7 @@ export interface IndexHealth {
     storageUsed: number
     maxSize: number
   }
+  extractedFacts?: number
 }
 
 export interface StoreSearchOptions {
@@ -242,6 +253,7 @@ export interface SearchConfig {
   };
   centrality_weight: number;
   supersede_demotion: number;
+  usage_boost_weight: number;
 }
 
 export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
@@ -261,6 +273,7 @@ export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
   },
   centrality_weight: 0.1,
   supersede_demotion: 0.3,
+  usage_boost_weight: 0.15,
 };
 
 // === Self-Learning Types ===
@@ -295,6 +308,7 @@ export interface ConsolidationConfig {
   model: string;
   endpoint?: string;
   apiKey?: string;
+  provider?: 'openai' | 'ollama';
   max_memories_per_cycle: number;
   min_memories_threshold: number;
   confidence_threshold: number;
@@ -303,10 +317,26 @@ export interface ConsolidationConfig {
 export const DEFAULT_CONSOLIDATION_CONFIG: ConsolidationConfig = {
   enabled: false,
   interval_ms: 3600000,
-  model: '',
+  model: 'litellm/claude-haiku-4-5',
+  endpoint: 'https://ai-proxy.thnkandgrow.com',
   max_memories_per_cycle: 20,
   min_memories_threshold: 2,
   confidence_threshold: 0.6,
+};
+
+export interface ExtractionConfig {
+  enabled: boolean;
+  model: string;
+  endpoint?: string;
+  apiKey?: string;
+  maxFactsPerSession: number;
+}
+
+export const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
+  enabled: false,
+  model: 'litellm/claude-haiku-4-5',
+  endpoint: 'https://ai-proxy.thnkandgrow.com',
+  maxFactsPerSession: 20,
 };
 
 export interface ImportanceConfig {
@@ -383,6 +413,169 @@ export const DEFAULT_PROACTIVE_CONFIG: ProactiveConfig = {
   analysis_interval_ms: 1800000,
 };
 
+export interface DecayConfig {
+  enabled: boolean;
+  halfLife: string;
+  boostWeight: number;
+}
+
+export const DEFAULT_DECAY_CONFIG: DecayConfig = {
+  enabled: true,
+  halfLife: '30d',
+  boostWeight: 0.15,
+};
+
+export interface PruningConfig {
+  enabled: boolean;
+  interval_ms: number;
+  contradicted_ttl_days: number;
+  orphan_ttl_days: number;
+  batch_size: number;
+  hard_delete_after_days: number;
+}
+
+export const DEFAULT_PRUNING_CONFIG: PruningConfig = {
+  enabled: true,
+  interval_ms: 21600000,
+  contradicted_ttl_days: 30,
+  orphan_ttl_days: 90,
+  batch_size: 100,
+  hard_delete_after_days: 30,
+};
+
+export function parsePruningConfig(raw?: Partial<PruningConfig>): PruningConfig {
+  return {
+    enabled: raw?.enabled ?? DEFAULT_PRUNING_CONFIG.enabled,
+    interval_ms: raw?.interval_ms ?? DEFAULT_PRUNING_CONFIG.interval_ms,
+    contradicted_ttl_days: raw?.contradicted_ttl_days ?? DEFAULT_PRUNING_CONFIG.contradicted_ttl_days,
+    orphan_ttl_days: raw?.orphan_ttl_days ?? DEFAULT_PRUNING_CONFIG.orphan_ttl_days,
+    batch_size: raw?.batch_size ?? DEFAULT_PRUNING_CONFIG.batch_size,
+    hard_delete_after_days: raw?.hard_delete_after_days ?? DEFAULT_PRUNING_CONFIG.hard_delete_after_days,
+  };
+}
+
+export interface LLMCategorizationConfig {
+  llm_enabled: boolean;
+  confidence_threshold: number;
+  max_content_length: number;
+}
+
+export const DEFAULT_LLM_CATEGORIZATION_CONFIG: LLMCategorizationConfig = {
+  llm_enabled: true,
+  confidence_threshold: 0.6,
+  max_content_length: 2000,
+};
+
+export function parseCategorizationConfig(partial?: Partial<LLMCategorizationConfig>): LLMCategorizationConfig {
+  if (!partial) return { ...DEFAULT_LLM_CATEGORIZATION_CONFIG };
+
+  const config: LLMCategorizationConfig = { ...DEFAULT_LLM_CATEGORIZATION_CONFIG };
+
+  if (partial.llm_enabled !== undefined) {
+    config.llm_enabled = partial.llm_enabled;
+  }
+
+  if (partial.confidence_threshold !== undefined) {
+    if (partial.confidence_threshold < 0 || partial.confidence_threshold > 1) {
+      config.confidence_threshold = DEFAULT_LLM_CATEGORIZATION_CONFIG.confidence_threshold;
+    } else {
+      config.confidence_threshold = partial.confidence_threshold;
+    }
+  }
+
+  if (partial.max_content_length !== undefined) {
+    if (partial.max_content_length < 100) {
+      config.max_content_length = DEFAULT_LLM_CATEGORIZATION_CONFIG.max_content_length;
+    } else {
+      config.max_content_length = partial.max_content_length;
+    }
+  }
+
+  return config;
+}
+
+export interface PreferenceConfig {
+  enabled: boolean;
+  min_queries: number;
+  weight_min: number;
+  weight_max: number;
+  baseline_expand_rate: number;
+}
+
+export const DEFAULT_PREFERENCE_CONFIG: PreferenceConfig = {
+  enabled: true,
+  min_queries: 20,
+  weight_min: 0.5,
+  weight_max: 2.0,
+  baseline_expand_rate: 0.1,
+};
+
+export function parsePreferencesConfig(partial?: Partial<PreferenceConfig>): PreferenceConfig {
+  if (!partial) return { ...DEFAULT_PREFERENCE_CONFIG };
+
+  const config: PreferenceConfig = { ...DEFAULT_PREFERENCE_CONFIG };
+
+  if (partial.enabled !== undefined) {
+    config.enabled = partial.enabled;
+  }
+
+  if (partial.min_queries !== undefined) {
+    if (partial.min_queries < 1) {
+      config.min_queries = DEFAULT_PREFERENCE_CONFIG.min_queries;
+    } else {
+      config.min_queries = partial.min_queries;
+    }
+  }
+
+  if (partial.weight_min !== undefined) {
+    if (partial.weight_min < 0 || partial.weight_min > 1) {
+      config.weight_min = DEFAULT_PREFERENCE_CONFIG.weight_min;
+    } else {
+      config.weight_min = partial.weight_min;
+    }
+  }
+
+  if (partial.weight_max !== undefined) {
+    if (partial.weight_max < 1 || partial.weight_max > 10) {
+      config.weight_max = DEFAULT_PREFERENCE_CONFIG.weight_max;
+    } else {
+      config.weight_max = partial.weight_max;
+    }
+  }
+
+  if (partial.baseline_expand_rate !== undefined) {
+    if (partial.baseline_expand_rate <= 0 || partial.baseline_expand_rate > 1) {
+      config.baseline_expand_rate = DEFAULT_PREFERENCE_CONFIG.baseline_expand_rate;
+    } else {
+      config.baseline_expand_rate = partial.baseline_expand_rate;
+    }
+  }
+
+  return config;
+}
+
+export interface MemoryEntity {
+  id: number;
+  name: string;
+  type: 'tool' | 'service' | 'person' | 'concept' | 'decision' | 'file' | 'library';
+  description?: string;
+  projectHash: string;
+  firstLearnedAt: string;
+  lastConfirmedAt: string;
+  contradictedAt?: string | null;
+  contradictedByMemoryId?: number | null;
+  prunedAt?: string | null;
+}
+
+export interface MemoryEdge {
+  id: number;
+  sourceId: number;
+  targetId: number;
+  edgeType: 'uses' | 'depends_on' | 'decided_by' | 'related_to' | 'replaces' | 'configured_with';
+  projectHash: string;
+  createdAt: string;
+}
+
 export interface RemoveWorkspaceResult {
   documentsDeleted: number;
   embeddingsDeleted: number;
@@ -414,7 +607,7 @@ export interface Store {
   searchFTS(query: string, options?: StoreSearchOptions): SearchResult[];
   searchVec(query: string, embedding: number[], options?: StoreSearchOptions): SearchResult[];
   searchVecAsync(query: string, embedding: number[], options?: StoreSearchOptions): Promise<SearchResult[]>;
-  setVectorStore(vs: import('./vector-store.js').VectorStore): void;
+  setVectorStore(vs: import('./vector-store.js').VectorStore | null): void;
   getVectorStore(): import('./vector-store.js').VectorStore | null;
   
   getCachedResult(hash: string, projectHash?: string): string | null;
@@ -548,4 +741,31 @@ export interface Store {
 
   recordSuggestionFeedback(suggestedQuery: string, actualQuery: string, matchType: string, workspaceHash: string): void;
   getSuggestionAccuracy(workspaceHash: string): { total: number; exact: number; partial: number; none: number };
+
+  enqueueConsolidation(documentId: number): number;
+  getNextPendingJob(): { id: number; document_id: number } | null;
+  updateJobStatus(jobId: number, status: 'processing' | 'completed' | 'failed', result?: string, error?: string): void;
+  getQueueStats(): { pending: number; processing: number; completed: number; failed: number };
+  addConsolidationLog(entry: { documentId: number; action: string; reason: string; targetDocId?: number; model: string; tokensUsed: number }): void;
+  getRecentConsolidationLogs(limit?: number): Array<{ id: number; document_id: number; action: string; reason: string | null; target_doc_id: number | null; model: string | null; tokens_used: number; created_at: string }>;
+
+  trackAccess(docIds: number[]): void;
+
+  insertOrUpdateEntity(entity: Omit<MemoryEntity, 'id'>): number;
+  insertEdge(edge: Omit<MemoryEdge, 'id' | 'createdAt'>): number;
+  getEntityByName(name: string, type?: string, projectHash?: string): MemoryEntity | null;
+  getEntityById(id: number): MemoryEntity | null;
+  getEntityEdges(entityId: number, direction?: 'incoming' | 'outgoing' | 'both'): Array<MemoryEdge & { sourceName: string; targetName: string }>;
+  markEntityContradicted(entityId: number, contradictedByMemoryId: number): void;
+  confirmEntity(entityId: number): void;
+  getMemoryEntities(projectHash: string, limit?: number): MemoryEntity[];
+  getMemoryEntityCount(projectHash: string): number;
+
+  getContradictedEntitiesForPruning(ttlDays: number, batchSize: number, projectHash?: string): number[];
+  getOrphanEntitiesForPruning(ttlDays: number, batchSize: number, projectHash?: string): number[];
+  getPrunedEntitiesForHardDelete(retentionDays: number, batchSize: number, projectHash?: string): number[];
+  softDeleteEntities(ids: number[]): void;
+  hardDeleteEntities(ids: number[]): void;
+
+  getUncategorizedDocuments(limit: number, projectHash?: string): Array<{ id: number; path: string; body: string }>;
 }

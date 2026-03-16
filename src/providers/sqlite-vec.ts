@@ -39,7 +39,7 @@ export class SqliteVecStore implements VectorStore {
         distance: number;
       }>;
 
-      log('vector-store', 'search results=' + rows.length);
+      log('sqlite-vec', 'search results=' + rows.length);
 
       return rows.map(row => {
         const [hash, seqStr] = row.hash_seq.split(':');
@@ -51,8 +51,7 @@ export class SqliteVecStore implements VectorStore {
         };
       });
     } catch (err) {
-      log('vector-store', 'search failed');
-      console.warn('Vector search failed:', err);
+      log('sqlite-vec', 'search failed: ' + (err instanceof Error ? err.message : String(err)), 'warn');
       return [];
     }
   }
@@ -75,12 +74,11 @@ export class SqliteVecStore implements VectorStore {
       `);
       insertVecStmt.run(id, new Float32Array(embedding));
 
-      log('vector-store', 'upsert id=' + id.substring(0, 16));
+      log('sqlite-vec', 'upsert id=' + id.substring(0, 16));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('UNIQUE constraint')) {
-        log('vector-store', 'upsert failed id=' + id.substring(0, 16));
-        console.warn('Failed to upsert vector:', err);
+        log('sqlite-vec', 'upsert failed id=' + id.substring(0, 16) + ': ' + msg, 'warn');
       }
     }
   }
@@ -106,14 +104,14 @@ export class SqliteVecStore implements VectorStore {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           if (!msg.includes('UNIQUE constraint')) {
-            console.warn('Failed to insert vector:', err);
+            log('sqlite-vec', 'Failed to insert vector: ' + msg, 'warn');
           }
         }
       }
     });
 
     transaction(points);
-    log('vector-store', 'batchUpsert count=' + points.length);
+    log('sqlite-vec', 'batchUpsert count=' + points.length);
   }
 
   async delete(id: string): Promise<void> {
@@ -123,10 +121,9 @@ export class SqliteVecStore implements VectorStore {
 
     try {
       this.db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`).run(id);
-      log('vector-store', 'delete id=' + id.substring(0, 16));
+      log('sqlite-vec', 'delete id=' + id.substring(0, 16));
     } catch (err) {
-      log('vector-store', 'delete failed id=' + id.substring(0, 16));
-      console.warn('Failed to delete vector:', err);
+      log('sqlite-vec', 'delete failed id=' + id.substring(0, 16) + ': ' + (err instanceof Error ? err.message : String(err)), 'warn');
     }
   }
 
@@ -137,10 +134,9 @@ export class SqliteVecStore implements VectorStore {
 
     try {
       this.db.prepare(`DELETE FROM vectors_vec WHERE hash_seq LIKE ? || ':%'`).run(hash);
-      log('vector-store', 'deleteByHash hash=' + hash.substring(0, 8));
+      log('sqlite-vec', 'deleteByHash hash=' + hash.substring(0, 8));
     } catch (err) {
-      log('vector-store', 'deleteByHash failed hash=' + hash.substring(0, 8));
-      console.warn('Failed to delete vectors by hash:', err);
+      log('sqlite-vec', 'deleteByHash failed hash=' + hash.substring(0, 8) + ': ' + (err instanceof Error ? err.message : String(err)), 'warn');
     }
   }
 
@@ -185,8 +181,7 @@ export class SqliteVecStore implements VectorStore {
         const vecCount = (this.db.prepare('SELECT COUNT(*) as count FROM vectors_vec').get() as { count: number }).count;
         const cvCount = (this.db.prepare('SELECT COUNT(*) as count FROM content_vectors').get() as { count: number }).count;
         if (vecCount === 0 && cvCount > 0) {
-          log('vector-store', 'ensureVecTable clearing stale content_vectors count=' + cvCount);
-          console.error(`[vector-store] vectors_vec empty but content_vectors has ${cvCount} stale rows, clearing for re-embedding`);
+          log('sqlite-vec', 'vectors_vec empty but content_vectors has ' + cvCount + ' stale rows, clearing for re-embedding');
           this.db.exec(`DELETE FROM content_vectors`);
         }
         return;
@@ -195,7 +190,7 @@ export class SqliteVecStore implements VectorStore {
       }
 
       if (needsRebuild) {
-        log('vector-store', 'ensureVecTable rebuilding dimensions=' + dimensions);
+        log('sqlite-vec', 'ensureVecTable rebuilding dimensions=' + dimensions);
         this.db.exec(`DROP TABLE IF EXISTS vectors_vec`);
         this.db.exec(`DELETE FROM content_vectors`);
         this.db.exec(`DELETE FROM llm_cache`);
@@ -205,10 +200,10 @@ export class SqliteVecStore implements VectorStore {
             embedding float[${dimensions}] distance_metric=cosine
           );
         `);
-        console.error(`[vector-store] Recreated vectors_vec with ${dimensions} dimensions, cleared content_vectors and llm_cache for re-embedding`);
+        log('sqlite-vec', 'Recreated vectors_vec with ' + dimensions + ' dimensions, cleared content_vectors and llm_cache for re-embedding');
       }
     } catch (err) {
-      console.warn('Failed to recreate vector table:', err);
+      log('sqlite-vec', 'Failed to recreate vector table: ' + (err instanceof Error ? err.message : String(err)), 'warn');
     }
   }
 
@@ -222,10 +217,10 @@ export class SqliteVecStore implements VectorStore {
         DELETE FROM vectors_vec WHERE substr(hash_seq, 1, instr(hash_seq, ':') - 1) NOT IN (SELECT DISTINCT hash FROM documents WHERE active = 1)
       `);
       const result = deleteVecStmt.run();
-      log('vector-store', 'cleanOrphanedVectors deleted=' + result.changes);
+      log('sqlite-vec', 'cleanOrphanedVectors deleted=' + result.changes);
       return result.changes;
     } catch (err) {
-      console.warn('Failed to clean orphaned vectors:', err);
+      log('sqlite-vec', 'Failed to clean orphaned vectors: ' + (err instanceof Error ? err.message : String(err)), 'warn');
       return 0;
     }
   }

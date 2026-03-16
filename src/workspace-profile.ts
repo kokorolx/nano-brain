@@ -8,6 +8,8 @@ export interface WorkspaceProfileData {
   expandCount: number;
   expandRate: number;
   lastUpdated: string;
+  categoryWeights?: Record<string, number>;
+  lastCategoryUpdate?: string;
 }
 
 export class WorkspaceProfile {

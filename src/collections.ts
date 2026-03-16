@@ -33,6 +33,10 @@ export function saveCollectionConfig(configPath: string, config: CollectionConfi
 export function getCollections(config: CollectionConfig): Collection[] {
   const collections: Collection[] = [];
   
+  if (!config.collections) {
+    return collections;
+  }
+  
   for (const [name, collectionData] of Object.entries(config.collections)) {
     collections.push({
       name,
@@ -59,6 +63,9 @@ export function addCollection(
     };
   }
   
+  if (!config.collections) {
+    config.collections = {};
+  }
   config.collections[name] = {
     path: collectionPath,
     pattern: pattern || '**/*.md',
@@ -76,14 +83,16 @@ export function removeCollection(configPath: string, name: string): CollectionCo
     throw new Error('Config file not found');
   }
   
-  delete config.collections[name];
+  if (config.collections) {
+    delete config.collections[name];
+  }
   
   saveCollectionConfig(configPath, config);
   return config;
 }
 
 export function listCollections(config: CollectionConfig): string[] {
-  return Object.keys(config.collections);
+  return Object.keys(config.collections || {});
 }
 
 export function renameCollection(
@@ -97,7 +106,7 @@ export function renameCollection(
     throw new Error('Config file not found');
   }
   
-  if (!config.collections[oldName]) {
+  if (!config.collections || !config.collections[oldName]) {
     throw new Error(`Collection "${oldName}" not found`);
   }
   
@@ -120,7 +129,7 @@ export function addContext(
     throw new Error('Config file not found');
   }
   
-  if (!config.collections[collectionName]) {
+  if (!config.collections || !config.collections[collectionName]) {
     throw new Error(`Collection "${collectionName}" not found`);
   }
   
@@ -137,7 +146,7 @@ export function addContext(
 export function findContextForPath(config: CollectionConfig, filePath: string): string | null {
   let longestMatch: { prefix: string; description: string } | null = null;
   
-  for (const collectionData of Object.values(config.collections)) {
+  for (const collectionData of Object.values(config.collections || {})) {
     if (!collectionData.context) {
       continue;
     }
@@ -159,7 +168,7 @@ export function listAllContexts(
 ): Array<{ collection: string; prefix: string; description: string }> {
   const contexts: Array<{ collection: string; prefix: string; description: string }> = [];
   
-  for (const [collectionName, collectionData] of Object.entries(config.collections)) {
+  for (const [collectionName, collectionData] of Object.entries(config.collections || {})) {
     if (!collectionData.context) {
       continue;
     }

@@ -104,3 +104,19 @@ export function log(tag: string, message: string, level: LogLevel = 'info'): voi
 export function isLoggingEnabled(): boolean {
   return enabled;
 }
+
+export function cliOutput(...args: unknown[]): void {
+  const message = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+  process.stdout.write(message + '\n');
+  if (enabled) {
+    appendFileSync(getLogPath(), `[${new Date().toISOString()}] [info] [cli] ${message}\n`);
+  }
+}
+
+export function cliError(...args: unknown[]): void {
+  const message = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+  process.stderr.write(message + '\n');
+  if (enabled) {
+    appendFileSync(getLogPath(), `[${new Date().toISOString()}] [error] [cli] ${message}\n`);
+  }
+}

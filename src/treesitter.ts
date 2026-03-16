@@ -1,4 +1,5 @@
 import type { SupportedLanguage } from './graph.js'
+import { log } from './logger.js'
 
 export interface CodeSymbol {
   name: string
@@ -45,7 +46,7 @@ async function initTreeSitter(): Promise<void> {
     treeSitterAvailable = true
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    console.warn(`[treesitter] Native bindings not available, symbol graph disabled: ${msg}`)
+    log('treesitter', 'Native bindings not available, symbol graph disabled: ' + msg, 'warn')
     treeSitterAvailable = false
   }
 }
@@ -462,7 +463,7 @@ export async function parseSymbols(
       
       return symbols
     } catch (e) {
-      console.warn(`[treesitter] Failed to parse Vue script in ${filePath}:`, e)
+      log('treesitter', 'Failed to parse Vue script in ' + filePath + ': ' + (e instanceof Error ? e.message : String(e)), 'warn')
       return []
     }
   }
@@ -480,7 +481,7 @@ export async function parseSymbols(
     
     if ((parseSymbols as any)._dbgCount === undefined) (parseSymbols as any)._dbgCount = 0;
     if ((parseSymbols as any)._dbgCount++ < 3) {
-      console.error(`[TS-DBG] file=${filePath.split('/').pop()} type=${rootNode.type} childCount=${rootNode.childCount} children=${rootNode.children?.length ?? 'NO'} hasChildForField=${typeof rootNode.childForFieldName}`)
+      log('treesitter', 'TS-DBG file=' + filePath.split('/').pop() + ' type=' + rootNode.type + ' childCount=' + rootNode.childCount + ' children=' + (rootNode.children?.length ?? 'NO') + ' hasChildForField=' + typeof rootNode.childForFieldName)
     }
     
     const tsNode = rootNode as unknown as TreeSitterNode
@@ -491,7 +492,7 @@ export async function parseSymbols(
       return extractTsJsSymbols(tsNode, filePath)
     }
   } catch (e) {
-    console.warn(`[treesitter] Failed to parse ${filePath}:`, e)
+    log('treesitter', 'Failed to parse ' + filePath + ': ' + (e instanceof Error ? e.message : String(e)), 'warn')
     return []
   }
 }
@@ -702,7 +703,7 @@ export async function resolveCallEdges(
     
     return edges
   } catch (e) {
-    console.warn(`[treesitter] Failed to resolve call edges for ${filePath}:`, e)
+    log('treesitter', 'Failed to resolve call edges for ' + filePath + ': ' + (e instanceof Error ? e.message : String(e)), 'warn')
     return []
   }
 }
@@ -853,7 +854,7 @@ export async function resolveHeritageEdges(
     
     return edges
   } catch (e) {
-    console.warn(`[treesitter] Failed to resolve heritage edges for ${filePath}:`, e)
+    log('treesitter', 'Failed to resolve heritage edges for ' + filePath + ': ' + (e instanceof Error ? e.message : String(e)), 'warn')
     return []
   }
 }

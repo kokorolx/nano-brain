@@ -50,7 +50,7 @@ export function createStore(dbPath: string): Store {
   log('store', 'createStore dbPath=' + dbPath);
   
   const recoveryResult = checkAndRecoverDB(dbPath, {
-    logger: { log, error: console.error },
+    logger: { log, error: (msg: string) => log('store', msg, 'error') },
     metricsCallback: (event: string) => {
       if (event === 'corruption_detected') {
         incrementCounter('database_corruption_detected');
@@ -73,7 +73,7 @@ export function createStore(dbPath: string): Store {
     sqliteVec.load(db);
     vecAvailable = true;
   } catch {
-    console.warn('sqlite-vec extension not available, vector search disabled');
+    log('store', 'sqlite-vec extension not available, vector search disabled', 'warn');
   }
   
   db.exec(`
@@ -309,7 +309,7 @@ export function createStore(dbPath: string): Store {
   
   // Schema versioning
   const currentVersion = (db.pragma('user_version') as Array<{ user_version: number }>)[0].user_version;
-  const TARGET_VERSION = 3;
+  const TARGET_VERSION = 6;
 
   if (currentVersion < 1) {
     db.exec(`
@@ -430,6 +430,87 @@ export function createStore(dbPath: string): Store {
     db.pragma(`user_version = 3`);
     log('store', 'Schema migrated to version 3 (suggestion feedback table)');
   }
+
+  if (currentVersion < 4) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS consolidation_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        processed_at TEXT,
+        result TEXT,
+        error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_consolidation_queue_status ON consolidation_queue(status);
+
+      CREATE TABLE IF NOT EXISTS consolidation_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        reason TEXT,
+        target_doc_id INTEGER,
+        model TEXT,
+        tokens_used INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+    db.pragma(`user_version = 4`);
+    log('store', 'Schema migrated to version 4 (consolidation queue tables)');
+  }
+
+  if (currentVersion < 5) {
+    const hasAccessCount = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'access_count');
+    if (!hasAccessCount) {
+      db.exec("ALTER TABLE documents ADD COLUMN access_count INTEGER DEFAULT 0");
+    }
+    const hasLastAccessedAt = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'last_accessed_at');
+    if (!hasLastAccessedAt) {
+      db.exec("ALTER TABLE documents ADD COLUMN last_accessed_at TEXT");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_documents_access ON documents(access_count, last_accessed_at)");
+    db.pragma(`user_version = 5`);
+    log('store', 'Schema migrated to version 5 (access tracking columns)');
+  }
+
+  if (currentVersion < 6) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_entities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        description TEXT,
+        project_hash TEXT NOT NULL,
+        first_learned_at TEXT NOT NULL DEFAULT (datetime('now')),
+        last_confirmed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        contradicted_at TEXT,
+        contradicted_by_memory_id INTEGER,
+        UNIQUE(name COLLATE NOCASE, type, project_hash)
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_entities_name ON memory_entities(name COLLATE NOCASE);
+      CREATE INDEX IF NOT EXISTS idx_memory_entities_type ON memory_entities(type, project_hash);
+
+      CREATE TABLE IF NOT EXISTS memory_edges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER NOT NULL REFERENCES memory_entities(id),
+        target_id INTEGER NOT NULL REFERENCES memory_entities(id),
+        edge_type TEXT NOT NULL,
+        project_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(source_id, target_id, edge_type, project_hash)
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_edges_source ON memory_edges(source_id);
+      CREATE INDEX IF NOT EXISTS idx_memory_edges_target ON memory_edges(target_id);
+    `);
+    db.pragma(`user_version = 6`);
+    log('store', 'Schema migrated to version 6 (memory graph tables)');
+  }
+
+  if (currentVersion < 7) {
+    db.exec(`ALTER TABLE memory_entities ADD COLUMN pruned_at TEXT`);
+    db.pragma(`user_version = 7`);
+    log('store', 'Schema migrated to version 7 (entity pruning support)');
+  }
   
   if (vecAvailable) {
     try {
@@ -440,7 +521,7 @@ export function createStore(dbPath: string): Store {
         );
       `);
     } catch (err) {
-      console.warn('Failed to create vector table:', err);
+      log('store', `Failed to create vector table: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       vecAvailable = false;
     }
   }
@@ -560,6 +641,10 @@ export function createStore(dbPath: string): Store {
     SELECT project_hash as projectHash, COUNT(*) as count
     FROM documents WHERE active = 1
     GROUP BY project_hash
+  `);
+
+  const getExtractedFactCountStmt = db.prepare(`
+    SELECT COUNT(*) as count FROM documents WHERE path LIKE 'auto:extracted-fact:%' AND active = 1
   `);
   
   const getHashesNeedingEmbeddingStmt = db.prepare(`
@@ -827,6 +912,191 @@ export function createStore(dbPath: string): Store {
       SUM(CASE WHEN match_type = 'none' THEN 1 ELSE 0 END) as none
     FROM suggestion_feedback WHERE workspace_hash = ?
   `);
+
+  const enqueueConsolidationStmt = db.prepare(`
+    INSERT INTO consolidation_queue (document_id, status, created_at)
+    VALUES (?, 'pending', datetime('now'))
+  `);
+
+  const getNextPendingJobStmt = db.prepare(`
+    SELECT id, document_id FROM consolidation_queue
+    WHERE status = 'pending'
+    ORDER BY created_at ASC
+    LIMIT 1
+  `);
+
+  const updateJobStatusStmt = db.prepare(`
+    UPDATE consolidation_queue
+    SET status = ?, processed_at = datetime('now'), result = ?, error = ?
+    WHERE id = ?
+  `);
+
+  const getQueueStatsStmt = db.prepare(`
+    SELECT 
+      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+      SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing,
+      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+    FROM consolidation_queue
+  `);
+
+  const addConsolidationLogStmt = db.prepare(`
+    INSERT INTO consolidation_log (document_id, action, reason, target_doc_id, model, tokens_used, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+  `);
+
+  const getRecentConsolidationLogsStmt = db.prepare(`
+    SELECT id, document_id, action, reason, target_doc_id, model, tokens_used, created_at
+    FROM consolidation_log
+    ORDER BY created_at DESC
+    LIMIT ?
+  `);
+
+  const insertOrUpdateEntityStmt = db.prepare(`
+    INSERT INTO memory_entities (name, type, description, project_hash, first_learned_at, last_confirmed_at)
+    VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+    ON CONFLICT(name COLLATE NOCASE, type, project_hash) DO UPDATE SET
+      description = COALESCE(excluded.description, memory_entities.description),
+      last_confirmed_at = datetime('now')
+  `);
+
+  const getEntityByIdStmt = db.prepare(`
+    SELECT id, name, type, description, project_hash as projectHash,
+           first_learned_at as firstLearnedAt, last_confirmed_at as lastConfirmedAt,
+           contradicted_at as contradictedAt, contradicted_by_memory_id as contradictedByMemoryId
+    FROM memory_entities WHERE id = ?
+  `);
+
+  const getEntityByNameStmt = db.prepare(`
+    SELECT id, name, type, description, project_hash as projectHash,
+           first_learned_at as firstLearnedAt, last_confirmed_at as lastConfirmedAt,
+           contradicted_at as contradictedAt, contradicted_by_memory_id as contradictedByMemoryId
+    FROM memory_entities WHERE name COLLATE NOCASE = ?
+  `);
+
+  const getEntityByNameAndTypeStmt = db.prepare(`
+    SELECT id, name, type, description, project_hash as projectHash,
+           first_learned_at as firstLearnedAt, last_confirmed_at as lastConfirmedAt,
+           contradicted_at as contradictedAt, contradicted_by_memory_id as contradictedByMemoryId
+    FROM memory_entities WHERE name COLLATE NOCASE = ? AND type = ?
+  `);
+
+  const getEntityByNameTypeProjectStmt = db.prepare(`
+    SELECT id, name, type, description, project_hash as projectHash,
+           first_learned_at as firstLearnedAt, last_confirmed_at as lastConfirmedAt,
+           contradicted_at as contradictedAt, contradicted_by_memory_id as contradictedByMemoryId
+    FROM memory_entities WHERE name COLLATE NOCASE = ? AND type = ? AND project_hash = ?
+  `);
+
+  const insertMemoryEdgeStmt = db.prepare(`
+    INSERT OR IGNORE INTO memory_edges (source_id, target_id, edge_type, project_hash)
+    VALUES (?, ?, ?, ?)
+  `);
+
+  const getEntityEdgesIncomingStmt = db.prepare(`
+    SELECT e.id, e.source_id as sourceId, e.target_id as targetId, e.edge_type as edgeType,
+           e.project_hash as projectHash, e.created_at as createdAt,
+           s.name as sourceName, t.name as targetName
+    FROM memory_edges e
+    JOIN memory_entities s ON s.id = e.source_id
+    JOIN memory_entities t ON t.id = e.target_id
+    WHERE e.target_id = ?
+  `);
+
+  const getEntityEdgesOutgoingStmt = db.prepare(`
+    SELECT e.id, e.source_id as sourceId, e.target_id as targetId, e.edge_type as edgeType,
+           e.project_hash as projectHash, e.created_at as createdAt,
+           s.name as sourceName, t.name as targetName
+    FROM memory_edges e
+    JOIN memory_entities s ON s.id = e.source_id
+    JOIN memory_entities t ON t.id = e.target_id
+    WHERE e.source_id = ?
+  `);
+
+  const getEntityEdgesBothStmt = db.prepare(`
+    SELECT e.id, e.source_id as sourceId, e.target_id as targetId, e.edge_type as edgeType,
+           e.project_hash as projectHash, e.created_at as createdAt,
+           s.name as sourceName, t.name as targetName
+    FROM memory_edges e
+    JOIN memory_entities s ON s.id = e.source_id
+    JOIN memory_entities t ON t.id = e.target_id
+    WHERE e.source_id = ? OR e.target_id = ?
+  `);
+
+  const markEntityContradictedStmt = db.prepare(`
+    UPDATE memory_entities SET contradicted_at = datetime('now'), contradicted_by_memory_id = ?
+    WHERE id = ?
+  `);
+
+  const confirmEntityStmt = db.prepare(`
+    UPDATE memory_entities SET last_confirmed_at = datetime('now') WHERE id = ?
+  `);
+
+  const getMemoryEntitiesStmt = db.prepare(`
+    SELECT id, name, type, description, project_hash as projectHash,
+           first_learned_at as firstLearnedAt, last_confirmed_at as lastConfirmedAt,
+           contradicted_at as contradictedAt, contradicted_by_memory_id as contradictedByMemoryId
+    FROM memory_entities WHERE project_hash = ?
+    ORDER BY last_confirmed_at DESC
+    LIMIT ?
+  `);
+
+  const getMemoryEntityCountStmt = db.prepare(`
+    SELECT COUNT(*) as count FROM memory_entities WHERE project_hash = ?
+  `);
+
+  const getContradictedEntitiesForPruningStmt = db.prepare(`
+    SELECT id FROM memory_entities
+    WHERE contradicted_at IS NOT NULL
+      AND contradicted_at < datetime('now', '-' || ? || ' days')
+      AND pruned_at IS NULL
+    LIMIT ?
+  `);
+
+  const getContradictedEntitiesForPruningByProjectStmt = db.prepare(`
+    SELECT id FROM memory_entities
+    WHERE contradicted_at IS NOT NULL
+      AND contradicted_at < datetime('now', '-' || ? || ' days')
+      AND pruned_at IS NULL
+      AND project_hash = ?
+    LIMIT ?
+  `);
+
+  const getOrphanEntitiesForPruningStmt = db.prepare(`
+    SELECT e.id FROM memory_entities e
+    LEFT JOIN memory_edges me_src ON me_src.source_id = e.id
+    LEFT JOIN memory_edges me_tgt ON me_tgt.target_id = e.id
+    WHERE me_src.id IS NULL AND me_tgt.id IS NULL
+      AND e.last_confirmed_at < datetime('now', '-' || ? || ' days')
+      AND e.pruned_at IS NULL
+    LIMIT ?
+  `);
+
+  const getOrphanEntitiesForPruningByProjectStmt = db.prepare(`
+    SELECT e.id FROM memory_entities e
+    LEFT JOIN memory_edges me_src ON me_src.source_id = e.id
+    LEFT JOIN memory_edges me_tgt ON me_tgt.target_id = e.id
+    WHERE me_src.id IS NULL AND me_tgt.id IS NULL
+      AND e.last_confirmed_at < datetime('now', '-' || ? || ' days')
+      AND e.pruned_at IS NULL
+      AND e.project_hash = ?
+    LIMIT ?
+  `);
+
+  const getPrunedEntitiesForHardDeleteStmt = db.prepare(`
+    SELECT id FROM memory_entities
+    WHERE pruned_at IS NOT NULL
+      AND pruned_at < datetime('now', '-' || ? || ' days')
+    LIMIT ?
+  `);
+
+  const getPrunedEntitiesForHardDeleteByProjectStmt = db.prepare(`
+    SELECT id FROM memory_entities
+    WHERE pruned_at IS NOT NULL
+      AND pruned_at < datetime('now', '-' || ? || ' days')
+      AND project_hash = ?
+    LIMIT ?
+  `);
   
   return {
     modelStatus: {
@@ -926,10 +1196,13 @@ export function createStore(dbPath: string): Store {
       db.exec('CREATE TEMP TABLE IF NOT EXISTS _active_paths(path TEXT PRIMARY KEY)');
       db.exec('DELETE FROM _active_paths');
       const insertPath = db.prepare('INSERT OR IGNORE INTO _active_paths(path) VALUES(?)');
-      const insertMany = db.transaction((paths: string[]) => {
+      const BATCH_SIZE = 200;
+      const insertBatch = db.transaction((paths: string[]) => {
         for (const p of paths) insertPath.run(p);
       });
-      insertMany(activePaths);
+      for (let i = 0; i < activePaths.length; i += BATCH_SIZE) {
+        insertBatch(activePaths.slice(i, i + BATCH_SIZE));
+      }
       const updateStmt = db.prepare('UPDATE documents SET active = 0 WHERE collection = ? AND path NOT IN (SELECT path FROM _active_paths)');
       const result = updateStmt.run(collection);
       db.exec('DROP TABLE IF EXISTS _active_paths');
@@ -941,7 +1214,7 @@ export function createStore(dbPath: string): Store {
           if (!afterHashes.has(hash)) {
             vectorStore.deleteByHash(hash).catch(err => {
               log('store', 'bulkDeactivateExcept vector cleanup failed hash=' + hash.substring(0, 8));
-              console.warn('[store] Failed to cleanup vector:', err);
+              log('store', `Failed to cleanup vector: ${err instanceof Error ? err.message : String(err)}`, 'warn');
             });
           }
         }
@@ -970,7 +1243,7 @@ export function createStore(dbPath: string): Store {
         };
         externalVectorStore.upsert(point).catch((err) => {
           log('store', 'insertEmbedding external vector store upsert failed hash=' + hash.substring(0, 8));
-          console.warn(`[store] External vector store upsert failed for ${hash.substring(0, 8)}:${seq}, will retry on next embedding cycle:`, err);
+          log('store', `External vector store upsert failed for ${hash.substring(0, 8)}:${seq}, will retry on next embedding cycle: ${err instanceof Error ? err.message : String(err)}`, 'warn');
         });
       } else if (vecAvailable) {
         try {
@@ -987,7 +1260,7 @@ export function createStore(dbPath: string): Store {
           const msg = err instanceof Error ? err.message : String(err);
           if (!msg.includes('UNIQUE constraint')) {
             log('store', 'insertEmbedding vector insert failed hash=' + hash.substring(0, 8));
-            console.warn('Failed to insert vector:', err);
+            log('store', `Failed to insert vector: ${err instanceof Error ? err.message : String(err)}`, 'warn');
           }
         }
       }
@@ -1007,7 +1280,7 @@ export function createStore(dbPath: string): Store {
           if (vecCount === 0 && cvCount > 0) {
             // vectors_vec was rebuilt but content_vectors has stale tracking rows
             log('store', 'ensureVecTable clearing stale content_vectors count=' + cvCount);
-            console.error(`[store] vectors_vec empty but content_vectors has ${cvCount} stale rows, clearing for re-embedding`);
+            log('store', `vectors_vec empty but content_vectors has ${cvCount} stale rows, clearing for re-embedding`, 'error');
             db.exec(`DELETE FROM content_vectors`);
           }
           return;
@@ -1025,10 +1298,10 @@ export function createStore(dbPath: string): Store {
               embedding float[${dimensions}] distance_metric=cosine
             );
           `);
-          console.error(`[store] Recreated vectors_vec with ${dimensions} dimensions, cleared content_vectors and llm_cache for re-embedding`);
+          log('store', `Recreated vectors_vec with ${dimensions} dimensions, cleared content_vectors and llm_cache for re-embedding`);
         }
       } catch (err) {
-        console.warn('Failed to recreate vector table:', err);
+        log('store', `Failed to recreate vector table: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     },
     
@@ -1041,6 +1314,7 @@ export function createStore(dbPath: string): Store {
         SELECT 
           d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
           d.centrality, d.cluster_id, d.superseded_by,
+          d.access_count, d.last_accessed_at as lastAccessedAt,
           snippet(documents_fts, 2, '<mark>', '</mark>', '...', 64) as snippet,
           bm25(documents_fts) as score
         FROM documents_fts f
@@ -1097,6 +1371,8 @@ export function createStore(dbPath: string): Store {
         centrality: row.centrality as number | undefined,
         clusterId: row.cluster_id as number | undefined,
         supersededBy: row.superseded_by as number | null | undefined,
+        access_count: row.access_count as number | undefined,
+        lastAccessedAt: row.lastAccessedAt as string | null | undefined,
       }));
     },
     
@@ -1110,6 +1386,7 @@ export function createStore(dbPath: string): Store {
         let sql = `
           SELECT v.hash_seq, v.distance, d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
                  d.centrality, d.cluster_id, d.superseded_by,
+                 d.access_count, d.last_accessed_at as lastAccessedAt,
                  substr(c.body, 1, 700) as snippet
           FROM vectors_vec v
           JOIN documents d ON substr(v.hash_seq, 1, instr(v.hash_seq, ':') - 1) = d.hash
@@ -1167,14 +1444,16 @@ export function createStore(dbPath: string): Store {
           centrality: row.centrality as number | undefined,
           clusterId: row.cluster_id as number | undefined,
           supersededBy: row.superseded_by as number | null | undefined,
+          access_count: row.access_count as number | undefined,
+          lastAccessedAt: row.lastAccessedAt as string | null | undefined,
         }));
       } catch (err) {
-        console.warn('Vector search failed:', err);
+        log('store', `Vector search failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
         return [];
       }
     },
     
-    setVectorStore(vs: VectorStore): void {
+    setVectorStore(vs: VectorStore | null): void {
       vectorStore = vs;
     },
     
@@ -1186,7 +1465,7 @@ export function createStore(dbPath: string): Store {
       if (vectorStore) {
         vectorStore.deleteByHash(hash).catch(err => {
           log('store', 'cleanupVectorsForHash failed hash=' + hash.substring(0, 8));
-          console.warn('[store] Failed to cleanup vectors for hash:', err);
+          log('store', `Failed to cleanup vectors for hash: ${err instanceof Error ? err.message : String(err)}`, 'warn');
         });
       }
     },
@@ -1196,7 +1475,7 @@ export function createStore(dbPath: string): Store {
       
       if (vectorStore) {
         try {
-          const vecResults = await vectorStore.search(embedding, { limit, collection, projectHash });
+          const vecResults = await vectorStore.search(embedding, { limit: limit * 3, collection });
           if (vecResults.length === 0) return [];
           
           const results: SearchResult[] = [];
@@ -1204,6 +1483,7 @@ export function createStore(dbPath: string): Store {
             const row = db.prepare(`
               SELECT d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
                      d.centrality, d.cluster_id, d.superseded_by, d.modified_at,
+                     d.access_count, d.last_accessed_at as lastAccessedAt,
                      substr(c.body, 1, 700) as snippet
               FROM documents d
               LEFT JOIN content c ON c.hash = d.hash
@@ -1240,13 +1520,15 @@ export function createStore(dbPath: string): Store {
               centrality: row.centrality as number | undefined,
               clusterId: row.cluster_id as number | undefined,
               supersededBy: row.superseded_by as number | null | undefined,
+              access_count: row.access_count as number | undefined,
+              lastAccessedAt: row.lastAccessedAt as string | null | undefined,
             });
           }
           
           log('store', 'searchVecAsync(qdrant) query=' + query + ' results=' + results.length, 'debug');
           return results;
         } catch (err) {
-          console.warn('Qdrant vector search failed, falling back to SQLite:', err);
+          log('store', 'searchVecAsync qdrant failed, falling back to SQLite: ' + (err instanceof Error ? err.message : String(err)));
         }
       }
       
@@ -1288,6 +1570,7 @@ export function createStore(dbPath: string): Store {
       const collections = getCollectionStatsStmt.all() as Array<{ name: string; documentCount: number; path: string }>;
       const pending = (getHashesNeedingEmbeddingStmt.all(1000000) as unknown[]).length;
       const workspaceStats = this.getWorkspaceStats();
+      const extractedFactCount = (getExtractedFactCountStmt.get() as { count: number }).count;
       
       let dbSize = 0;
       try {
@@ -1305,6 +1588,7 @@ export function createStore(dbPath: string): Store {
         databaseSize: dbSize,
         modelStatus: this.modelStatus,
         workspaceStats: workspaceStats,
+        extractedFacts: extractedFactCount,
       };
     },
     
@@ -1496,7 +1780,7 @@ export function createStore(dbPath: string): Store {
         for (const hash of orphanedHashes) {
           vectorStore.deleteByHash(hash).catch(err => {
             log('store', 'cleanOrphanedEmbeddings vector cleanup failed hash=' + hash.substring(0, 8));
-            console.warn('[store] Failed to cleanup orphaned vector:', err);
+            log('store', `Failed to cleanup orphaned vector: ${err instanceof Error ? err.message : String(err)}`, 'warn');
           });
         }
         log('store', 'cleanOrphanedEmbeddings queued ' + orphanedHashes.length + ' vector store deletes');
@@ -1790,7 +2074,7 @@ export function createStore(dbPath: string): Store {
       try {
         recordTokenUsageStmt.run(model, tokens);
       } catch (err) {
-        console.warn('[store] Failed to record token usage:', err instanceof Error ? err.message : String(err));
+        log('store', `Failed to record token usage: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     },
 
@@ -1810,7 +2094,7 @@ export function createStore(dbPath: string): Store {
       try {
         insertTelemetryStmt.run(queryId, queryText, tier, configVariant, JSON.stringify(resultDocids), executionMs, sessionId, cacheKey, workspaceHash);
       } catch (err) {
-        console.warn('[store] Failed to log telemetry:', err instanceof Error ? err.message : String(err));
+        log('store', `Failed to log telemetry: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     },
 
@@ -1818,7 +2102,7 @@ export function createStore(dbPath: string): Store {
       try {
         updateTelemetryExpandStmt.run(JSON.stringify(expandedIndices), cacheKey);
       } catch (err) {
-        console.warn('[store] Failed to log expand:', err instanceof Error ? err.message : String(err));
+        log('store', `Failed to log expand: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     },
 
@@ -1830,7 +2114,7 @@ export function createStore(dbPath: string): Store {
       try {
         updateTelemetryReformulationStmt.run(telemetryId);
       } catch (err) {
-        console.warn('[store] Failed to mark reformulation:', err instanceof Error ? err.message : String(err));
+        log('store', `Failed to mark reformulation: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     },
 
@@ -1848,7 +2132,7 @@ export function createStore(dbPath: string): Store {
         try {
           upsertBanditStmt.run(s.parameterName, s.variantValue, s.successes, s.failures, workspaceHash);
         } catch (err) {
-          console.warn('[store] Failed to save bandit stats:', err instanceof Error ? err.message : String(err));
+          log('store', `Failed to save bandit stats: ${err instanceof Error ? err.message : String(err)}`, 'warn');
         }
       }
     },
@@ -1862,7 +2146,7 @@ export function createStore(dbPath: string): Store {
         const result = insertConfigVersionStmt.run(configJson, expandRate);
         return Number(result.lastInsertRowid);
       } catch (err) {
-        console.warn('[store] Failed to save config version:', err instanceof Error ? err.message : String(err));
+        log('store', `Failed to save config version: ${err instanceof Error ? err.message : String(err)}`, 'warn');
         return 0;
       }
     },
@@ -1935,7 +2219,7 @@ export function createStore(dbPath: string): Store {
       try {
         insertChainMembershipStmt.run(chainId, queryId, position, workspaceHash);
       } catch (err) {
-        console.warn('[store] Failed to insert chain membership:', err instanceof Error ? err.message : String(err));
+        log('store', `Failed to insert chain membership: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     },
 
@@ -1951,7 +2235,7 @@ export function createStore(dbPath: string): Store {
       try {
         upsertQueryClusterStmt.run(clusterId, centroidEmbedding, representativeQuery, queryCount, workspaceHash);
       } catch (err) {
-        console.warn('[store] Failed to upsert query cluster:', err instanceof Error ? err.message : String(err));
+        log('store', `Failed to upsert query cluster: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     },
 
@@ -1967,7 +2251,7 @@ export function createStore(dbPath: string): Store {
       try {
         upsertClusterTransitionStmt.run(fromId, toId, frequency, probability, workspaceHash);
       } catch (err) {
-        console.warn('[store] Failed to upsert cluster transition:', err instanceof Error ? err.message : String(err));
+        log('store', `Failed to upsert cluster transition: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     },
 
@@ -1987,7 +2271,7 @@ export function createStore(dbPath: string): Store {
       try {
         upsertGlobalTransitionStmt.run(fromId, toId, frequency, probability);
       } catch (err) {
-        console.warn('[store] Failed to upsert global transition:', err instanceof Error ? err.message : String(err));
+        log('store', `Failed to upsert global transition: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     },
 
@@ -2007,7 +2291,7 @@ export function createStore(dbPath: string): Store {
       try {
         insertSuggestionFeedbackStmt.run(suggestedQuery, actualQuery, matchType, workspaceHash);
       } catch (err) {
-        console.warn('[store] Failed to record suggestion feedback:', err instanceof Error ? err.message : String(err));
+        log('store', `Failed to record suggestion feedback: ${err instanceof Error ? err.message : String(err)}`, 'warn');
       }
     },
 
@@ -2019,6 +2303,268 @@ export function createStore(dbPath: string): Store {
         partial: row?.partial ?? 0,
         none: row?.none ?? 0,
       };
+    },
+
+    enqueueConsolidation(documentId: number): number {
+      try {
+        const result = enqueueConsolidationStmt.run(documentId);
+        return Number(result.lastInsertRowid);
+      } catch (err) {
+        log('store', `Failed to enqueue consolidation: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+        return 0;
+      }
+    },
+
+    getNextPendingJob(): { id: number; document_id: number } | null {
+      return getNextPendingJobStmt.get() as { id: number; document_id: number } | null;
+    },
+
+    updateJobStatus(jobId: number, status: 'processing' | 'completed' | 'failed', result?: string, error?: string): void {
+      try {
+        updateJobStatusStmt.run(status, result ?? null, error ?? null, jobId);
+      } catch (err) {
+        log('store', `Failed to update job status: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+      }
+    },
+
+    getQueueStats(): { pending: number; processing: number; completed: number; failed: number } {
+      const row = getQueueStatsStmt.get() as { pending: number | null; processing: number | null; completed: number | null; failed: number | null } | undefined;
+      return {
+        pending: row?.pending ?? 0,
+        processing: row?.processing ?? 0,
+        completed: row?.completed ?? 0,
+        failed: row?.failed ?? 0,
+      };
+    },
+
+    addConsolidationLog(entry: { documentId: number; action: string; reason: string; targetDocId?: number; model: string; tokensUsed: number }): void {
+      try {
+        addConsolidationLogStmt.run(
+          entry.documentId,
+          entry.action,
+          entry.reason,
+          entry.targetDocId ?? null,
+          entry.model,
+          entry.tokensUsed
+        );
+      } catch (err) {
+        log('store', `Failed to add consolidation log: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+      }
+    },
+
+    getRecentConsolidationLogs(limit: number = 10): Array<{ id: number; document_id: number; action: string; reason: string | null; target_doc_id: number | null; model: string | null; tokens_used: number; created_at: string }> {
+      return getRecentConsolidationLogsStmt.all(limit) as Array<{ id: number; document_id: number; action: string; reason: string | null; target_doc_id: number | null; model: string | null; tokens_used: number; created_at: string }>;
+    },
+
+    trackAccess(docIds: number[]): void {
+      if (docIds.length === 0) return;
+      try {
+        const placeholders = docIds.map(() => '?').join(',');
+        const sql = `UPDATE documents SET access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id IN (${placeholders})`;
+        db.prepare(sql).run(...docIds);
+      } catch (err) {
+        log('store', `Failed to track access: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+      }
+    },
+
+    insertOrUpdateEntity(entity: Omit<import('./types.js').MemoryEntity, 'id'>): number {
+      try {
+        insertOrUpdateEntityStmt.run(
+          entity.name,
+          entity.type,
+          entity.description ?? null,
+          entity.projectHash
+        );
+        const row = db.prepare(`
+          SELECT id FROM memory_entities 
+          WHERE name COLLATE NOCASE = ? AND type = ? AND project_hash = ?
+        `).get(entity.name, entity.type, entity.projectHash) as { id: number } | undefined;
+        return row?.id ?? 0;
+      } catch (err) {
+        log('store', `Failed to insert/update entity: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+        return 0;
+      }
+    },
+
+    insertEdge(edge: Omit<import('./types.js').MemoryEdge, 'id' | 'createdAt'>): number {
+      try {
+        const result = insertMemoryEdgeStmt.run(
+          edge.sourceId,
+          edge.targetId,
+          edge.edgeType,
+          edge.projectHash
+        );
+        if (result.changes === 0) {
+          const existing = db.prepare(`
+            SELECT id FROM memory_edges 
+            WHERE source_id = ? AND target_id = ? AND edge_type = ? AND project_hash = ?
+          `).get(edge.sourceId, edge.targetId, edge.edgeType, edge.projectHash) as { id: number } | undefined;
+          return existing?.id ?? 0;
+        }
+        return Number(result.lastInsertRowid);
+      } catch (err) {
+        log('store', `Failed to insert edge: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+        return 0;
+      }
+    },
+
+    getEntityByName(name: string, type?: string, projectHash?: string): import('./types.js').MemoryEntity | null {
+      let row: Record<string, unknown> | undefined;
+      if (type && projectHash) {
+        row = getEntityByNameTypeProjectStmt.get(name, type, projectHash) as Record<string, unknown> | undefined;
+      } else if (type) {
+        row = getEntityByNameAndTypeStmt.get(name, type) as Record<string, unknown> | undefined;
+      } else {
+        row = getEntityByNameStmt.get(name) as Record<string, unknown> | undefined;
+      }
+      if (!row) return null;
+      return {
+        id: row.id as number,
+        name: row.name as string,
+        type: row.type as import('./types.js').MemoryEntity['type'],
+        description: row.description as string | undefined,
+        projectHash: row.projectHash as string,
+        firstLearnedAt: row.firstLearnedAt as string,
+        lastConfirmedAt: row.lastConfirmedAt as string,
+        contradictedAt: row.contradictedAt as string | null | undefined,
+        contradictedByMemoryId: row.contradictedByMemoryId as number | null | undefined,
+      };
+    },
+
+    getEntityById(id: number): import('./types.js').MemoryEntity | null {
+      const row = getEntityByIdStmt.get(id) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        id: row.id as number,
+        name: row.name as string,
+        type: row.type as import('./types.js').MemoryEntity['type'],
+        description: row.description as string | undefined,
+        projectHash: row.projectHash as string,
+        firstLearnedAt: row.firstLearnedAt as string,
+        lastConfirmedAt: row.lastConfirmedAt as string,
+        contradictedAt: row.contradictedAt as string | null | undefined,
+        contradictedByMemoryId: row.contradictedByMemoryId as number | null | undefined,
+      };
+    },
+
+    getEntityEdges(entityId: number, direction: 'incoming' | 'outgoing' | 'both' = 'both'): Array<import('./types.js').MemoryEdge & { sourceName: string; targetName: string }> {
+      let rows: Array<Record<string, unknown>>;
+      if (direction === 'incoming') {
+        rows = getEntityEdgesIncomingStmt.all(entityId) as Array<Record<string, unknown>>;
+      } else if (direction === 'outgoing') {
+        rows = getEntityEdgesOutgoingStmt.all(entityId) as Array<Record<string, unknown>>;
+      } else {
+        rows = getEntityEdgesBothStmt.all(entityId, entityId) as Array<Record<string, unknown>>;
+      }
+      return rows.map(row => ({
+        id: row.id as number,
+        sourceId: row.sourceId as number,
+        targetId: row.targetId as number,
+        edgeType: row.edgeType as import('./types.js').MemoryEdge['edgeType'],
+        projectHash: row.projectHash as string,
+        createdAt: row.createdAt as string,
+        sourceName: row.sourceName as string,
+        targetName: row.targetName as string,
+      }));
+    },
+
+    markEntityContradicted(entityId: number, contradictedByMemoryId: number): void {
+      try {
+        markEntityContradictedStmt.run(contradictedByMemoryId, entityId);
+      } catch (err) {
+        log('store', `Failed to mark entity contradicted: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+      }
+    },
+
+    confirmEntity(entityId: number): void {
+      try {
+        confirmEntityStmt.run(entityId);
+      } catch (err) {
+        log('store', `Failed to confirm entity: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+      }
+    },
+
+    getMemoryEntities(projectHash: string, limit: number = 100): import('./types.js').MemoryEntity[] {
+      const rows = getMemoryEntitiesStmt.all(projectHash, limit) as Array<Record<string, unknown>>;
+      return rows.map(row => ({
+        id: row.id as number,
+        name: row.name as string,
+        type: row.type as import('./types.js').MemoryEntity['type'],
+        description: row.description as string | undefined,
+        projectHash: row.projectHash as string,
+        firstLearnedAt: row.firstLearnedAt as string,
+        lastConfirmedAt: row.lastConfirmedAt as string,
+        contradictedAt: row.contradictedAt as string | null | undefined,
+        contradictedByMemoryId: row.contradictedByMemoryId as number | null | undefined,
+      }));
+    },
+
+    getMemoryEntityCount(projectHash: string): number {
+      const row = getMemoryEntityCountStmt.get(projectHash) as { count: number };
+      return row.count;
+    },
+
+    getContradictedEntitiesForPruning(ttlDays: number, batchSize: number, projectHash?: string): number[] {
+      let rows: Array<{ id: number }>;
+      if (projectHash) {
+        rows = getContradictedEntitiesForPruningByProjectStmt.all(ttlDays, projectHash, batchSize) as Array<{ id: number }>;
+      } else {
+        rows = getContradictedEntitiesForPruningStmt.all(ttlDays, batchSize) as Array<{ id: number }>;
+      }
+      return rows.map(r => r.id);
+    },
+
+    getOrphanEntitiesForPruning(ttlDays: number, batchSize: number, projectHash?: string): number[] {
+      let rows: Array<{ id: number }>;
+      if (projectHash) {
+        rows = getOrphanEntitiesForPruningByProjectStmt.all(ttlDays, projectHash, batchSize) as Array<{ id: number }>;
+      } else {
+        rows = getOrphanEntitiesForPruningStmt.all(ttlDays, batchSize) as Array<{ id: number }>;
+      }
+      return rows.map(r => r.id);
+    },
+
+    getPrunedEntitiesForHardDelete(retentionDays: number, batchSize: number, projectHash?: string): number[] {
+      let rows: Array<{ id: number }>;
+      if (projectHash) {
+        rows = getPrunedEntitiesForHardDeleteByProjectStmt.all(retentionDays, projectHash, batchSize) as Array<{ id: number }>;
+      } else {
+        rows = getPrunedEntitiesForHardDeleteStmt.all(retentionDays, batchSize) as Array<{ id: number }>;
+      }
+      return rows.map(r => r.id);
+    },
+
+    softDeleteEntities(ids: number[]): void {
+      if (ids.length === 0) return;
+      const placeholders = ids.map(() => '?').join(',');
+      db.prepare(`UPDATE memory_entities SET pruned_at = datetime('now') WHERE id IN (${placeholders})`).run(...ids);
+    },
+
+    hardDeleteEntities(ids: number[]): void {
+      if (ids.length === 0) return;
+      const placeholders = ids.map(() => '?').join(',');
+      db.prepare(`DELETE FROM memory_entities WHERE id IN (${placeholders})`).run(...ids);
+      db.prepare(`DELETE FROM memory_edges WHERE source_id NOT IN (SELECT id FROM memory_entities) OR target_id NOT IN (SELECT id FROM memory_entities)`).run();
+    },
+
+    getUncategorizedDocuments(limit: number, projectHash?: string): Array<{ id: number; path: string; body: string }> {
+      let sql = `
+        SELECT d.id, d.path, c.body 
+        FROM documents d 
+        JOIN content c ON d.hash = c.hash
+        WHERE d.active = 1 
+        AND d.id NOT IN (
+          SELECT document_id FROM document_tags WHERE tag LIKE 'llm:%'
+        )
+      `;
+      const params: (string | number)[] = [];
+      if (projectHash && projectHash !== 'all') {
+        sql += ` AND d.project_hash IN (?, 'global')`;
+        params.push(projectHash);
+      }
+      sql += ` ORDER BY d.modified_at DESC LIMIT ?`;
+      params.push(limit);
+      return db.prepare(sql).all(...params) as Array<{ id: number; path: string; body: string }>;
     },
   };
 }

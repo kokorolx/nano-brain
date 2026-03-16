@@ -4,7 +4,9 @@ Persistent memory and code intelligence for AI coding agents.
 
 ## What It Does
 
-An MCP server that gives AI coding agents persistent memory across sessions. Indexes markdown documents, past sessions, daily logs, and codebase symbols into a searchable SQLite database with FTS5 and vector embeddings. Provides 17 MCP tools for search, retrieval, code intelligence, and memory management using a hybrid search pipeline with RRF fusion and VoyageAI neural reranking.
+A persistent memory server for AI coding agents. It solves the #1 problem with AI assistants: **they forget everything between sessions.**
+
+nano-brain automatically ingests your AI sessions, notes, and codebase, indexes everything with full-text search + vector embeddings + knowledge graph, serves memories via 22 MCP tools, and learns which memories matter most to you over time.
 
 ## Key Features
 
@@ -17,6 +19,9 @@ An MCP server that gives AI coding agents persistent memory across sessions. Ind
 - **Privacy-first** — 100% local processing option, your code never leaves your machine
 - **MCP + CLI** — stdio/HTTP/SSE transports for local or containerized environments
 - **Automatic corruption recovery** — detects & recovers from database corruption on startup with zero user intervention
+- **Self-learning system** — Thompson Sampling tunes search parameters, preference learning personalizes results
+- **Knowledge graph** — LLM-extracted entities and relationships, graph traversal, temporal queries
+- **Memory intelligence** — LLM categorization, entity pruning, proactive suggestions
 
 Inspired by [QMD](https://github.com/tobi/qmd) and [OpenClaw](https://github.com/openclaw/openclaw).
 
@@ -73,6 +78,33 @@ User Query
          │
          ▼
     Final Results
+```
+
+### Write Pipeline
+
+```
+Memory Write
+    │
+    ▼
+┌─────────────────┐
+│ Save to File     │ → ~/.nano-brain/memory/
+│ Hash + DB Insert │ → documents + content tables
+│ FTS5 Index       │ → documents_fts (auto-trigger)
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+┌────────┐ ┌──────────┐
+│Keyword │ │  Async   │ (fire-and-forget)
+│Categorize│ │ Processes│
+│auto:*  │ │          │
+└────────┘ ├──────────┤
+           │ LLM      │ → llm:* tags
+           │ Categorize│
+           ├──────────┤
+           │ Entity   │ → knowledge graph
+           │ Extract  │
+           └──────────┘
 ```
 
 ## Search Pipeline (3 Tiers)
@@ -163,6 +195,22 @@ All data sources are indexed automatically:
 - Adaptive embedding backoff (exponential retry)
 - Batch processing for large codebases
 
+## Background Jobs
+
+nano-brain runs 9 background jobs to keep your memory fresh and intelligent:
+
+| Job | Interval | What It Does |
+|-----|----------|-------------|
+| File reindex | 5 min | Watch collections, reindex changed files |
+| Session harvest | 2 min | Convert OpenCode sessions → searchable markdown |
+| Embedding | 60s (adaptive) | Generate vector embeddings for new docs |
+| Learning cycle | 10 min | Thompson Sampling + preference weight updates |
+| Consolidation | 1 hour | LLM summarizes related memories |
+| Importance | 30 min | Rescore document importance from usage |
+| Sequence analysis | 30 min | Detect query patterns for proactive suggestions |
+| Pruning (soft) | 6 hours | Soft-delete contradicted/orphan entities |
+| Pruning (hard) | 7 days | Permanently delete old soft-deleted entities |
+
 ## Chunking Strategy
 
 Heading-aware markdown chunking that respects document structure:
@@ -206,6 +254,35 @@ Heading-aware markdown chunking that respects document structure:
 - Retention policies (maxSize budget, auto-cleanup)
 - Disk space checks before indexing
 
+## Database Schema
+
+nano-brain uses 18 SQLite tables organized into 5 functional groups:
+
+| Table | Purpose |
+|-------|---------|
+| **Core Documents** | |
+| `documents` | Document metadata, content, embeddings |
+| `chunks` | Heading-aware markdown chunks (900 tokens, 15% overlap) |
+| `content` | Raw content storage (content-addressed) |
+| **Search Indexes** | |
+| `documents_fts` | FTS5 full-text search index (porter stemming) |
+| `vec_index` | sqlite-vec vector index (cosine distance) |
+| **Code Intelligence** | |
+| `symbols` | Code symbols (functions, classes, variables) |
+| `call_edges` | Caller → callee relationships |
+| `file_deps` | Import/export graph |
+| `clusters` | Louvain clustering results |
+| `flows` | Detected call flows (entry → leaf) |
+| **Knowledge Graph** | |
+| `entities` | LLM-extracted entities (people, concepts, tools) |
+| `relationships` | Entity-to-entity connections |
+| **Learning & Intelligence** | |
+| `telemetry` | Search queries, results, expand feedback |
+| `bandit_variants` | Thompson Sampling search parameter tuning |
+| `config_versions` | Search config version history |
+| `consolidations` | LLM-generated memory summaries |
+| `query_sequences` | Query pattern detection for proactive suggestions |
+| `category_preferences` | Per-workspace category weights from expand patterns |
 
 ## Database Reliability & Corruption Recovery
 
@@ -275,7 +352,7 @@ Corrupted backups are kept for analysis:
 - Last 5 backups are kept by default; older ones are auto-cleaned
 - File size indicates when corruption occurred (if truncated vs intact)
 
-## MCP Tools (17 Total)
+## MCP Tools (22+ Total)
 
 ### Search & Retrieval
 
@@ -295,6 +372,8 @@ Corrupted backups are kept for analysis:
 | `memory_tags` | List all tags with document counts |
 | `memory_status` | Index health, collections, model status, graph stats |
 | `memory_update` | Trigger reindex of all collections |
+| `memory_consolidate` | Trigger LLM memory consolidation |
+| `memory_suggestions` | Proactive next-query predictions based on patterns |
 
 ### Code Intelligence
 
@@ -313,6 +392,9 @@ Corrupted backups are kept for analysis:
 | `memory_graph_stats` | Dependency graph overview (files, symbols, edges, cycles) |
 | `memory_symbols` | Cross-repo symbol query (Redis, MySQL, API endpoints, queues) |
 | `memory_impact` | Cross-repo impact analysis (writers vs readers) |
+| `memory_graph_query` | BFS traversal from entity through knowledge graph |
+| `memory_related` | Find related memories via entity graph connections |
+| `memory_timeline` | Temporal view of entity changes over time |
 
 ## Installation & Quick Start
 
@@ -453,6 +535,29 @@ workspaces:
   isolation: true       # Per-workspace SQLite databases
   defaultScope: current # or 'all' for cross-workspace search
 
+# Entity pruning (Memory Intelligence v2)
+pruning:
+  enabled: true
+  interval_ms: 21600000      # 6 hours
+  contradicted_ttl_days: 30
+  orphan_ttl_days: 90
+  batch_size: 100
+  hard_delete_after_days: 30
+
+# LLM categorization (Memory Intelligence v2)
+categorization:
+  llm_enabled: true
+  confidence_threshold: 0.6
+  max_content_length: 2000
+
+# Preference learning (Memory Intelligence v2)
+preferences:
+  enabled: true
+  min_queries: 20
+  weight_min: 0.5
+  weight_max: 2.0
+  baseline_expand_rate: 0.1
+
 # Logging
 logging:
   level: info           # debug, info, warn, error
@@ -590,7 +695,7 @@ nano-brain logs path            # Print log directory path
 ```
 src/
 ├── index.ts          # CLI entry point
-├── server.ts         # MCP server (17 tools, stdio/HTTP/SSE)
+├── server.ts         # MCP server (22+ tools, stdio/HTTP/SSE)
 ├── store.ts          # SQLite storage (FTS5 + sqlite-vec)
 ├── storage.ts        # Storage management (retention, disk space)
 ├── vector-store.ts   # Vector store abstraction (Qdrant + sqlite-vec)
@@ -650,7 +755,7 @@ AGENTS_SNIPPET.md     # Optional project-level AGENTS.md managed block
 |---|---|---|---|---|---|---|
 | **Search** | Hybrid (BM25 + vector + 6 ranking signals) | Vector only | Graph traversal + vector | Semantic + BM25 | Agent-managed | Text file read |
 | **Storage** | SQLite + Qdrant (optional) | PostgreSQL + Qdrant | Neo4j | SQLite | PostgreSQL / SQLite | Flat text files |
-| **MCP Tools** | 17 | 4-9 | 9-10 | 12 | 7 | 0 |
+| **MCP Tools** | 22+ | 4-9 | 9-10 | 12 | 7 | 0 |
 | **Code Intelligence** | Yes (Tree-sitter AST, symbol graph, impact analysis) | No | No | No | No | No |
 | **Codebase Indexing** | Yes (AST → symbols → call graph → flows) | No | No | No | No | No |
 | **Session Recall** | Yes (auto-harvests past sessions) | No | No | No | No | Limited (CLAUDE.md) |
@@ -726,7 +831,15 @@ consolidation:
   interval_ms: 3600000   # Consolidation interval (60 min)
   model: gpt-4o-mini     # LLM model for consolidation
   endpoint: https://api.openai.com/v1  # OpenAI-compatible endpoint
-  apiKey: sk-...         # API key
+  apiKey: sk-...         # API key (not required for Ollama)
+  provider: openai       # 'openai' (default) or 'ollama'
+
+extraction:
+  enabled: true          # Enable fact extraction from sessions
+  model: gpt-4o-mini     # LLM model for extraction
+  endpoint: https://api.openai.com/v1
+  apiKey: sk-...
+  maxFactsPerSession: 20 # Max facts to extract per session
 
 importance:
   enabled: true          # Enable importance scoring
@@ -753,8 +866,92 @@ intents:
 ### MCP Tools
 
 - `memory_consolidate` — Trigger consolidation manually
+- `memory_consolidation_status` — View consolidation queue stats and recent logs
 - `memory_importance` — View document importance scores
 - `memory_status` — View learning system status (telemetry records, bandit variants, config version)
+
+## Memory Intelligence v2
+
+nano-brain includes three advanced intelligence features that make your memory smarter over time.
+
+### Entity Pruning
+
+Automatically cleans up outdated or contradicted information from the knowledge graph.
+
+**How it works:**
+- Background job runs every 6 hours
+- Soft-deletes contradicted entities after 30 days (when newer information supersedes them)
+- Soft-deletes orphan entities after 90 days (entities with no relationships)
+- Hard-deletes soft-deleted entities after 30-day retention period
+- Processes in batches of 100 to avoid SQLite lock contention
+
+**Configuration:**
+```yaml
+pruning:
+  enabled: true
+  interval_ms: 21600000      # 6 hours
+  contradicted_ttl_days: 30  # How long before contradicted entities are soft-deleted
+  orphan_ttl_days: 90        # How long before orphan entities are soft-deleted
+  batch_size: 100            # Max entities to process per cycle
+  hard_delete_after_days: 30 # Retention period for soft-deleted entities
+```
+
+**Why this matters:** Prevents your knowledge graph from accumulating stale information. When you update a decision or pattern, the old version is automatically pruned after the TTL expires.
+
+### LLM Categorization
+
+Adds semantic categorization to your memories using an LLM, going beyond simple keyword matching.
+
+**How it works:**
+- Runs asynchronously after the keyword categorizer (fire-and-forget)
+- Uses the same LLM provider configured for consolidation (same endpoint/model/apiKey)
+- Adds tags prefixed with `llm:` (e.g., `llm:architecture-decision`, `llm:debugging-insight`)
+- Only processes documents under 2000 characters (configurable)
+- Requires confidence threshold of 0.6 or higher (configurable)
+
+**7 semantic categories:**
+1. `llm:architecture-decision` — System design choices, trade-offs, patterns
+2. `llm:debugging-insight` — Root cause analysis, fix patterns, gotchas
+3. `llm:tool-config` — Setup instructions, configuration patterns
+4. `llm:pattern` — Reusable code patterns, best practices
+5. `llm:preference` — User preferences, workflow choices
+6. `llm:context` — Background information, explanations
+7. `llm:workflow` — Process documentation, how-to guides
+
+**Configuration:**
+```yaml
+categorization:
+  llm_enabled: true
+  confidence_threshold: 0.6   # Minimum confidence to apply a category
+  max_content_length: 2000    # Skip documents longer than this
+```
+
+**Why this matters:** Enables semantic filtering like `--tags=llm:architecture-decision` to find all design decisions, even if they don't use the word "architecture."
+
+### Preference Learning
+
+Learns which types of memories you expand most often and boosts them in future searches.
+
+**How it works:**
+- Tracks expand events per category per workspace
+- Calculates category weights based on expand rate vs baseline (10% default)
+- Applies weights as multipliers in search scoring (0.5× to 2.0× range)
+- Cold start: uses neutral weights until 20 queries collected
+- Updates every 10 minutes via learning cycle background job
+
+**Example:** If you expand `llm:debugging-insight` memories 30% of the time (vs 10% baseline), those memories get a 1.5× boost in future searches.
+
+**Configuration:**
+```yaml
+preferences:
+  enabled: true
+  min_queries: 20             # Minimum queries before personalization kicks in
+  weight_min: 0.5             # Minimum category weight (demotion)
+  weight_max: 2.0             # Maximum category weight (boost)
+  baseline_expand_rate: 0.1   # Expected expand rate (10%)
+```
+
+**Why this matters:** Your memory system adapts to your workflow. If you're debugging, debugging insights automatically surface higher. If you're designing, architecture decisions get prioritized.
 
 ## Proactive Intelligence
 
@@ -786,6 +983,16 @@ proactive:
   - `context` (optional): Current query or topic
   - `workspace` (optional): Workspace path
   - `limit` (optional): Max suggestions (default 3)
+
+## Troubleshooting
+
+**LLM provider unreachable**: Check endpoint URL and network connectivity. For Ollama, ensure `ollama serve` is running.
+
+**Invalid API key**: Verify `apiKey` in config or `CONSOLIDATION_API_KEY` env var. Ollama doesn't require an API key.
+
+**Empty LLM responses**: Check model name is correct. For Ollama, run `ollama list` to see available models.
+
+**Consolidation not running**: Ensure `consolidation.enabled: true` and check `memory_consolidation_status` for queue state.
 
 ## License
 

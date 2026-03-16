@@ -28,3 +28,25 @@ nano-brain stores memories as isolated documents without understanding relations
 - **Config** (`config.yml`): New `proactive` section with `enabled`, `maxSuggestions` fields; entity extraction settings under existing `llm` section
 - **Dependencies**: No new external dependencies. SQLite-only graph storage (no Neo4j).
 - **Prerequisites**: Phase 1 (memory decay, auto-categorization) and Phase 2 (LLM consolidation, fact extraction) must be implemented first
+
+## Implementation Status
+
+**Shipped in v2026.5.0** (2026-03-13). 98/98 tasks complete.
+
+All features verified via live MCP RRI-T testing (27/27 tests passed):
+- Schema v6 with memory_entities + memory_edges tables, COLLATE NOCASE dedup
+- Entity extraction via LLM (async fire-and-forget using primary store)
+- MemoryGraph class with BFS traversal, depth limits, relationship filtering
+- 3 MCP tools: memory_graph_query, memory_related, memory_timeline
+- Temporal metadata tracking (first_learned_at, last_confirmed_at, contradicted_at)
+- Contradiction detection integrated into consolidation flow
+- Proactive surfacing on memory_write via vector similarity
+
+### Bugs found and fixed during testing (rc.1 → rc.15)
+- Server crash on startup (null config.collections)
+- Search timeout >30s (5s Promise.race on vector search)
+- Event loop blocking (setImmediate yields in harvester/codebase/watcher)
+- DB lifecycle race (setTimeout entity extraction used closed DB)
+- resolveWorkspace opened new DB on every MCP call
+- Broken memory_edges.memory_id column reference
+- memory_related/memory_timeline bypassed to use primary store directly

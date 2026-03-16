@@ -37,6 +37,8 @@ export interface HybridSearchOptions {
   sampler?: ThompsonSampler;
   importanceScorer?: { getScore(docid: string): number; applyBoost(searchScore: number, importanceScore: number): number };
   intentClassifier?: IntentClassifier;
+  internal?: boolean;
+  categoryWeights?: Record<string, number>;
 }
 
 export interface SearchProviders {
@@ -52,7 +54,7 @@ export function parseSearchConfig(partial?: Partial<SearchConfig>): SearchConfig
   
   if (partial.rrf_k !== undefined) {
     if (partial.rrf_k < 0) {
-      console.warn('[search] Invalid rrf_k (negative), using default');
+      log('search', 'Invalid rrf_k (negative), using default', 'warn');
     } else {
       config.rrf_k = partial.rrf_k;
     }
@@ -60,7 +62,7 @@ export function parseSearchConfig(partial?: Partial<SearchConfig>): SearchConfig
   
   if (partial.top_k !== undefined) {
     if (partial.top_k < 0) {
-      console.warn('[search] Invalid top_k (negative), using default');
+      log('search', 'Invalid top_k (negative), using default', 'warn');
     } else {
       config.top_k = partial.top_k;
     }
@@ -68,7 +70,7 @@ export function parseSearchConfig(partial?: Partial<SearchConfig>): SearchConfig
   
   if (partial.centrality_weight !== undefined) {
     if (partial.centrality_weight < 0) {
-      console.warn('[search] Invalid centrality_weight (negative), using default');
+      log('search', 'Invalid centrality_weight (negative), using default', 'warn');
     } else {
       config.centrality_weight = partial.centrality_weight;
     }
@@ -76,7 +78,7 @@ export function parseSearchConfig(partial?: Partial<SearchConfig>): SearchConfig
   
   if (partial.supersede_demotion !== undefined) {
     if (partial.supersede_demotion < 0) {
-      console.warn('[search] Invalid supersede_demotion (negative), using default');
+      log('search', 'Invalid supersede_demotion (negative), using default', 'warn');
     } else {
       config.supersede_demotion = partial.supersede_demotion;
     }
@@ -92,7 +94,7 @@ export function parseSearchConfig(partial?: Partial<SearchConfig>): SearchConfig
     const checkWeights = (name: string, weights: { rrf: number; rerank: number }) => {
       const sum = weights.rrf + weights.rerank;
       if (Math.abs(sum - 1.0) > 0.01) {
-        console.warn(`[search] Blending weights for ${name} sum to ${sum.toFixed(2)}, expected ~1.0`);
+        log('search', `Blending weights for ${name} sum to ${sum.toFixed(2)}, expected ~1.0`, 'warn');
       }
     };
     checkWeights('top3', config.blending.top3);
@@ -106,7 +108,7 @@ export function parseSearchConfig(partial?: Partial<SearchConfig>): SearchConfig
       weight: partial.expansion.weight ?? DEFAULT_SEARCH_CONFIG.expansion.weight,
     };
     if (config.expansion.weight < 0) {
-      console.warn('[search] Invalid expansion.weight (negative), using default');
+      log('search', 'Invalid expansion.weight (negative), using default', 'warn');
       config.expansion.weight = DEFAULT_SEARCH_CONFIG.expansion.weight;
     }
   }
@@ -269,6 +271,72 @@ export function applySupersedeDemotion(
       };
     }
     return r;
+  });
+}
+
+export function computeDecayScore(
+  lastAccessedAt: string | null,
+  createdAt: string,
+  halfLifeDays: number
+): number {
+  const dateStr = lastAccessedAt ?? createdAt;
+  const daysSinceAccess = (Date.now() - Date.parse(dateStr)) / 86400000;
+  return 1 / (1 + daysSinceAccess / halfLifeDays);
+}
+
+export function applyUsageBoost(
+  results: SearchResult[],
+  config: { usageBoostWeight: number; decayHalfLifeDays: number }
+): SearchResult[] {
+  const weight = Math.max(0, Math.min(1, config.usageBoostWeight ?? 0.15));
+  const halfLife = Math.max(1, config.decayHalfLifeDays ?? 30);
+  const boosted = results.map(r => {
+    const accessCount = (r as any).access_count ?? 0;
+    if (accessCount === 0) {
+      return r;
+    }
+    const lastAccessedAt = (r as any).lastAccessedAt ?? null;
+    const createdAt = (r as any).createdAt ?? new Date().toISOString();
+    const decayScore = computeDecayScore(lastAccessedAt, createdAt, halfLife);
+    const boost = Math.log2(1 + accessCount) * decayScore * weight;
+    return {
+      ...r,
+      score: r.score * (1 + boost),
+    };
+  });
+  return boosted.sort((a, b) => b.score - a.score);
+}
+
+export function applyCategoryWeightBoost(
+  results: SearchResult[],
+  store: Store,
+  categoryWeights: Record<string, number>
+): SearchResult[] {
+  if (Object.keys(categoryWeights).length === 0) {
+    return results;
+  }
+
+  return results.map(r => {
+    const docId = parseInt(r.id);
+    if (isNaN(docId)) return r;
+
+    const tags = store.getDocumentTags(docId);
+    const categoryTags = tags.filter(t => t.startsWith('auto:') || t.startsWith('llm:'));
+
+    if (categoryTags.length === 0) return r;
+
+    let maxWeight = 1.0;
+    for (const tag of categoryTags) {
+      const weight = categoryWeights[tag];
+      if (weight !== undefined && weight > maxWeight) {
+        maxWeight = weight;
+      }
+    }
+
+    return {
+      ...r,
+      score: r.score * maxWeight,
+    };
   });
 }
 
@@ -445,18 +513,27 @@ export async function hybridSearch(
     
     let vecResults: SearchResult[] = [];
     if (embedder) {
+      const VEC_SEARCH_TIMEOUT_MS = 5000;
       try {
-        let embedding: number[];
-        const cached = store.getQueryEmbeddingCache(q);
-        if (cached) {
-          embedding = cached;
-        } else {
-          const result = await embedder.embed(q);
-          embedding = result.embedding;
-          store.setQueryEmbeddingCache(q, embedding);
-        }
-        vecResults = await store.searchVecAsync(q, embedding, searchOpts);
+        vecResults = await Promise.race([
+          (async () => {
+            let embedding: number[];
+            const cached = store.getQueryEmbeddingCache(q);
+            if (cached) {
+              embedding = cached;
+            } else {
+              const result = await embedder.embed(q);
+              embedding = result.embedding;
+              store.setQueryEmbeddingCache(q, embedding);
+            }
+            return store.searchVecAsync(q, embedding, searchOpts);
+          })(),
+          new Promise<SearchResult[]>((resolve) =>
+            setTimeout(() => resolve([]), VEC_SEARCH_TIMEOUT_MS)
+          ),
+        ]);
       } catch {
+        // Embed or vec search failed — fall back to FTS-only results
       }
     }
     
@@ -527,6 +604,17 @@ export async function hybridSearch(
   fusedResults = applyTopRankBonus(fusedResults, originalFtsResults);
   
   fusedResults = applyCentralityBoost(fusedResults, config.centrality_weight);
+  
+  if ((config as any).usage_boost_weight > 0) {
+    fusedResults = applyUsageBoost(fusedResults, {
+      usageBoostWeight: (config as any).usage_boost_weight ?? 0.15,
+      decayHalfLifeDays: 30,
+    });
+  }
+
+  if (options.categoryWeights && Object.keys(options.categoryWeights).length > 0) {
+    fusedResults = applyCategoryWeightBoost(fusedResults, store, options.categoryWeights);
+  }
   
   fusedResults = applySupersedeDemotion(fusedResults, config.supersede_demotion);
 
@@ -622,6 +710,16 @@ export async function hybridSearch(
       projectHash ?? 'global'
     );
   } catch {
+  }
+
+  if (!options.internal) {
+    try {
+      const ids = results.map(r => parseInt(r.id)).filter(id => !isNaN(id));
+      if (ids.length > 0) {
+        store.trackAccess(ids);
+      }
+    } catch {
+    }
   }
 
   return results;

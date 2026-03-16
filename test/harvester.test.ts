@@ -152,7 +152,7 @@ describe('parseParts', () => {
     }
   });
 
-  it('extracts only text parts, skips tool/step-start', () => {
+  it('extracts only text parts, skips tool/step-start', async () => {
     const messageId = 'msg_001';
     const partDir = join(tmpDir, 'part', messageId);
     mkdirSync(partDir, { recursive: true });
@@ -194,12 +194,12 @@ describe('parseParts', () => {
       })
     );
 
-    const result = parseParts(messageId, tmpDir);
+    const result = await parseParts(messageId, tmpDir);
 
     expect(result).toBe('First text part\nSecond text part');
   });
 
-  it('skips synthetic parts', () => {
+  it('skips synthetic parts', async () => {
     const messageId = 'msg_002';
     const partDir = join(tmpDir, 'part', messageId);
     mkdirSync(partDir, { recursive: true });
@@ -223,25 +223,25 @@ describe('parseParts', () => {
       })
     );
 
-    const result = parseParts(messageId, tmpDir);
+    const result = await parseParts(messageId, tmpDir);
 
     expect(result).toBe('Real text');
     expect(result).not.toContain('Synthetic text');
   });
 
-  it('returns empty string for missing directory', () => {
-    const result = parseParts('msg_nonexistent', tmpDir);
+  it('returns empty string for missing directory', async () => {
+    const result = await parseParts('msg_nonexistent', tmpDir);
     expect(result).toBe('');
   });
 
-  it('handles malformed JSON gracefully', () => {
+  it('handles malformed JSON gracefully', async () => {
     const messageId = 'msg_003';
     const partDir = join(tmpDir, 'part', messageId);
     mkdirSync(partDir, { recursive: true });
 
     writeFileSync(join(partDir, 'prt_001.json'), 'invalid json{');
 
-    const result = parseParts(messageId, tmpDir);
+    const result = await parseParts(messageId, tmpDir);
     expect(result).toBe('');
   });
 });
@@ -335,7 +335,7 @@ describe('parseMessages', () => {
     }
   });
 
-  it('parses messages and sorts by creation time', () => {
+  it('parses messages and sorts by creation time', async () => {
     const sessionId = 'ses_test1';
     const messageDir = join(tmpDir, 'message', sessionId);
     mkdirSync(messageDir, { recursive: true });
@@ -361,7 +361,7 @@ describe('parseMessages', () => {
       })
     );
 
-    const result = parseMessages(sessionId, tmpDir);
+    const result = await parseMessages(sessionId, tmpDir);
 
     expect(result).toHaveLength(2);
     expect(result[0].id).toBe('msg_001');
@@ -371,19 +371,19 @@ describe('parseMessages', () => {
     expect(result[1].agent).toBe('sisyphus');
   });
 
-  it('returns empty array for missing directory', () => {
-    const result = parseMessages('ses_nonexistent', tmpDir);
+  it('returns empty array for missing directory', async () => {
+    const result = await parseMessages('ses_nonexistent', tmpDir);
     expect(result).toEqual([]);
   });
 
-  it('handles malformed JSON gracefully', () => {
+  it('handles malformed JSON gracefully', async () => {
     const sessionId = 'ses_test2';
     const messageDir = join(tmpDir, 'message', sessionId);
     mkdirSync(messageDir, { recursive: true });
 
     writeFileSync(join(messageDir, 'msg_001.json'), 'invalid json{');
 
-    const result = parseMessages(sessionId, tmpDir);
+    const result = await parseMessages(sessionId, tmpDir);
     expect(result).toEqual([]);
   });
 });

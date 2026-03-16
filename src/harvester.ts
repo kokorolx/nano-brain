@@ -1,15 +1,31 @@
 import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, appendFileSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { createHash } from 'crypto';
-import type { HarvestedSession } from './types.js';
+import type { HarvestedSession, ExtractionConfig, Store } from './types.js';
 import { log } from './logger.js';
 import { openDatabase } from './store.js';
+import { createLLMProvider } from './llm-provider.js';
+import { extractFactsFromSession, storeExtractedFact } from './extraction.js';
+import type { ConsolidationConfig } from './types.js';
+
+const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
 
 export interface HarvesterOptions {
   sessionDir: string;
   outputDir: string;
   stateFile?: string;
+  extractionConfig?: ExtractionConfig;
+  store?: Store;
 }
+
+export interface ExtractionStats {
+  factsExtracted: number;
+  duplicatesSkipped: number;
+  errors: number;
+  limitReached?: boolean;
+}
+
+const MAX_EXTRACTED_FACTS = 10000;
 
 interface SessionMetadata {
   id: string;
@@ -61,6 +77,7 @@ interface HarvestFromDbResult {
   processedCount: number;
   skippedCount: number;
   incrementalCount: number;
+  extractionStats?: ExtractionStats;
   errorCount: number;
 }
 
@@ -86,7 +103,7 @@ export function parseSession(sessionPath: string): SessionMetadata | null {
   }
 }
 
-export function parseMessages(sessionId: string, storageDir: string): ParsedMessage[] {
+export async function parseMessages(sessionId: string, storageDir: string): Promise<ParsedMessage[]> {
   const messageDir = join(storageDir, 'message', sessionId);
   
   if (!existsSync(messageDir)) {
@@ -98,7 +115,8 @@ export function parseMessages(sessionId: string, storageDir: string): ParsedMess
   try {
     const files = readdirSync(messageDir).filter(f => f.startsWith('msg_') && f.endsWith('.json'));
     
-    for (const file of files) {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
       const filePath = join(messageDir, file);
       const content = readFileSync(filePath, 'utf-8');
       const data = JSON.parse(content);
@@ -109,6 +127,8 @@ export function parseMessages(sessionId: string, storageDir: string): ParsedMess
         agent: data.agent,
         created: data.time?.created || 0
       });
+      
+      if (i % 50 === 0) await yieldToEventLoop();
     }
   } catch {
     return [];
@@ -119,7 +139,7 @@ export function parseMessages(sessionId: string, storageDir: string): ParsedMess
   return messages;
 }
 
-export function parseParts(messageId: string, storageDir: string): string {
+export async function parseParts(messageId: string, storageDir: string): Promise<string> {
   const partDir = join(storageDir, 'part', messageId);
   
   if (!existsSync(partDir)) {
@@ -131,7 +151,8 @@ export function parseParts(messageId: string, storageDir: string): string {
   try {
     const files = readdirSync(partDir).filter(f => f.startsWith('prt_') && f.endsWith('.json'));
     
-    for (const file of files) {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
       const filePath = join(partDir, file);
       const content = readFileSync(filePath, 'utf-8');
       const data = JSON.parse(content);
@@ -139,6 +160,8 @@ export function parseParts(messageId: string, storageDir: string): string {
       if (data.type === 'text' && !data.synthetic && data.text) {
         textParts.push(data.text);
       }
+      
+      if (i % 30 === 0) await yieldToEventLoop();
     }
   } catch {
     return '';
@@ -250,18 +273,21 @@ export function getMessageDirMtime(sessionId: string, storageDir: string): numbe
   }
 }
 
-function harvestFromDb(
+async function harvestFromDb(
   dbPath: string,
   outputDir: string,
   stateFile: string,
-  state: HarvestState
-): HarvestFromDbResult {
+  state: HarvestState,
+  extractionConfig?: ExtractionConfig,
+  store?: Store
+): Promise<HarvestFromDbResult> {
   const harvested: HarvestedSession[] = [];
   let stateChanged = false;
   let processedCount = 0;
   let skippedCount = 0;
   let incrementalCount = 0;
   let errorCount = 0;
+  const extractionStats: ExtractionStats = { factsExtracted: 0, duplicatesSkipped: 0, errors: 0 };
 
   const db = openDatabase(dbPath, { readonly: true });
 
@@ -282,8 +308,11 @@ function harvestFromDb(
     const sessions = sessionsStmt.all();
     const totalSessions = sessions.length;
 
-    for (const session of sessions) {
+    for (let sessionIndex = 0; sessionIndex < sessions.length; sessionIndex++) {
+      const session = sessions[sessionIndex];
       const sessionId = session.id;
+      
+      if (sessionIndex % 5 === 0) await yieldToEventLoop();
 
       if (state[sessionId]?.skipped) {
         skippedCount++;
@@ -418,6 +447,56 @@ function harvestFromDb(
         harvested.push(harvestedSession);
         state[sessionId] = { mtime: session.time_updated, messageCount: dbMessages.length };
         stateChanged = true;
+
+        if (extractionConfig?.enabled && store) {
+          try {
+            const llmConfig: ConsolidationConfig = {
+              enabled: true,
+              interval_ms: 0,
+              model: extractionConfig.model,
+              endpoint: extractionConfig.endpoint,
+              apiKey: extractionConfig.apiKey,
+              max_memories_per_cycle: 0,
+              min_memories_threshold: 0,
+              confidence_threshold: 0,
+            };
+            const provider = createLLMProvider(llmConfig);
+            if (provider) {
+              const health = store.getIndexHealth();
+              const currentFactCount = health.extractedFacts ?? 0;
+              if (currentFactCount >= MAX_EXTRACTED_FACTS) {
+                if (!extractionStats.limitReached) {
+                  log('harvester', `Storage limit reached: ${currentFactCount} extracted facts (max ${MAX_EXTRACTED_FACTS}). Skipping extraction.`);
+                  extractionStats.limitReached = true;
+                }
+              } else {
+                const sessionMarkdown = sessionToMarkdown(harvestedSession);
+                const result = await extractFactsFromSession(sessionMarkdown, provider, extractionConfig);
+                for (const fact of result.facts) {
+                  const updatedHealth = store.getIndexHealth();
+                  const updatedFactCount = updatedHealth.extractedFacts ?? 0;
+                  if (updatedFactCount >= MAX_EXTRACTED_FACTS) {
+                    if (!extractionStats.limitReached) {
+                      log('harvester', `Storage limit reached during extraction: ${updatedFactCount} extracted facts (max ${MAX_EXTRACTED_FACTS}). Stopping.`);
+                      extractionStats.limitReached = true;
+                    }
+                    break;
+                  }
+                  const wasStored = storeExtractedFact(store, fact, session.id, projectHashStr);
+                  if (wasStored) {
+                    extractionStats.factsExtracted++;
+                  } else {
+                    extractionStats.duplicatesSkipped++;
+                  }
+                }
+                log('harvester', `Extracted ${result.facts.length} facts from session ${session.id} (${extractionStats.factsExtracted} stored, ${extractionStats.duplicatesSkipped} duplicates)`);
+              }
+            }
+          } catch (err) {
+            extractionStats.errors++;
+            log('harvester', 'Extraction failed for session ' + session.id + ': ' + String(err));
+          }
+        }
       } catch (err) {
         errorCount++;
         log('harvester', 'Write failed: ' + outputPath + ' - ' + String(err));
@@ -428,7 +507,7 @@ function harvestFromDb(
     db.close();
   }
 
-  return { harvested, stateChanged, processedCount, skippedCount, incrementalCount, errorCount };
+  return { harvested, stateChanged, processedCount, skippedCount, incrementalCount, errorCount, extractionStats };
 }
 
 export async function harvestSessions(options: HarvesterOptions): Promise<HarvestedSession[]> {
@@ -454,24 +533,31 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
 
     if (dbSessionCount > 0) {
       log('harvester', `Starting harvest cycle: ${dbSessionCount} sessions (source: db)`);
-      const result = harvestFromDb(dbPath, outputDir, stateFile, state);
+      const result = await harvestFromDb(dbPath, outputDir, stateFile, state, options.extractionConfig, options.store);
 
       if (result.stateChanged) {
         saveHarvestState(stateFile, state);
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      const stats = [
+      const statsParts = [
         `${result.harvested.length} harvested`,
         result.incrementalCount > 0 ? `${result.incrementalCount} incremental` : null,
         `${result.skippedCount} skipped`,
         result.errorCount > 0 ? `${result.errorCount} errors` : null,
-        `${elapsed}s`,
-      ].filter(Boolean).join(', ');
+      ];
+      if (result.extractionStats && (result.extractionStats.factsExtracted > 0 || result.extractionStats.duplicatesSkipped > 0)) {
+        statsParts.push(`extracted ${result.extractionStats.factsExtracted} facts (${result.extractionStats.duplicatesSkipped} duplicates)`);
+        if (result.extractionStats.errors > 0) {
+          statsParts.push(`${result.extractionStats.errors} extraction errors`);
+        }
+      }
+      statsParts.push(`${elapsed}s`);
+      const stats = statsParts.filter(Boolean).join(', ');
 
       log('harvester', `Harvest complete: ${stats}`);
       if (result.harvested.length > 0) {
-        console.log(`[harvester] Harvested ${result.harvested.length} session(s) in ${elapsed}s`);
+        log('harvester', 'Harvested ' + result.harvested.length + ' session(s) in ' + elapsed + 's');
       }
 
       return result.harvested;
@@ -514,6 +600,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
   let skippedCount = 0
   let incrementalCount = 0
   let errorCount = 0
+  const extractionStats: ExtractionStats = { factsExtracted: 0, duplicatesSkipped: 0, errors: 0 };
   
   for (const projectHash of projectDirs) {
     const projectSessionDir = join(sessionRoot, projectHash);
@@ -524,8 +611,11 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
     
     const sessionFiles = readdirSync(projectSessionDir).filter(f => f.startsWith('ses_') && f.endsWith('.json'));
     
-    for (const sessionFile of sessionFiles) {
+    for (let sessionFileIndex = 0; sessionFileIndex < sessionFiles.length; sessionFileIndex++) {
+      const sessionFile = sessionFiles[sessionFileIndex];
       const sessionPath = join(projectSessionDir, sessionFile);
+      
+      if (sessionFileIndex % 5 === 0) await yieldToEventLoop();
       
       const stat = statSync(sessionPath);
       const lastMtime = stat.mtimeMs;
@@ -569,7 +659,6 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
           }
           state[sessionFile] = entry;
           log('harvester', 'Re-harvest triggered: ' + sessionFile + ' (output file missing, retry ' + entry.retries + ')');
-          console.log(`[harvester] Re-harvesting ${sessionFile}: output file missing`);
         } else {
           continue;
         }
@@ -581,7 +670,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
         continue;
       }
       
-      const messages = parseMessages(session.id, sessionDir);
+      const messages = await parseMessages(session.id, sessionDir);
       
       const previousMessageCount = state[sessionFile]?.messageCount;
       if (previousMessageCount !== undefined && previousMessageCount >= messages.length) {
@@ -608,11 +697,14 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
         ? messages.slice(effectivePreviousCount)
         : messages;
       
-      const parsedMessages = messagesToProcess.map(msg => ({
-        role: msg.role,
-        agent: msg.agent,
-        text: parseParts(msg.id, sessionDir)
-      }));
+      const parsedMessages: Array<{ role: 'user' | 'assistant'; agent?: string; text: string }> = [];
+      for (const msg of messagesToProcess) {
+        parsedMessages.push({
+          role: msg.role,
+          agent: msg.agent,
+          text: await parseParts(msg.id, sessionDir)
+        });
+      }
       
       const hasContent = parsedMessages.some(m => m.text.trim().length > 0);
       if (!hasContent) {
@@ -649,8 +741,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
         }
         
         if (!existsSync(outputPath)) {
-          log('harvester', 'Write failed: ' + outputPath + ' (file not found after write)')
-          console.warn(`[harvester] Write succeeded but file not found: ${outputPath}`);
+          log('harvester', 'Write failed: ' + outputPath + ' (file not found after write)', 'warn');
           continue;
         }
         
@@ -671,10 +762,59 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
         harvested.push(harvestedSession);
         state[sessionFile] = { mtime: effectiveMtime, messageCount: messages.length };
         stateChanged = true;
+
+        if (options.extractionConfig?.enabled && options.store) {
+          try {
+            const llmConfig: ConsolidationConfig = {
+              enabled: true,
+              interval_ms: 0,
+              model: options.extractionConfig.model,
+              endpoint: options.extractionConfig.endpoint,
+              apiKey: options.extractionConfig.apiKey,
+              max_memories_per_cycle: 0,
+              min_memories_threshold: 0,
+              confidence_threshold: 0,
+            };
+            const provider = createLLMProvider(llmConfig);
+            if (provider) {
+              const health = options.store.getIndexHealth();
+              const currentFactCount = health.extractedFacts ?? 0;
+              if (currentFactCount >= MAX_EXTRACTED_FACTS) {
+                if (!extractionStats.limitReached) {
+                  log('harvester', `Storage limit reached: ${currentFactCount} extracted facts (max ${MAX_EXTRACTED_FACTS}). Skipping extraction.`);
+                  extractionStats.limitReached = true;
+                }
+              } else {
+                const sessionMarkdown = sessionToMarkdown(harvestedSession);
+                const result = await extractFactsFromSession(sessionMarkdown, provider, options.extractionConfig);
+                for (const fact of result.facts) {
+                  const updatedHealth = options.store.getIndexHealth();
+                  const updatedFactCount = updatedHealth.extractedFacts ?? 0;
+                  if (updatedFactCount >= MAX_EXTRACTED_FACTS) {
+                    if (!extractionStats.limitReached) {
+                      log('harvester', `Storage limit reached during extraction: ${updatedFactCount} extracted facts (max ${MAX_EXTRACTED_FACTS}). Stopping.`);
+                      extractionStats.limitReached = true;
+                    }
+                    break;
+                  }
+                  const wasStored = storeExtractedFact(options.store, fact, session.id, projectHashStr);
+                  if (wasStored) {
+                    extractionStats.factsExtracted++;
+                  } else {
+                    extractionStats.duplicatesSkipped++;
+                  }
+                }
+                log('harvester', `Extracted ${result.facts.length} facts from session ${session.id} (${extractionStats.factsExtracted} stored, ${extractionStats.duplicatesSkipped} duplicates)`);
+              }
+            }
+          } catch (err) {
+            extractionStats.errors++;
+            log('harvester', 'Extraction failed for session ' + session.id + ': ' + String(err));
+          }
+        }
       } catch (err) {
         errorCount++
-        log('harvester', 'Write failed: ' + outputPath)
-        console.warn(`[harvester] Failed to write ${outputPath}:`, err);
+        log('harvester', 'Write failed: ' + outputPath + ': ' + (err instanceof Error ? err.message : String(err)), 'warn');
         continue;
       }
     }
@@ -685,17 +825,24 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
   }
   
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-  const stats = [
+  const statsParts = [
     `${harvested.length} harvested`,
     incrementalCount > 0 ? `${incrementalCount} incremental` : null,
     `${skippedCount} skipped`,
     errorCount > 0 ? `${errorCount} errors` : null,
-    `${elapsed}s`,
-  ].filter(Boolean).join(', ')
+  ];
+  if (extractionStats.factsExtracted > 0 || extractionStats.duplicatesSkipped > 0) {
+    statsParts.push(`extracted ${extractionStats.factsExtracted} facts (${extractionStats.duplicatesSkipped} duplicates)`);
+    if (extractionStats.errors > 0) {
+      statsParts.push(`${extractionStats.errors} extraction errors`);
+    }
+  }
+  statsParts.push(`${elapsed}s`);
+  const stats = statsParts.filter(Boolean).join(', ')
   
-  log('harvester', `Harvest complete: ${stats}`)
+  log('harvester', 'Harvest complete: ' + stats)
   if (harvested.length > 0) {
-    console.log(`[harvester] Harvested ${harvested.length} session(s) in ${elapsed}s`);
+    log('harvester', 'Harvested ' + harvested.length + ' session(s) in ' + elapsed + 's');
   }
   
   return harvested;

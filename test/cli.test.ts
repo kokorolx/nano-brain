@@ -88,21 +88,21 @@ describe('CLI Argument Parsing', () => {
   });
   
   describe('showHelp', () => {
-    let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+    let stdoutSpy: ReturnType<typeof vi.spyOn>;
     
     beforeEach(() => {
-      consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     });
     
     afterEach(() => {
-      consoleLogSpy.mockRestore();
+      stdoutSpy.mockRestore();
     });
     
     it('should output help text', () => {
       showHelp();
       
-      expect(consoleLogSpy).toHaveBeenCalledOnce();
-      const output = consoleLogSpy.mock.calls[0][0] as string;
+      expect(stdoutSpy).toHaveBeenCalled();
+      const output = stdoutSpy.mock.calls.map(c => String(c[0])).join('');
       
       expect(output).toContain('nano-brain');
       expect(output).toContain('mcp');
@@ -113,20 +113,21 @@ describe('CLI Argument Parsing', () => {
   });
   
   describe('showVersion', () => {
-    let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+    let stdoutSpy: ReturnType<typeof vi.spyOn>;
     
     beforeEach(() => {
-      consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     });
     
     afterEach(() => {
-      consoleLogSpy.mockRestore();
+      stdoutSpy.mockRestore();
     });
     
     it('should output version', () => {
       showVersion();
       
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringMatching(/^nano-brain v/));
+      const output = stdoutSpy.mock.calls.map(c => String(c[0])).join('');
+      expect(output).toMatch(/nano-brain v/);
     });
   });
 });
@@ -382,47 +383,47 @@ describe('resolveWorkspaceIdentifier', () => {
 });
 
 describe('showHelp includes new commands', () => {
-  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   });
 
   afterEach(() => {
-    consoleLogSpy.mockRestore();
+    stdoutSpy.mockRestore();
   });
 
   it('should include context command in help', () => {
     showHelp();
-    const output = consoleLogSpy.mock.calls[0][0] as string;
+    const output = stdoutSpy.mock.calls.map(c => String(c[0])).join('');
     expect(output).toContain('context <name>');
     expect(output).toContain('360° view of a code symbol');
   });
 
   it('should include code-impact command in help', () => {
     showHelp();
-    const output = consoleLogSpy.mock.calls[0][0] as string;
+    const output = stdoutSpy.mock.calls.map(c => String(c[0])).join('');
     expect(output).toContain('code-impact <name>');
     expect(output).toContain('Analyze impact of changing a symbol');
   });
 
   it('should include detect-changes command in help', () => {
     showHelp();
-    const output = consoleLogSpy.mock.calls[0][0] as string;
+    const output = stdoutSpy.mock.calls.map(c => String(c[0])).join('');
     expect(output).toContain('detect-changes');
     expect(output).toContain('Map git changes to affected symbols');
   });
 
   it('should include reindex command in help', () => {
     showHelp();
-    const output = consoleLogSpy.mock.calls[0][0] as string;
+    const output = stdoutSpy.mock.calls.map(c => String(c[0])).join('');
     expect(output).toContain('reindex');
     expect(output).toContain('Re-index codebase files');
   });
 
   it('should include all code intelligence command options', () => {
     showHelp();
-    const output = consoleLogSpy.mock.calls[0][0] as string;
+    const output = stdoutSpy.mock.calls.map(c => String(c[0])).join('');
     expect(output).toContain('--file=<path>');
     expect(output).toContain('--direction=<d>');
     expect(output).toContain('--max-depth=<n>');
@@ -549,19 +550,19 @@ describe('CLI --compact flag', () => {
 });
 
 describe('showHelp includes --compact flag', () => {
-  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
   });
 
   afterEach(() => {
-    consoleLogSpy.mockRestore();
+    stdoutSpy.mockRestore();
   });
 
   it('should include --compact in help text', () => {
     showHelp();
-    const output = consoleLogSpy.mock.calls[0][0] as string;
+    const output = stdoutSpy.mock.calls.map(c => String(c[0])).join('');
     expect(output).toContain('--compact');
     expect(output).toContain('Output compact single-line results');
   });

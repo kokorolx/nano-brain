@@ -14,17 +14,19 @@ import { installService, uninstallService } from './service-installer.js';
 import { isTreeSitterAvailable } from './treesitter.js';
 import { QdrantVecStore } from './providers/qdrant.js';
 import { createVectorStore } from './vector-store.js';
-import type { SearchResult, CollectionConfig, Store } from './types.js';
+import type { SearchResult, CollectionConfig, Store, ConsolidationConfig } from './types.js';
+import { createLLMProvider } from './llm-provider.js';
+import { ConsolidationAgent } from './consolidation.js';
 import { ResultCache } from './cache.js';
 import { formatCompactResults } from './server.js';
-import type { VectorPoint, VectorStoreHealth } from './vector-store.js';
+import type { VectorPoint, VectorStore, VectorStoreHealth } from './vector-store.js';
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { execSync, spawn } from 'child_process';
-import { log, initLogger } from './logger.js';
+import { log, initLogger, cliOutput, cliError } from './logger.js';
 
 const DEFAULT_HTTP_PORT = 3100;
 
@@ -38,6 +40,44 @@ async function detectRunningServer(port: number = DEFAULT_HTTP_PORT): Promise<bo
   } catch {
     return false;
   }
+}
+
+const UNSAFE_SERVE_STOP_PATTERNS = [
+  /docker/i,
+  /docker-proxy/i,
+  /com\.docker/i,
+  /vpnkit/i,
+  /containerd/i,
+];
+
+function getProcessCommand(pid: number): string {
+  if (!Number.isInteger(pid) || pid <= 0) return '';
+  try {
+    return execSync(`ps -p ${pid} -o command=`, { encoding: 'utf-8' }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function isUnsafeServeStopTarget(command: string): boolean {
+  if (!command) return true;
+  return UNSAFE_SERVE_STOP_PATTERNS.some((pattern) => pattern.test(command));
+}
+
+function isLikelyNanoBrainServerCommand(command: string): boolean {
+  if (!command) return false;
+  const normalized = command.toLowerCase();
+  const hasNanoBrainMarker =
+    normalized.includes('nano-brain') ||
+    normalized.includes('/bin/cli.js') ||
+    normalized.includes('/src/index.ts');
+
+  const hasServerModeMarker =
+    normalized.includes(' mcp') ||
+    normalized.includes(' serve') ||
+    normalized.includes('--daemon');
+
+  return hasNanoBrainMarker && hasServerModeMarker;
 }
 
 async function proxyGet(port: number, path: string): Promise<any> {
@@ -163,7 +203,7 @@ export function resolveDbPath(dbPath: string, workspaceRoot: string): string {
   return path.join(path.dirname(dbPath), `${dirName}-${hash}.sqlite`);
 }
 export function showHelp(): void {
-  console.log(`
+  cliOutput(`
 nano-brain - Memory system with hybrid search
   nano-brain [global-options] <command> [command-options]
   --db=<path>       SQLite database path (default: ~/.nano-brain/data/default.sqlite)
@@ -183,7 +223,7 @@ nano-brain - Memory system with hybrid search
   serve             Start SSE server as background daemon (shortcut)
     --port=<n>      HTTP port (default: 3100)
     --foreground    Run in foreground instead of detaching
-    stop            Stop running server
+    stop [--force]  Stop running server (safe PID checks)
     status          Show server status
     install         Install as system service (launchd on macOS, systemd on Linux)
       --force       Overwrite existing service file
@@ -283,8 +323,14 @@ nano-brain - Memory system with hybrid search
     verify          Compare SQLite vector counts against Qdrant
     activate        Switch config to use Qdrant as vector provider
     cleanup         Drop SQLite vector tables (requires Qdrant active with vectors)
+    recreate        Recreate Qdrant collection with correct dimensions (DESTRUCTIVE)
   learning          Manage self-learning system
     rollback [id]   View or rollback to a previous config version
+  categorize-backfill  Backfill LLM categorization on existing documents
+    --batch-size=<n>   Documents per batch (default: 50)
+    --rate-limit=<n>   Requests per second (default: 10)
+    --dry-run          Preview without making changes
+    --workspace=<path> Filter to specific workspace
 Logging Config (~/.nano-brain/config.yml):
   logging:
     enabled: true               # enable file logging (or use NANO_BRAIN_LOG=1 env)
@@ -313,9 +359,9 @@ export function showVersion(): void {
   const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'package.json');
   try {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-    console.log(`nano-brain v${pkg.version}`);
+    cliOutput(`nano-brain v${pkg.version}`);
   } catch {
-    console.log('nano-brain (unknown version)');
+    cliOutput('nano-brain (unknown version)');
   }
 }
 
@@ -359,7 +405,7 @@ async function handleMcp(globalOpts: GlobalOptions, commandArgs: string[]): Prom
     } else if (arg === '--daemon') {
       daemon = true;
     } else if (arg === 'stop') {
-      console.log('Daemon stop not implemented yet');
+      cliOutput('Daemon stop not implemented yet');
       return;
     }
   }
@@ -402,14 +448,38 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   // serve stop
   if (subcommand === 'stop') {
     let stopped = false;
+    const skippedUnsafe: Array<{ pid: number; command: string; source: string }> = [];
+
+    const tryStopPid = (pid: number, source: string): boolean => {
+      if (!Number.isInteger(pid) || pid <= 0) return false;
+
+      const command = getProcessCommand(pid);
+      if (!force && (isUnsafeServeStopTarget(command) || !isLikelyNanoBrainServerCommand(command))) {
+        skippedUnsafe.push({ pid, command, source });
+        return false;
+      }
+
+      try {
+        process.kill(pid, 'SIGTERM');
+        cliOutput(`Stopped nano-brain server (${source}, PID: ${pid})`);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     // Try stopping via PID file
     try {
       if (fs.existsSync(SERVE_PID_FILE)) {
-        const pid = parseInt(fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim(), 10);
-        process.kill(pid, 'SIGTERM');
-        fs.unlinkSync(SERVE_PID_FILE);
-        console.log(`Stopped nano-brain server (PID: ${pid})`);
-        stopped = true;
+        const pidText = fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim();
+        const pid = parseInt(pidText, 10);
+        if (tryStopPid(pid, 'PID file')) {
+          stopped = true;
+          fs.unlinkSync(SERVE_PID_FILE);
+        } else if (fs.existsSync(SERVE_PID_FILE)) {
+          // Remove stale/invalid PID file and continue with safe fallback
+          fs.unlinkSync(SERVE_PID_FILE);
+        }
       }
     } catch {
       // Process might already be dead
@@ -421,17 +491,30 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       try {
         const isPortActive = await detectRunningServer(port);
         if (isPortActive) {
-          // On macOS/Linux we can use lsof to find the PID and kill it
           const platform = process.platform;
           if (platform === 'darwin' || platform === 'linux') {
             try {
               const cmd = platform === 'darwin'
-                ? `lsof -i tcp:${port} -t`
-                : `fuser ${port}/tcp 2>/dev/null`;
-              const pid = execSync(cmd, { encoding: 'utf-8' }).trim();
-              if (pid) {
-                process.kill(parseInt(pid, 10), 'SIGTERM');
-                console.log(`Stopped nano-brain server on port ${port} (PID: ${pid})`);
+                ? `lsof -ti tcp:${port}`
+                : `lsof -ti tcp:${port} 2>/dev/null || fuser ${port}/tcp 2>/dev/null`;
+              const raw = execSync(cmd, { encoding: 'utf-8' }).trim();
+              const candidatePids = Array.from(
+                new Set(
+                  (raw.match(/\d+/g) || [])
+                    .map((value) => parseInt(value, 10))
+                    .filter((value) => Number.isInteger(value) && value > 0 && value !== port)
+                )
+              );
+
+              const stoppedPids: number[] = [];
+              for (const pid of candidatePids) {
+                if (tryStopPid(pid, `port ${port}`)) {
+                  stoppedPids.push(pid);
+                }
+              }
+
+              if (stoppedPids.length > 0) {
+                cliOutput(`Stopped nano-brain server on port ${port} (PIDs: ${stoppedPids.join(', ')})`);
                 stopped = true;
               }
             } catch {
@@ -445,7 +528,18 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     }
 
     if (!stopped) {
-      console.log('No running server found');
+      if (force) {
+        cliOutput('No running server found');
+      } else if (skippedUnsafe.length > 0) {
+        cliOutput('No safe nano-brain server PID found to stop.');
+        for (const item of skippedUnsafe) {
+          const details = item.command ? ` (${item.command})` : '';
+          cliOutput(`  skipped ${item.source} PID ${item.pid}${details}`);
+        }
+        cliOutput('Use `npx nano-brain serve stop --force` only if you verified the target PID manually.');
+      } else {
+        cliOutput('No running server found');
+      }
     }
     return;
   }
@@ -455,9 +549,9 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     try {
       const pid = parseInt(fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim(), 10);
       process.kill(pid, 0); // check if alive
-      console.log(`nano-brain server is running (PID: ${pid}, port: ${port})`);
+      cliOutput(`nano-brain server is running (PID: ${pid}, port: ${port})`);
     } catch {
-      console.log('nano-brain server is not running');
+      cliOutput('nano-brain server is not running');
     }
     return;
   }
@@ -466,11 +560,11 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   if (subcommand === 'install') {
     const result = installService({ force, port });
     if (result.success) {
-      console.log(`✅ ${result.message}`);
-      console.log(`   The server will start automatically on login.`);
-      console.log(`   Port: ${port}`);
+      cliOutput(`✅ ${result.message}`);
+      cliOutput(`   The server will start automatically on login.`);
+      cliOutput(`   Port: ${port}`);
     } else {
-      console.error(`❌ ${result.message}`);
+      cliError(`❌ ${result.message}`);
       process.exit(1);
     }
     return;
@@ -480,9 +574,9 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   if (subcommand === 'uninstall') {
     const result = uninstallService();
     if (result.success) {
-      console.log(`✅ ${result.message}`);
+      cliOutput(`✅ ${result.message}`);
     } else {
-      console.error(`❌ ${result.message}`);
+      cliError(`❌ ${result.message}`);
       process.exit(1);
     }
     return;
@@ -499,7 +593,7 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     if (fs.existsSync(SERVE_PID_FILE)) {
       const existingPid = parseInt(fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim(), 10);
       process.kill(existingPid, 0);
-      console.log(`Server already running (PID: ${existingPid}). Stop first: npx nano-brain serve stop`);
+      cliOutput(`Server already running (PID: ${existingPid}). Stop first: npx nano-brain serve stop`);
       return;
     }
   } catch {
@@ -509,7 +603,7 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   // Secondary check: verify if port is already in use by another instance
   const isPortActive = await detectRunningServer(port);
   if (isPortActive) {
-    console.log(`Server already running on port ${port}. Stop first: npx nano-brain serve stop`);
+    cliOutput(`Server already running on port ${port}. Stop first: npx nano-brain serve stop`);
     return;
   }
 
@@ -535,13 +629,13 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   if (child.pid) {
     fs.writeFileSync(SERVE_PID_FILE, String(child.pid));
     child.unref();
-    console.log(`nano-brain server started on http://0.0.0.0:${port} (PID: ${child.pid})`);
-    console.log(`  SSE endpoint: http://localhost:${port}/sse`);
-    console.log(`  Health check: http://localhost:${port}/health`);
-    console.log(`  Logs: ${SERVE_LOG_FILE}`);
-    console.log(`  Stop: npx nano-brain serve stop`);
+    cliOutput(`nano-brain server started on http://0.0.0.0:${port} (PID: ${child.pid})`);
+    cliOutput(`  SSE endpoint: http://localhost:${port}/sse`);
+    cliOutput(`  Health check: http://localhost:${port}/health`);
+    cliOutput(`  Logs: ${SERVE_LOG_FILE}`);
+    cliOutput(`  Stop: npx nano-brain serve stop`);
   } else {
-    console.error('Failed to start server');
+    cliError('Failed to start server');
     process.exit(1);
   }
 
@@ -553,7 +647,7 @@ async function handleCollection(globalOpts: GlobalOptions, commandArgs: string[]
   const subcommand = commandArgs[0];
 
   if (!subcommand) {
-    console.error('Missing collection subcommand (add, remove, list, rename)');
+    cliError('Missing collection subcommand (add, remove, list, rename)');
     process.exit(1);
   }
 
@@ -570,42 +664,42 @@ async function handleCollection(globalOpts: GlobalOptions, commandArgs: string[]
       }
 
       if (!name || !collectionPath) {
-        console.error('Usage: collection add <name> <path> [--pattern=<glob>]');
+        cliError('Usage: collection add <name> <path> [--pattern=<glob>]');
         process.exit(1);
       }
 
       addCollection(globalOpts.configPath, name, collectionPath, pattern);
-      console.log(`✅ Added collection "${name}"`);
+      cliOutput(`✅ Added collection "${name}"`);
       break;
     }
 
     case 'remove': {
       const name = commandArgs[1];
       if (!name) {
-        console.error('Usage: collection remove <name>');
+        cliError('Usage: collection remove <name>');
         process.exit(1);
       }
 
       removeCollection(globalOpts.configPath, name);
-      console.log(`✅ Removed collection "${name}"`);
+      cliOutput(`✅ Removed collection "${name}"`);
       break;
     }
 
     case 'list': {
       const config = loadCollectionConfig(globalOpts.configPath);
       if (!config) {
-        console.log('No collections configured');
+        cliOutput('No collections configured');
         return;
       }
 
       const names = listCollections(config);
       if (names.length === 0) {
-        console.log('No collections configured');
+        cliOutput('No collections configured');
       } else {
-        console.log('Collections:');
+        cliOutput('Collections:');
         for (const name of names) {
-          const coll = config.collections[name];
-          console.log(`  ${name}: ${coll.path} (${coll.pattern || '**/*.md'})`);
+          const coll = config.collections?.[name];
+          cliOutput(`  ${name}: ${coll?.path} (${coll?.pattern || '**/*.md'})`);
         }
       }
       break;
@@ -616,17 +710,17 @@ async function handleCollection(globalOpts: GlobalOptions, commandArgs: string[]
       const newName = commandArgs[2];
 
       if (!oldName || !newName) {
-        console.error('Usage: collection rename <old> <new>');
+        cliError('Usage: collection rename <old> <new>');
         process.exit(1);
       }
 
       renameCollection(globalOpts.configPath, oldName, newName);
-      console.log(`✅ Renamed collection "${oldName}" to "${newName}"`);
+      cliOutput(`✅ Renamed collection "${oldName}" to "${newName}"`);
       break;
     }
 
     default:
-      console.error(`Unknown collection subcommand: ${subcommand}`);
+      cliError(`Unknown collection subcommand: ${subcommand}`);
       process.exit(1);
   }
 }
@@ -668,32 +762,32 @@ async function getVectorStoreHealth(config: ReturnType<typeof loadCollectionConf
 }
 
 function printVectorStoreSection(vectorHealth: VectorStoreHealth | null, sqliteVecCount?: number): void {
-  console.log('Vector Store:');
+  cliOutput('Vector Store:');
   if (vectorHealth) {
-    console.log(`  Provider:   ${vectorHealth.provider}`);
+    cliOutput(`  Provider:   ${vectorHealth.provider}`);
     if (vectorHealth.ok) {
-      console.log(`  Status:     ✅ connected`);
-      console.log(`  Vectors:    ${vectorHealth.vectorCount.toLocaleString()}`);
+      cliOutput(`  Status:     ✅ connected`);
+      cliOutput(`  Vectors:    ${vectorHealth.vectorCount.toLocaleString()}`);
       if (vectorHealth.dimensions) {
-        console.log(`  Dimensions: ${vectorHealth.dimensions}`);
+        cliOutput(`  Dimensions: ${vectorHealth.dimensions}`);
       }
     } else {
-      console.log(`  Status:     ❌ unreachable (${vectorHealth.error || 'unknown'})`);
+      cliOutput(`  Status:     ❌ unreachable (${vectorHealth.error || 'unknown'})`);
     }
   } else {
-    console.log(`  Provider:   sqlite-vec (built-in)`);
-    console.log(`  Vectors:    ${(sqliteVecCount ?? 0).toLocaleString()}`);
+    cliOutput(`  Provider:   sqlite-vec (built-in)`);
+    cliOutput(`  Vectors:    ${(sqliteVecCount ?? 0).toLocaleString()}`);
   }
-  console.log('');
+  cliOutput('');
 }
 
 function printTokenUsageSection(tokenUsage: Array<{ model: string; totalTokens: number; requestCount: number; lastUpdated: string }>): void {
   if (tokenUsage.length === 0) return;
-  console.log('Token Usage:');
+  cliOutput('Token Usage:');
   for (const usage of tokenUsage) {
-    console.log(`  ${usage.model.padEnd(25)} ${usage.totalTokens.toLocaleString()} tokens (${usage.requestCount.toLocaleString()} requests)`);
+    cliOutput(`  ${usage.model.padEnd(25)} ${usage.totalTokens.toLocaleString()} tokens (${usage.requestCount.toLocaleString()} requests)`);
   }
-  console.log('');
+  cliOutput('');
 }
 
 async function printEmbeddingServerStatus(config: ReturnType<typeof loadCollectionConfig>): Promise<void> {
@@ -702,27 +796,27 @@ async function printEmbeddingServerStatus(config: ReturnType<typeof loadCollecti
   const model = embeddingConfig?.model || 'nomic-embed-text';
   const provider = embeddingConfig?.provider || 'ollama';
 
-  console.log('Embedding Server:');
-  console.log(`  Provider:  ${provider}`);
-  console.log(`  URL:       ${url}`);
-  console.log(`  Model:     ${model}`);
+  cliOutput('Embedding Server:');
+  cliOutput(`  Provider:  ${provider}`);
+  cliOutput(`  URL:       ${url}`);
+  cliOutput(`  Model:     ${model}`);
 
   if (provider === 'openai') {
     const openAiHealth = await checkOpenAIHealth(url, embeddingConfig?.apiKey || '', model);
     if (openAiHealth.reachable) {
-      console.log(`  Status:    ✅ connected`);
+      cliOutput(`  Status:    ✅ connected`);
     } else {
-      console.log(`  Status:    ❌ unreachable (${openAiHealth.error})`);
+      cliOutput(`  Status:    ❌ unreachable (${openAiHealth.error})`);
     }
   } else if (provider !== 'local') {
     const ollamaHealth = await checkOllamaHealth(url);
     if (ollamaHealth.reachable) {
-      console.log(`  Status:    ✅ connected`);
+      cliOutput(`  Status:    ✅ connected`);
     } else {
-      console.log(`  Status:    ❌ unreachable (${ollamaHealth.error})`);
+      cliOutput(`  Status:    ❌ unreachable (${ollamaHealth.error})`);
     }
   } else {
-    console.log(`  Status:    local GGUF mode`);
+    cliOutput(`  Status:    local GGUF mode`);
   }
 }
 
@@ -748,18 +842,18 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
       const files = fs.readdirSync(dataDir);
       dbFiles = files.filter(f => f.endsWith('.sqlite')).map(f => path.join(dataDir, f));
     } catch {
-      console.error(`Cannot read data directory: ${dataDir}`);
+      cliError(`Cannot read data directory: ${dataDir}`);
       return;
     }
 
     if (dbFiles.length === 0) {
-      console.log('No workspaces found.');
+      cliOutput('No workspaces found.');
       return;
     }
 
-    console.log('nano-brain Status — All Workspaces');
-    console.log('═══════════════════════════════════════════════════');
-    console.log('');
+    cliOutput('nano-brain Status — All Workspaces');
+    cliOutput('═══════════════════════════════════════════════════');
+    cliOutput('');
 
     if (serverInfo) {
       const uptimeSec = Math.floor(serverInfo.uptime);
@@ -767,17 +861,17 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
       const mins = Math.floor((uptimeSec % 3600) / 60);
       const secs = uptimeSec % 60;
       const uptimeStr = hours > 0 ? `${hours}h ${mins}m ${secs}s` : mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-      console.log('Server:');
-      console.log(`  Status:   running (port ${DEFAULT_HTTP_PORT})`);
-      console.log(`  Uptime:   ${uptimeStr}`);
-      console.log(`  Ready:    ${serverInfo.ready ? 'yes' : 'no'}`);
-      console.log('');
+      cliOutput('Server:');
+      cliOutput(`  Status:   running (port ${DEFAULT_HTTP_PORT})`);
+      cliOutput(`  Uptime:   ${uptimeStr}`);
+      cliOutput(`  Ready:    ${serverInfo.ready ? 'yes' : 'no'}`);
+      cliOutput('');
     }
 
     const header = '  Workspace              Documents  Embedded  Pending  DB Size';
     const divider = '  ─────────────────────  ─────────  ────────  ───────  ───────';
-    console.log(header);
-    console.log(divider);
+    cliOutput(header);
+    cliOutput(divider);
 
     let totalDocs = 0;
     let totalEmbedded = 0;
@@ -816,15 +910,15 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
       const embeddedStr = embedded.toLocaleString().padStart(8);
       const pendingStr = pending.toLocaleString().padStart(7);
       const sizeStr = formatBytes(fileSize).padStart(9);
-      console.log(`  ${name}  ${docsStr}  ${embeddedStr}  ${pendingStr}  ${sizeStr}`);
+      cliOutput(`  ${name}  ${docsStr}  ${embeddedStr}  ${pendingStr}  ${sizeStr}`);
     }
 
-    console.log('');
-    console.log(`  Total: ${dbFiles.length} workspaces, ${totalDocs.toLocaleString()} documents, ${totalPending.toLocaleString()} pending embeddings, ${formatBytes(totalSize)}`);
-    console.log('');
+    cliOutput('');
+    cliOutput(`  Total: ${dbFiles.length} workspaces, ${totalDocs.toLocaleString()} documents, ${totalPending.toLocaleString()} pending embeddings, ${formatBytes(totalSize)}`);
+    cliOutput('');
 
     await printEmbeddingServerStatus(config);
-    console.log('');
+    cliOutput('');
 
     const vectorHealth = await getVectorStoreHealth(config);
     printVectorStoreSection(vectorHealth);
@@ -868,9 +962,9 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
   const store = await createStore(resolvedDbPath);
   const health = store.getIndexHealth();
 
-  console.log(`nano-brain Status — ${workspaceName}`);
-  console.log('═══════════════════════════════════════════════════');
-  console.log('');
+  cliOutput(`nano-brain Status — ${workspaceName}`);
+  cliOutput('═══════════════════════════════════════════════════');
+  cliOutput('');
 
   if (serverInfo) {
     const uptimeSec = Math.floor(serverInfo.uptime);
@@ -878,41 +972,41 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
     const mins = Math.floor((uptimeSec % 3600) / 60);
     const secs = uptimeSec % 60;
     const uptimeStr = hours > 0 ? `${hours}h ${mins}m ${secs}s` : mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
-    console.log('Server:');
-    console.log(`  Status:   running (port ${DEFAULT_HTTP_PORT})`);
-    console.log(`  Uptime:   ${uptimeStr}`);
-    console.log(`  Ready:    ${serverInfo.ready ? 'yes' : 'no'}`);
-    console.log('');
+    cliOutput('Server:');
+    cliOutput(`  Status:   running (port ${DEFAULT_HTTP_PORT})`);
+    cliOutput(`  Uptime:   ${uptimeStr}`);
+    cliOutput(`  Ready:    ${serverInfo.ready ? 'yes' : 'no'}`);
+    cliOutput('');
   }
 
-  console.log('Database:');
-  console.log(`  Path:     ${resolvedDbPath.replace(os.homedir(), '~')}`);
-  console.log(`  Size:     ${formatBytes(dbSize)} (on disk)`);
-  console.log('');
+  cliOutput('Database:');
+  cliOutput(`  Path:     ${resolvedDbPath.replace(os.homedir(), '~')}`);
+  cliOutput(`  Size:     ${formatBytes(dbSize)} (on disk)`);
+  cliOutput('');
 
-  console.log('Index:');
-  console.log(`  Documents:          ${health.documentCount.toLocaleString()}`);
-  console.log(`  Embedded:           ${health.embeddedCount.toLocaleString()}`);
-  console.log(`  Pending embeddings: ${health.pendingEmbeddings.toLocaleString()}`);
-  console.log('');
+  cliOutput('Index:');
+  cliOutput(`  Documents:          ${health.documentCount.toLocaleString()}`);
+  cliOutput(`  Embedded:           ${health.embeddedCount.toLocaleString()}`);
+  cliOutput(`  Pending embeddings: ${health.pendingEmbeddings.toLocaleString()}`);
+  cliOutput('');
 
   if (health.collections.length > 0) {
-    console.log('Collections:');
+    cliOutput('Collections:');
     for (const coll of health.collections) {
-      console.log(`  ${coll.name.padEnd(10)} ${coll.documentCount.toLocaleString()} documents`);
+      cliOutput(`  ${coll.name.padEnd(10)} ${coll.documentCount.toLocaleString()} documents`);
     }
-    console.log('');
+    cliOutput('');
   }
 
   const wsConfig = getWorkspaceConfig(config, workspaceRoot);
   const codebaseStats = getCodebaseStats(store, wsConfig?.codebase, workspaceRoot);
   if (codebaseStats) {
-    console.log('Codebase:');
-    console.log(`  Enabled:    ${codebaseStats.enabled}`);
-    console.log(`  Storage:    ${formatBytes(codebaseStats.storageUsed)} / ${formatBytes(codebaseStats.maxSize)}`);
-    console.log(`  Extensions: ${codebaseStats.extensions.join(', ') || 'auto-detect'}`);
-    console.log(`  Excludes:   ${codebaseStats.excludeCount} patterns`);
-    console.log('');
+    cliOutput('Codebase:');
+    cliOutput(`  Enabled:    ${codebaseStats.enabled}`);
+    cliOutput(`  Storage:    ${formatBytes(codebaseStats.storageUsed)} / ${formatBytes(codebaseStats.maxSize)}`);
+    cliOutput(`  Extensions: ${codebaseStats.extensions.join(', ') || 'auto-detect'}`);
+    cliOutput(`  Excludes:   ${codebaseStats.excludeCount} patterns`);
+    cliOutput('');
   }
 
   // Code Intelligence (symbol graph)
@@ -926,35 +1020,35 @@ async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): P
     } catch { /* table may not exist */ }
     symbolDb.close();
 
-    console.log('Code Intelligence:');
-    console.log(`  Symbols:    ${symbolCount.toLocaleString()}`);
-    console.log(`  Edges:      ${edgeCount.toLocaleString()}`);
-    console.log(`  Flows:      ${flowCount.toLocaleString()}`);
+    cliOutput('Code Intelligence:');
+    cliOutput(`  Symbols:    ${symbolCount.toLocaleString()}`);
+    cliOutput(`  Edges:      ${edgeCount.toLocaleString()}`);
+    cliOutput(`  Flows:      ${flowCount.toLocaleString()}`);
     if (symbolCount === 0) {
-      console.log('  ⚠️  Empty — run `npx nano-brain reindex` to populate');
+      cliOutput('  ⚠️  Empty — run `npx nano-brain reindex` to populate');
     }
-    console.log('');
+    cliOutput('');
   } catch { /* code_symbols table may not exist in older DBs */ }
 
   await printEmbeddingServerStatus(config);
-  console.log('');
+  cliOutput('');
 
   const vectorHealth = await getVectorStoreHealth(config);
   printVectorStoreSection(vectorHealth, vectorHealth ? undefined : store.getSqliteVecCount());
 
   printTokenUsageSection(store.getTokenUsage());
 
-  console.log('Models:');
-  console.log(`  Embedding: ${health.modelStatus.embedding}`);
-  console.log(`  Reranker:  ${health.modelStatus.reranker}`);
-  console.log(`  Expander:  ${health.modelStatus.expander}`);
+  cliOutput('Models:');
+  cliOutput(`  Embedding: ${health.modelStatus.embedding}`);
+  cliOutput(`  Reranker:  ${health.modelStatus.reranker}`);
+  cliOutput(`  Expander:  ${health.modelStatus.expander}`);
   store.close();
 }
 
 async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   if (isRunningInContainer()) {
-    console.error('Error: Destructive operations must be run on the host, not from containers.');
-    console.error('Run this command directly on the host: npx nano-brain init --force');
+    cliError('Error: Destructive operations must be run on the host, not from containers.');
+    cliError('Run this command directly on the host: npx nano-brain init --force');
     process.exit(1);
   }
 
@@ -1007,7 +1101,7 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
       }
     };
     saveCollectionConfig(configPath, config);
-    console.log(`✅ Created config: ${configPath}`);
+    cliOutput(`✅ Created config: ${configPath}`);
   } else if (!config.embedding) {
     config.embedding = {
       provider: 'ollama',
@@ -1015,9 +1109,9 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
       model: 'nomic-embed-text'
     };
     saveCollectionConfig(configPath, config);
-    console.log(`✅ Updated config with embedding section`);
+    cliOutput(`✅ Updated config with embedding section`);
   } else {
-    console.log(`ℹ️  Config exists: ${configPath}`);
+    cliOutput(`ℹ️  Config exists: ${configPath}`);
   }
 
   if (config.embedding?.provider !== 'openai') {
@@ -1025,14 +1119,14 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
     const ollamaHealth = await checkOllamaHealth(ollamaUrl);
 
     if (ollamaHealth.reachable) {
-      console.log(`✅ Ollama reachable at ${ollamaUrl}`);
+      cliOutput(`✅ Ollama reachable at ${ollamaUrl}`);
     } else {
-      console.log(`⚠️  Ollama not reachable at ${ollamaUrl} — will use local GGUF fallback`);
+      cliOutput(`⚠️  Ollama not reachable at ${ollamaUrl} — will use local GGUF fallback`);
     }
   }
 
   if (all && !force) {
-    console.log('⚠️  --all ignored without --force');
+    cliOutput('⚠️  --all ignored without --force');
   }
 
   if (force && all) {
@@ -1047,7 +1141,7 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
       }
       deletedCount = dbFiles.length;
     }
-    console.log(`🗑️  Force --all: deleted ${deletedCount} database files from ${dataDir}`);
+    cliOutput(`🗑️  Force --all: deleted ${deletedCount} database files from ${dataDir}`);
   }
 
   if (!config.workspaces) {
@@ -1058,9 +1152,9 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
       codebase: { enabled: true }
     };
     saveCollectionConfig(configPath, config);
-    console.log(`✅ Enabled codebase indexing for workspace: ${root}`);
+    cliOutput(`✅ Enabled codebase indexing for workspace: ${root}`);
   } else {
-    console.log(`ℹ️  Workspace already configured: ${root}`);
+    cliOutput(`ℹ️  Workspace already configured: ${root}`);
   }
   const projectHash = crypto.createHash('sha256').update(root).digest('hex').substring(0, 12);
   let serverRunning = false;
@@ -1069,15 +1163,15 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
     if (serverRunning) {
       try {
         await proxyPost(DEFAULT_HTTP_PORT, '/api/maintenance/prepare', {});
-        console.log('⏸️  Daemon paused for maintenance');
+        cliOutput('⏸️  Daemon paused for maintenance');
       } catch (err) {
-        console.error('⚠️  Warning: Could not coordinate with daemon. Stop the daemon first: launchctl unload ~/Library/LaunchAgents/com.nano-brain.server.plist');
+        cliError('⚠️  Warning: Could not coordinate with daemon. Stop the daemon first: launchctl unload ~/Library/LaunchAgents/com.nano-brain.server.plist');
         process.exit(1);
       }
     }
   }
   if (force && !all) {
-    console.log('🗑️  Force mode: deleting workspace database...');
+    cliOutput('🗑️  Force mode: deleting workspace database...');
     const dbPath = globalOpts.dbPath;
     let deletedFiles = 0;
     for (const suffix of ['', '-wal', '-shm']) {
@@ -1087,23 +1181,23 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
         deletedFiles++;
       }
     }
-    console.log(`   Deleted ${deletedFiles} database file(s)`);
+    cliOutput(`   Deleted ${deletedFiles} database file(s)`);
   }
   const store = await createStore(globalOpts.dbPath);
-  console.log('📂 Indexing codebase...');
+  cliOutput('📂 Indexing codebase...');
   const wsConfig = config.workspaces[root];
   const codebaseConfig = wsConfig?.codebase ?? { enabled: true };
   const db = openDatabase(globalOpts.dbPath);
   const codebaseStats = await indexCodebase(store, root, codebaseConfig, projectHash, undefined, db);
   db.close();
-  console.log(`✅ Indexed ${codebaseStats.filesIndexed} files (${codebaseStats.filesSkippedUnchanged} unchanged)`);
+  cliOutput(`✅ Indexed ${codebaseStats.filesIndexed} files (${codebaseStats.filesSkippedUnchanged} unchanged)`);
 
-  console.log('📜 Harvesting sessions...');
+  cliOutput('📜 Harvesting sessions...');
   const sessionDir = resolveOpenCodeStorageDir();
   const sessions = await harvestSessions({ sessionDir, outputDir: DEFAULT_OUTPUT_DIR });
-  console.log(`✅ Harvested ${sessions.length} sessions`);
+  cliOutput(`✅ Harvested ${sessions.length} sessions`);
 
-  console.log('📚 Indexing collections...');
+  cliOutput('📚 Indexing collections...');
   const collections = getCollections(config);
   // Only index core collections during init; MCP watcher handles the rest
   const initCollections = collections.filter(c => c.name === 'memory' || c.name === 'sessions');
@@ -1124,14 +1218,14 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
         totalIndexed++;
       }
     }
-    console.log(`  ${collection.name}: ${files.length} files (${collIndexed} new)`);
+    cliOutput(`  ${collection.name}: ${files.length} files (${collIndexed} new)`);
   }
   if (skippedCount > 0) {
-    console.log(`  (${skippedCount} other collection(s) deferred to MCP watcher)`);
+    cliOutput(`  (${skippedCount} other collection(s) deferred to MCP watcher)`);
   }
-  console.log(`✅ Indexed ${totalIndexed} documents from collections`);
+  cliOutput(`✅ Indexed ${totalIndexed} documents from collections`);
   // Generate embeddings — cap at 50 during init, MCP server handles the rest
-  console.log('🧠 Generating embeddings...');
+  cliOutput('🧠 Generating embeddings...');
   const embeddingConfig = config.embedding;
   const provider = await createEmbeddingProvider({ embeddingConfig });
   const INIT_EMBED_CAP = 50;
@@ -1152,12 +1246,12 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
       }
     }
     const remaining = store.getHashesNeedingEmbedding().length;
-    console.log(`✅ Embedded ${embedded} documents${remaining > 0 ? ` (${remaining} remaining — MCP server will continue in background)` : ''}`);
+    cliOutput(`✅ Embedded ${embedded} documents${remaining > 0 ? ` (${remaining} remaining — MCP server will continue in background)` : ''}`);
     provider.dispose();
   } else {
     const pending = store.getHashesNeedingEmbedding();
-    console.log(`⚠️  No embedding provider available — ${pending.length} documents pending`);
-    console.log(`   Run 'npx nano-brain embed' later to generate embeddings`);
+    cliOutput(`⚠️  No embedding provider available — ${pending.length} documents pending`);
+    cliOutput(`   Run 'npx nano-brain embed' later to generate embeddings`);
   }
   store.close();
 
@@ -1177,14 +1271,14 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
       if (startIdx !== -1 && endIdx !== -1) {
         agentsContent = agentsContent.substring(0, startIdx) + snippet + agentsContent.substring(endIdx + endMarker.length);
         fs.writeFileSync(agentsPath, agentsContent);
-        console.log(`✅ Updated AGENTS.md with memory snippet`);
+        cliOutput(`✅ Updated AGENTS.md with memory snippet`);
       } else {
         fs.appendFileSync(agentsPath, '\n\n' + snippet);
-        console.log(`✅ Appended memory snippet to AGENTS.md`);
+        cliOutput(`✅ Appended memory snippet to AGENTS.md`);
       }
     } else {
       fs.writeFileSync(agentsPath, snippet);
-      console.log(`✅ Created AGENTS.md with memory snippet`);
+      cliOutput(`✅ Created AGENTS.md with memory snippet`);
     }
   }
 
@@ -1203,18 +1297,18 @@ async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Pro
         fs.copyFileSync(path.join(commandsDir, file), path.join(targetDir, file));
       }
     }
-    console.log(`✅ Installed ${commandFiles.length} slash commands (global + project)`);
+    cliOutput(`✅ Installed ${commandFiles.length} slash commands (global + project)`);
   }
   if (serverRunning) {
     try {
       await proxyPost(DEFAULT_HTTP_PORT, '/api/maintenance/resume', {});
-      console.log('▶️  Daemon resumed');
+      cliOutput('▶️  Daemon resumed');
     } catch (err) {
-      console.error('⚠️  Warning: Could not resume daemon. It will auto-resume in 5 minutes.');
+      cliError('⚠️  Warning: Could not resume daemon. It will auto-resume in 5 minutes.');
     }
   }
-  console.log('');
-  console.log('nano-brain initialized! Run `npx nano-brain status` to verify.');
+  cliOutput('');
+  cliOutput('nano-brain initialized! Run `npx nano-brain status` to verify.');
 }
 
 async function handleUpdate(globalOpts: GlobalOptions): Promise<void> {
@@ -1223,7 +1317,7 @@ async function handleUpdate(globalOpts: GlobalOptions): Promise<void> {
   const config = loadCollectionConfig(globalOpts.configPath);
 
   if (!config) {
-    console.error('No config file found');
+    cliError('No config file found');
     store.close();
     process.exit(1);
   }
@@ -1233,7 +1327,7 @@ async function handleUpdate(globalOpts: GlobalOptions): Promise<void> {
   let totalSkipped = 0;
 
   for (const collection of collections) {
-    console.log(`Scanning collection: ${collection.name}`);
+    cliOutput(`Scanning collection: ${collection.name}`);
     const files = await scanCollectionFiles(collection);
 
     for (const file of files) {
@@ -1252,7 +1346,7 @@ async function handleUpdate(globalOpts: GlobalOptions): Promise<void> {
     }
   }
 
-  console.log(`✅ Indexed ${totalIndexed} documents, skipped ${totalSkipped}`);
+  cliOutput(`✅ Indexed ${totalIndexed} documents, skipped ${totalSkipped}`);
   store.close();
 }
 
@@ -1270,20 +1364,20 @@ async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   if (isRunningInContainer()) {
     const serverRunning = await detectRunningServerContainer(DEFAULT_HTTP_PORT);
     if (!serverRunning) {
-      console.error('Error: Daemon not running. Start it on the host:');
-      console.error('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
+      cliError('Error: Daemon not running. Start it on the host:');
+      cliError('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
       process.exit(1);
     }
     try {
       const result = await proxyPostContainer(DEFAULT_HTTP_PORT, '/api/embed', {});
       if (result.error) {
-        console.error('Error:', result.error);
+        cliError('Error:', result.error);
         process.exit(1);
       }
-      console.log('✅ Embedding started in background on daemon');
+      cliOutput('✅ Embedding started in background on daemon');
       return;
     } catch (err) {
-      console.error('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+      cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
   }
@@ -1292,8 +1386,13 @@ async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   const provider = await createEmbeddingProvider({ embeddingConfig: config?.embedding });
 
   if (!provider) {
-    console.error('Failed to load embedding provider');
+    cliError('Failed to load embedding provider');
     process.exit(1);
+  }
+
+  let qdrantStore: VectorStore | null = null;
+  if (config?.vector?.provider === 'qdrant' && config.vector.url) {
+    qdrantStore = createVectorStore(config.vector);
   }
 
   let totalEmbedded = 0;
@@ -1301,19 +1400,20 @@ async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Pr
 
   try {
     const store = await createStore(globalOpts.dbPath);
+    if (qdrantStore) store.setVectorStore(qdrantStore);
     const hashes = store.getHashesNeedingEmbedding();
     if (hashes.length > 0) {
       store.ensureVecTable(provider.getDimensions());
-      console.log(`[${path.basename(process.cwd())}] ${hashes.length} chunks pending...`);
+      cliOutput(`[${path.basename(process.cwd())}] ${hashes.length} chunks pending...`);
       const embedded = await embedPendingCodebase(store, provider, 50);
       totalEmbedded += embedded;
-      console.log(`[${path.basename(process.cwd())}] Embedded ${embedded} documents`);
+      cliOutput(`[${path.basename(process.cwd())}] Embedded ${embedded} documents`);
     }
     store.close();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('malformed') || msg.includes('corrupt')) {
-      console.warn(`[${path.basename(process.cwd())}] Database corrupted — skipping (delete and re-init to fix)`);
+      cliError(`[${path.basename(process.cwd())}] Database corrupted — skipping (delete and re-init to fix)`);
     } else {
       throw err;
     }
@@ -1326,28 +1426,30 @@ async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       if (!fs.existsSync(wsDbPath)) continue;
       try {
         const wsStore = await createStore(wsDbPath);
+        if (qdrantStore) wsStore.setVectorStore(qdrantStore);
         const wsHashes = wsStore.getHashesNeedingEmbedding();
         if (wsHashes.length > 0) {
           wsStore.ensureVecTable(provider.getDimensions());
-          console.log(`[${path.basename(wsPath)}] ${wsHashes.length} chunks pending...`);
+          cliOutput(`[${path.basename(wsPath)}] ${wsHashes.length} chunks pending...`);
           const embedded = await embedPendingCodebase(wsStore, provider, 50);
           totalEmbedded += embedded;
-          console.log(`[${path.basename(wsPath)}] Embedded ${embedded} documents`);
+          cliOutput(`[${path.basename(wsPath)}] Embedded ${embedded} documents`);
         }
         wsStore.close();
       } catch (err) {
-        console.warn(`[${path.basename(wsPath)}] Embed failed: ${err instanceof Error ? err.message : err}`);
+        cliError(`[${path.basename(wsPath)}] Embed failed: ${err instanceof Error ? err.message : err}`);
       }
     }
   }
 
   if (totalEmbedded === 0) {
-    console.log('No chunks need embedding');
+    cliOutput('No chunks need embedding');
   } else {
-    console.log(`✅ Embedded ${totalEmbedded} documents total`);
+    cliOutput(`✅ Embedded ${totalEmbedded} documents total`);
   }
 
   provider.dispose();
+  if (qdrantStore) await qdrantStore.close();
 }
 
 async function handleSearch(
@@ -1359,7 +1461,7 @@ async function handleSearch(
   const query = commandArgs[0];
 
   if (!query) {
-    console.error('Missing query argument');
+    cliError('Missing query argument');
     process.exit(1);
   }
 
@@ -1406,8 +1508,8 @@ async function handleSearch(
     : await detectRunningServer(DEFAULT_HTTP_PORT);
 
   if (inContainer && !serverRunning) {
-    console.error('Error: Daemon not running. Start it on the host:');
-    console.error('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
+    cliError('Error: Daemon not running. Start it on the host:');
+    cliError('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
     process.exit(1);
   }
 
@@ -1418,20 +1520,20 @@ async function handleSearch(
         ? await proxyPostContainer(DEFAULT_HTTP_PORT, endpoint, { query, limit, tags: tags?.join(','), scope })
         : await proxyPost(DEFAULT_HTTP_PORT, endpoint, { query, limit, tags: tags?.join(','), scope });
       if (format === 'json') {
-        console.log(JSON.stringify(data, null, 2));
+        cliOutput(JSON.stringify(data, null, 2));
       } else if (format === 'files') {
-        console.log(data.results?.map((r: any) => r.path).join('\n') || '');
+        cliOutput(data.results?.map((r: any) => r.path).join('\n') || '');
       } else if (compact) {
         const cache = new ResultCache();
         const cacheKey = cache.set(data.results || [], query);
-        console.log(formatCompactResults(data.results || [], cacheKey));
+        cliOutput(formatCompactResults(data.results || [], cacheKey));
       } else {
-        console.log(formatSearchOutput(data.results || [], 'text'));
+        cliOutput(formatSearchOutput(data.results || [], 'text'));
       }
       return;
     } catch (err) {
       if (inContainer) {
-        console.error('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+        cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
         process.exit(1);
       }
       log('cli', 'HTTP proxy failed, falling back to local: ' + (err instanceof Error ? err.message : String(err)));
@@ -1454,7 +1556,7 @@ async function handleSearch(
     }
     const provider = await createEmbeddingProvider({ embeddingConfig: searchConfig?.embedding });
     if (!provider) {
-      console.error('Vector search requires embedding model');
+      cliError('Vector search requires embedding model');
       store.close();
       process.exit(1);
     }
@@ -1485,9 +1587,9 @@ async function handleSearch(
   if (compact && format !== 'json') {
     const cache = new ResultCache();
     const cacheKey = cache.set(results, query);
-    console.log(formatCompactResults(results, cacheKey));
+    cliOutput(formatCompactResults(results, cacheKey));
   } else {
-    console.log(formatSearchOutput(results, format));
+    cliOutput(formatSearchOutput(results, format));
   }
   store.close();
 }
@@ -1496,7 +1598,7 @@ async function handleGet(globalOpts: GlobalOptions, commandArgs: string[]): Prom
   const id = commandArgs[0];
 
   if (!id) {
-    console.error('Missing document id or path');
+    cliError('Missing document id or path');
     process.exit(1);
   }
 
@@ -1520,19 +1622,19 @@ async function handleGet(globalOpts: GlobalOptions, commandArgs: string[]): Prom
   const doc = store.findDocument(id);
 
   if (!doc) {
-    console.error(`Document not found: ${id}`);
+    cliError(`Document not found: ${id}`);
     store.close();
     process.exit(1);
   }
 
-  console.log(`Document: ${doc.collection}/${doc.path}`);
-  console.log(`Title: ${doc.title}`);
-  console.log(`Docid: ${doc.hash.substring(0, 6)}`);
-  console.log('');
+  cliOutput(`Document: ${doc.collection}/${doc.path}`);
+  cliOutput(`Title: ${doc.title}`);
+  cliOutput(`Docid: ${doc.hash.substring(0, 6)}`);
+  cliOutput('');
 
   const body = store.getDocumentBody(doc.hash, fromLine, maxLines);
   if (body) {
-    console.log(body);
+    cliOutput(body);
   }
 
   store.close();
@@ -1543,17 +1645,17 @@ async function handleHarvest(globalOpts: GlobalOptions): Promise<void> {
   const sessionDir = resolveOpenCodeStorageDir();
   const outputDir = DEFAULT_OUTPUT_DIR;
 
-  console.log('Harvesting sessions...');
+  cliOutput('Harvesting sessions...');
   const sessions = await harvestSessions({ sessionDir, outputDir });
 
-  console.log(`✅ Harvested ${sessions.length} sessions to ${outputDir}`);
+  cliOutput(`✅ Harvested ${sessions.length} sessions to ${outputDir}`);
 }
 
 async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const content = commandArgs[0]
 
   if (!content) {
-    console.error('Usage: write "content here" [--supersedes=<path-or-docid>] [--tags=<comma-separated>]')
+    cliError('Usage: write "content here" [--supersedes=<path-or-docid>] [--tags=<comma-separated>]')
     process.exit(1)
   }
 
@@ -1573,8 +1675,8 @@ async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   if (isRunningInContainer()) {
     const serverRunning = await detectRunningServerContainer(DEFAULT_HTTP_PORT);
     if (!serverRunning) {
-      console.error('Error: Daemon not running. Start it on the host:');
-      console.error('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
+      cliError('Error: Daemon not running. Start it on the host:');
+      cliError('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
       process.exit(1);
     }
     try {
@@ -1583,13 +1685,13 @@ async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Pr
         tags: tags?.join(','),
       });
       if (result.error) {
-        console.error('Error:', result.error);
+        cliError('Error:', result.error);
         process.exit(1);
       }
-      console.log(`✅ ${result.message}`);
+      cliOutput(`✅ ${result.message}`);
       return;
     } catch (err) {
-      console.error('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+      cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
   }
@@ -1643,7 +1745,7 @@ async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Pr
 
   store.close()
 
-  console.log(`✅ Written to ${targetPath} [${workspaceName}]${supersedeWarning}${tagInfo}`)
+  cliOutput(`✅ Written to ${targetPath} [${workspaceName}]${supersedeWarning}${tagInfo}`)
 }
 
 async function handleTags(globalOpts: GlobalOptions): Promise<void> {
@@ -1651,14 +1753,14 @@ async function handleTags(globalOpts: GlobalOptions): Promise<void> {
   const tags = store.listAllTags()
 
   if (tags.length === 0) {
-    console.log('No tags found.')
+    cliOutput('No tags found.')
     store.close()
     return
   }
 
-  console.log('Tags:')
+  cliOutput('Tags:')
   for (const { tag, count } of tags) {
-    console.log(`  ${tag}: ${count} document${count === 1 ? '' : 's'}`)
+    cliOutput(`  ${tag}: ${count} document${count === 1 ? '' : 's'}`)
   }
   store.close()
 }
@@ -1667,7 +1769,7 @@ async function handleFocus(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   const filePath = commandArgs[0]
 
   if (!filePath) {
-    console.error('Usage: focus <filepath>')
+    cliError('Usage: focus <filepath>')
     process.exit(1)
   }
 
@@ -1680,38 +1782,38 @@ async function handleFocus(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   const dependents = store.getFileDependents(absolutePath, projectHash)
   const centralityInfo = store.getDocumentCentrality(absolutePath)
 
-  console.log(`File: ${absolutePath}`)
-  console.log('')
+  cliOutput(`File: ${absolutePath}`)
+  cliOutput('')
 
   if (centralityInfo) {
-    console.log(`Centrality: ${centralityInfo.centrality.toFixed(4)}`)
+    cliOutput(`Centrality: ${centralityInfo.centrality.toFixed(4)}`)
     if (centralityInfo.clusterId !== null) {
       const clusterMembers = store.getClusterMembers(centralityInfo.clusterId, projectHash)
-      console.log(`Cluster ID: ${centralityInfo.clusterId} (${clusterMembers.length} members)`)
+      cliOutput(`Cluster ID: ${centralityInfo.clusterId} (${clusterMembers.length} members)`)
       if (clusterMembers.length > 0) {
-        console.log('Cluster Members:')
+        cliOutput('Cluster Members:')
         for (const member of clusterMembers.slice(0, 10)) {
-          console.log(`  - ${member}`)
+          cliOutput(`  - ${member}`)
         }
         if (clusterMembers.length > 10) {
-          console.log(`  ... and ${clusterMembers.length - 10} more`)
+          cliOutput(`  ... and ${clusterMembers.length - 10} more`)
         }
       }
     }
   } else {
-    console.log('Centrality: Not indexed')
+    cliOutput('Centrality: Not indexed')
   }
-  console.log('')
+  cliOutput('')
 
-  console.log(`Dependencies (imports): ${dependencies.length}`)
+  cliOutput(`Dependencies (imports): ${dependencies.length}`)
   for (const dep of dependencies) {
-    console.log(`  → ${dep}`)
+    cliOutput(`  → ${dep}`)
   }
-  console.log('')
+  cliOutput('')
 
-  console.log(`Dependents (imported by): ${dependents.length}`)
+  cliOutput(`Dependents (imported by): ${dependents.length}`)
   for (const dep of dependents) {
-    console.log(`  ← ${dep}`)
+    cliOutput(`  ← ${dep}`)
   }
 
   store.close()
@@ -1726,32 +1828,32 @@ async function handleGraphStats(globalOpts: GlobalOptions): Promise<void> {
   const edges = store.getFileEdges(projectHash)
   const cycles = findCycles(edges.map(e => ({ source: e.source_path, target: e.target_path })), 5)
 
-  console.log('Graph Statistics')
-  console.log('═══════════════════════════════════════════════════')
-  console.log('')
-  console.log(`Nodes: ${stats.nodeCount}`)
-  console.log(`Edges: ${stats.edgeCount}`)
-  console.log(`Clusters: ${stats.clusterCount}`)
-  console.log('')
+  cliOutput('Graph Statistics')
+  cliOutput('═══════════════════════════════════════════════════')
+  cliOutput('')
+  cliOutput(`Nodes: ${stats.nodeCount}`)
+  cliOutput(`Edges: ${stats.edgeCount}`)
+  cliOutput(`Clusters: ${stats.clusterCount}`)
+  cliOutput('')
 
   if (stats.topCentrality.length > 0) {
-    console.log('Top 10 by Centrality:')
+    cliOutput('Top 10 by Centrality:')
     for (const { path: filePath, centrality } of stats.topCentrality) {
-      console.log(`  ${centrality.toFixed(4)} - ${filePath}`)
+      cliOutput(`  ${centrality.toFixed(4)} - ${filePath}`)
     }
-    console.log('')
+    cliOutput('')
   }
 
   if (cycles.length > 0) {
-    console.log(`Cycles (length ≤ 5): ${cycles.length}`)
+    cliOutput(`Cycles (length ≤ 5): ${cycles.length}`)
     for (const cycle of cycles.slice(0, 5)) {
-      console.log(`  ${cycle.join(' → ')} → ${cycle[0]}`)
+      cliOutput(`  ${cycle.join(' → ')} → ${cycle[0]}`)
     }
     if (cycles.length > 5) {
-      console.log(`  ... and ${cycles.length - 5} more`)
+      cliOutput(`  ... and ${cycles.length - 5} more`)
     }
   } else {
-    console.log('Cycles: None detected')
+    cliOutput('Cycles: None detected')
   }
 
   store.close()
@@ -1791,13 +1893,13 @@ async function handleSymbols(globalOpts: GlobalOptions, commandArgs: string[]): 
   })
 
   if (format === 'json') {
-    console.log(JSON.stringify(results, null, 2))
+    cliOutput(JSON.stringify(results, null, 2))
     store.close()
     return
   }
 
   if (results.length === 0) {
-    console.log('No symbols found matching the criteria.')
+    cliOutput('No symbols found matching the criteria.')
     store.close()
     return
   }
@@ -1809,16 +1911,16 @@ async function handleSymbols(globalOpts: GlobalOptions, commandArgs: string[]): 
     grouped.get(key)!.push({ operation: r.operation, repo: r.repo, filePath: r.filePath, lineNumber: r.lineNumber })
   }
 
-  console.log(`Found ${results.length} symbol(s) across ${grouped.size} pattern(s)`)
-  console.log('')
+  cliOutput(`Found ${results.length} symbol(s) across ${grouped.size} pattern(s)`)
+  cliOutput('')
 
   for (const [key, items] of grouped) {
     const [symbolType, symbolPattern] = key.split(':')
-    console.log(`${symbolType}: ${symbolPattern}`)
+    cliOutput(`${symbolType}: ${symbolPattern}`)
     for (const item of items) {
-      console.log(`  [${item.operation}] ${item.repo}: ${item.filePath}:${item.lineNumber}`)
+      cliOutput(`  [${item.operation}] ${item.repo}: ${item.filePath}:${item.lineNumber}`)
     }
-    console.log('')
+    cliOutput('')
   }
 
   store.close()
@@ -1841,8 +1943,8 @@ async function handleImpact(globalOpts: GlobalOptions, commandArgs: string[]): P
 
   log('cli', 'impact type=' + (type || '') + ' pattern=' + (pattern || ''));
   if (!type || !pattern) {
-    console.error('Usage: impact --type=<type> --pattern=<pattern> [--json]')
-    console.error('Types: redis_key, pubsub_channel, mysql_table, api_endpoint, http_call, bull_queue')
+    cliError('Usage: impact --type=<type> --pattern=<pattern> [--json]')
+    cliError('Types: redis_key, pubsub_channel, mysql_table, api_endpoint, http_call, bull_queue')
     process.exit(1)
   }
 
@@ -1852,13 +1954,13 @@ async function handleImpact(globalOpts: GlobalOptions, commandArgs: string[]): P
   const results = store.getSymbolImpact(type, pattern, projectHash)
 
   if (format === 'json') {
-    console.log(JSON.stringify(results, null, 2))
+    cliOutput(JSON.stringify(results, null, 2))
     store.close()
     return
   }
 
   if (results.length === 0) {
-    console.log(`No symbols found for ${type}: ${pattern}`)
+    cliOutput(`No symbols found for ${type}: ${pattern}`)
     store.close()
     return
   }
@@ -1869,8 +1971,8 @@ async function handleImpact(globalOpts: GlobalOptions, commandArgs: string[]): P
     byOperation.get(r.operation)!.push({ repo: r.repo, filePath: r.filePath, lineNumber: r.lineNumber })
   }
 
-  console.log(`Impact Analysis: ${type} "${pattern}"`)
-  console.log('')
+  cliOutput(`Impact Analysis: ${type} "${pattern}"`)
+  cliOutput('')
 
   const operationLabels: Record<string, string> = {
     read: 'Readers',
@@ -1885,11 +1987,11 @@ async function handleImpact(globalOpts: GlobalOptions, commandArgs: string[]): P
 
   for (const [op, items] of byOperation) {
     const label = operationLabels[op] || op
-    console.log(`${label} (${items.length}):`)
+    cliOutput(`${label} (${items.length}):`)
     for (const item of items) {
-      console.log(`  ${item.repo}: ${item.filePath}:${item.lineNumber}`)
+      cliOutput(`  ${item.repo}: ${item.filePath}:${item.lineNumber}`)
     }
-    console.log('')
+    cliOutput('')
   }
 
   store.close()
@@ -1898,7 +2000,7 @@ async function handleImpact(globalOpts: GlobalOptions, commandArgs: string[]): P
 function warnIfEmptySymbolGraph(db: Database.Database, projectHash: string): boolean {
   const count = db.prepare('SELECT COUNT(*) as cnt FROM code_symbols WHERE project_hash = ?').get(projectHash) as { cnt: number };
   if (count.cnt === 0) {
-    console.error('⚠️  Symbol graph is empty. Run `npx nano-brain reindex` first.');
+    cliError('⚠️  Symbol graph is empty. Run `npx nano-brain reindex` first.');
     return true;
   }
   return false;
@@ -1920,7 +2022,7 @@ async function handleContext(globalOpts: GlobalOptions, commandArgs: string[]): 
   }
 
   if (!name) {
-    console.error('Usage: context <symbol-name> [--file=<path>] [--json]');
+    cliError('Usage: context <symbol-name> [--file=<path>] [--json]');
     process.exit(1);
   }
 
@@ -1939,61 +2041,61 @@ async function handleContext(globalOpts: GlobalOptions, commandArgs: string[]): 
   const result = graph.handleContext({ name, filePath, projectHash });
 
   if (format === 'json') {
-    console.log(JSON.stringify(result, null, 2));
+    cliOutput(JSON.stringify(result, null, 2));
     db.close();
     return;
   }
 
   if (!result.found) {
     if (result.disambiguation) {
-      console.log(`Multiple symbols named "${name}". Use --file= to disambiguate:`);
+      cliOutput(`Multiple symbols named "${name}". Use --file= to disambiguate:`);
       for (const s of result.disambiguation) {
-        console.log(`  ${s.kind} ${s.name} — ${s.filePath}:${s.startLine}`);
+        cliOutput(`  ${s.kind} ${s.name} — ${s.filePath}:${s.startLine}`);
       }
     } else {
-      console.log(`Symbol "${name}" not found.`);
+      cliOutput(`Symbol "${name}" not found.`);
     }
     db.close();
     return;
   }
 
   const sym = result.symbol!;
-  console.log(`${sym.kind} ${sym.name}`);
-  console.log(`  File: ${sym.filePath}:${sym.startLine}-${sym.endLine}`);
-  console.log(`  Exported: ${sym.exported ? 'yes' : 'no'}`);
+  cliOutput(`${sym.kind} ${sym.name}`);
+  cliOutput(`  File: ${sym.filePath}:${sym.startLine}-${sym.endLine}`);
+  cliOutput(`  Exported: ${sym.exported ? 'yes' : 'no'}`);
   if (result.clusterLabel) {
-    console.log(`  Cluster: ${result.clusterLabel}`);
+    cliOutput(`  Cluster: ${result.clusterLabel}`);
   }
-  console.log('');
+  cliOutput('');
 
   if (result.incoming && result.incoming.length > 0) {
-    console.log(`Callers (${result.incoming.length}):`);
+    cliOutput(`Callers (${result.incoming.length}):`);
     for (const e of result.incoming) {
-      console.log(`  ← ${e.kind} ${e.name} (${e.filePath}) [${e.edgeType}]`);
+      cliOutput(`  ← ${e.kind} ${e.name} (${e.filePath}) [${e.edgeType}]`);
     }
-    console.log('');
+    cliOutput('');
   }
 
   if (result.outgoing && result.outgoing.length > 0) {
-    console.log(`Callees (${result.outgoing.length}):`);
+    cliOutput(`Callees (${result.outgoing.length}):`);
     for (const e of result.outgoing) {
-      console.log(`  → ${e.kind} ${e.name} (${e.filePath}) [${e.edgeType}]`);
+      cliOutput(`  → ${e.kind} ${e.name} (${e.filePath}) [${e.edgeType}]`);
     }
-    console.log('');
+    cliOutput('');
   }
 
   if (result.flows && result.flows.length > 0) {
-    console.log(`Flows (${result.flows.length}):`);
+    cliOutput(`Flows (${result.flows.length}):`);
     for (const f of result.flows) {
-      console.log(`  ${f.flowType}: ${f.label} (step ${f.stepIndex})`);
+      cliOutput(`  ${f.flowType}: ${f.label} (step ${f.stepIndex})`);
     }
-    console.log('');
+    cliOutput('');
   }
 
   if (result.infrastructureSymbols && result.infrastructureSymbols.length > 0) {
-    console.log(`Infrastructure:`);
+    cliOutput(`Infrastructure:`);
     for (const s of result.infrastructureSymbols) {
-      console.log(`  [${s.operation}] ${s.type}: ${s.pattern}`);
+      cliOutput(`  [${s.operation}] ${s.type}: ${s.pattern}`);
     }
   }
 
@@ -2026,7 +2128,7 @@ async function handleCodeImpact(globalOpts: GlobalOptions, commandArgs: string[]
   }
 
   if (!target) {
-    console.error('Usage: code-impact <symbol-name> [--direction=upstream|downstream] [--max-depth=N] [--min-confidence=N] [--file=<path>] [--json]');
+    cliError('Usage: code-impact <symbol-name> [--direction=upstream|downstream] [--max-depth=N] [--min-confidence=N] [--file=<path>] [--json]');
     process.exit(1);
   }
 
@@ -2045,45 +2147,45 @@ async function handleCodeImpact(globalOpts: GlobalOptions, commandArgs: string[]
   const result = graph.handleImpact({ target, direction, maxDepth, minConfidence, filePath, projectHash });
 
   if (format === 'json') {
-    console.log(JSON.stringify(result, null, 2));
+    cliOutput(JSON.stringify(result, null, 2));
     db.close();
     return;
   }
 
   if (!result.found) {
     if (result.disambiguation) {
-      console.log(`Multiple symbols named "${target}". Use --file= to disambiguate:`);
+      cliOutput(`Multiple symbols named "${target}". Use --file= to disambiguate:`);
       for (const s of result.disambiguation) {
-        console.log(`  ${s.kind} ${s.name} — ${s.filePath}`);
+        cliOutput(`  ${s.kind} ${s.name} — ${s.filePath}`);
       }
     } else {
-      console.log(`Symbol "${target}" not found.`);
+      cliOutput(`Symbol "${target}" not found.`);
     }
     db.close();
     return;
   }
 
   const t = result.target!;
-  console.log(`Impact Analysis: ${t.kind} ${t.name} (${t.filePath})`);
-  console.log(`  Direction: ${direction}`);
-  console.log(`  Risk: ${result.risk}`);
-  console.log(`  Direct deps: ${result.summary.directDeps}, Total affected: ${result.summary.totalAffected}, Flows: ${result.summary.flowsAffected}`);
-  console.log('');
+  cliOutput(`Impact Analysis: ${t.kind} ${t.name} (${t.filePath})`);
+  cliOutput(`  Direction: ${direction}`);
+  cliOutput(`  Risk: ${result.risk}`);
+  cliOutput(`  Direct deps: ${result.summary.directDeps}, Total affected: ${result.summary.totalAffected}, Flows: ${result.summary.flowsAffected}`);
+  cliOutput('');
 
   for (const [depth, symbols] of Object.entries(result.byDepth)) {
     if (symbols.length > 0) {
-      console.log(`Depth ${depth} (${symbols.length}):`);
+      cliOutput(`Depth ${depth} (${symbols.length}):`);
       for (const s of symbols) {
-        console.log(`  ${s.kind} ${s.name} (${s.filePath}) [${s.edgeType}, confidence=${s.confidence}]`);
+        cliOutput(`  ${s.kind} ${s.name} (${s.filePath}) [${s.edgeType}, confidence=${s.confidence}]`);
       }
     }
   }
 
   if (result.affectedFlows.length > 0) {
-    console.log('');
-    console.log(`Affected Flows (${result.affectedFlows.length}):`);
+    cliOutput('');
+    cliOutput(`Affected Flows (${result.affectedFlows.length}):`);
     for (const f of result.affectedFlows) {
-      console.log(`  ${f.flowType}: ${f.label}`);
+      cliOutput(`  ${f.flowType}: ${f.label}`);
     }
   }
 
@@ -2118,38 +2220,38 @@ async function handleDetectChanges(globalOpts: GlobalOptions, commandArgs: strin
   const result = graph.handleDetectChanges({ scope, workspaceRoot, projectHash });
 
   if (format === 'json') {
-    console.log(JSON.stringify(result, null, 2));
+    cliOutput(JSON.stringify(result, null, 2));
     db.close();
     return;
   }
 
   if (result.changedFiles.length === 0) {
-    console.log('No changed files detected.');
+    cliOutput('No changed files detected.');
     db.close();
     return;
   }
 
-  console.log(`Risk Level: ${result.riskLevel}`);
-  console.log('');
+  cliOutput(`Risk Level: ${result.riskLevel}`);
+  cliOutput('');
 
-  console.log(`Changed Files (${result.changedFiles.length}):`);
+  cliOutput(`Changed Files (${result.changedFiles.length}):`);
   for (const f of result.changedFiles) {
-    console.log(`  ${f}`);
+    cliOutput(`  ${f}`);
   }
-  console.log('');
+  cliOutput('');
 
   if (result.changedSymbols.length > 0) {
-    console.log(`Changed Symbols (${result.changedSymbols.length}):`);
+    cliOutput(`Changed Symbols (${result.changedSymbols.length}):`);
     for (const s of result.changedSymbols) {
-      console.log(`  ${s.kind} ${s.name} (${s.filePath})`);
+      cliOutput(`  ${s.kind} ${s.name} (${s.filePath})`);
     }
-    console.log('');
+    cliOutput('');
   }
 
   if (result.affectedFlows.length > 0) {
-    console.log(`Affected Flows (${result.affectedFlows.length}):`);
+    cliOutput(`Affected Flows (${result.affectedFlows.length}):`);
     for (const f of result.affectedFlows) {
-      console.log(`  ${f.flowType}: ${f.label}`);
+      cliOutput(`  ${f.flowType}: ${f.label}`);
     }
   }
 
@@ -2170,20 +2272,20 @@ async function handleReindex(globalOpts: GlobalOptions, commandArgs: string[]): 
   if (isRunningInContainer()) {
     const serverRunning = await detectRunningServerContainer(DEFAULT_HTTP_PORT);
     if (!serverRunning) {
-      console.error('Error: Daemon not running. Start it on the host:');
-      console.error('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
+      cliError('Error: Daemon not running. Start it on the host:');
+      cliError('  npx nano-brain serve install && launchctl load ~/Library/LaunchAgents/com.nano-brain.server.plist');
       process.exit(1);
     }
     try {
       const result = await proxyPostContainer(DEFAULT_HTTP_PORT, '/api/reindex', { root });
       if (result.error) {
-        console.error('Error:', result.error);
+        cliError('Error:', result.error);
         process.exit(1);
       }
-      console.log(`✅ Reindex started in background on daemon for ${result.root}`);
+      cliOutput(`✅ Reindex started in background on daemon for ${result.root}`);
       return;
     } catch (err) {
-      console.error('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+      cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
   }
@@ -2196,32 +2298,32 @@ async function handleReindex(globalOpts: GlobalOptions, commandArgs: string[]): 
   const wsConfig = getWorkspaceConfig(config, root);
   const codebaseConfig = wsConfig?.codebase ?? { enabled: true };
 
-  console.log(`Reindexing codebase: ${root}`);
+  cliOutput(`Reindexing codebase: ${root}`);
   const db = openDatabase(resolvedDbPath);
   const stats = await indexCodebase(store, root, codebaseConfig, projectHash, undefined, db);
-  console.log(`  Files: ${stats.filesIndexed} indexed, ${stats.filesSkippedUnchanged} unchanged`);
+  cliOutput(`  Files: ${stats.filesIndexed} indexed, ${stats.filesSkippedUnchanged} unchanged`);
 
   // Report symbol graph stats
   const symbolCount = (db.prepare('SELECT COUNT(*) as cnt FROM code_symbols WHERE project_hash = ?').get(projectHash) as { cnt: number }).cnt;
   const edgeCount = (db.prepare('SELECT COUNT(*) as cnt FROM symbol_edges WHERE project_hash = ?').get(projectHash) as { cnt: number }).cnt;
-  console.log(`  Symbols: ${symbolCount}, Edges: ${edgeCount}`);
+  cliOutput(`  Symbols: ${symbolCount}, Edges: ${edgeCount}`);
 
   if (symbolCount === 0 && isTreeSitterAvailable()) {
-    console.log('  ⚠️  No symbols indexed. Check if your files contain supported languages.');
+    cliOutput('  ⚠️  No symbols indexed. Check if your files contain supported languages.');
   } else if (!isTreeSitterAvailable()) {
-    console.log('  ⚠️  Tree-sitter not available — symbol graph skipped.');
+    cliOutput('  ⚠️  Tree-sitter not available — symbol graph skipped.');
   }
 
   db.close();
   store.close();
-  console.log('✅ Reindex complete.');
+  cliOutput('✅ Reindex complete.');
 }
 
 async function handleCache(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const subcommand = commandArgs[0];
 
   if (!subcommand) {
-    console.error('Missing cache subcommand (clear, stats)');
+    cliError('Missing cache subcommand (clear, stats)');
     process.exit(1);
   }
 
@@ -2244,7 +2346,7 @@ async function handleCache(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       if (type) {
         const typeMap: Record<string, string> = { embed: 'qembed', expand: 'expand', rerank: 'rerank' };
         if (!typeMap[type]) {
-          console.error(`Invalid cache type "${type}". Valid types: embed, expand, rerank`);
+          cliError(`Invalid cache type "${type}". Valid types: embed, expand, rerank`);
           store.close();
           process.exit(1);
         }
@@ -2254,11 +2356,11 @@ async function handleCache(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       let deleted: number;
       if (all) {
         deleted = store.clearCache(undefined, type);
-        console.log(`Cleared all cache entries${type ? ` of type ${type}` : ''} (${deleted} total)`);
+        cliOutput(`Cleared all cache entries${type ? ` of type ${type}` : ''} (${deleted} total)`);
       } else {
         const projectHash = crypto.createHash('sha256').update(process.cwd()).digest('hex').substring(0, 12);
         deleted = store.clearCache(projectHash, type);
-        console.log(`Cleared ${deleted} cache entries for workspace ${resolveProjectLabel(projectHash)}${type ? ` (type: ${type})` : ''}`);
+        cliOutput(`Cleared ${deleted} cache entries for workspace ${resolveProjectLabel(projectHash)}${type ? ` (type: ${type})` : ''}`);
       }
       break;
     }
@@ -2266,20 +2368,20 @@ async function handleCache(globalOpts: GlobalOptions, commandArgs: string[]): Pr
     case 'stats': {
       const stats = store.getCacheStats();
       if (stats.length === 0) {
-        console.log('No cache entries');
+        cliOutput('No cache entries');
       } else {
-        console.log('Cache Statistics:');
-        console.log('  Type        Project                         Count');
-        console.log('  ──────────  ──────────────────────────────  ─────');
+        cliOutput('Cache Statistics:');
+        cliOutput('  Type        Project                         Count');
+        cliOutput('  ──────────  ──────────────────────────────  ─────');
         for (const row of stats) {
-          console.log(`  ${row.type.padEnd(10)}  ${resolveProjectLabel(row.projectHash).padEnd(30)}  ${row.count}`);
+          cliOutput(`  ${row.type.padEnd(10)}  ${resolveProjectLabel(row.projectHash).padEnd(30)}  ${row.count}`);
         }
       }
       break;
     }
 
     default:
-      console.error(`Unknown cache subcommand: ${subcommand}`);
+      cliError(`Unknown cache subcommand: ${subcommand}`);
       store.close();
       process.exit(1);
   }
@@ -2291,7 +2393,7 @@ async function handleLogs(commandArgs: string[]): Promise<void> {
   const logsDir = path.join(os.homedir(), '.nano-brain', 'logs');
 
   if (commandArgs[0] === 'path') {
-    console.log(logsDir);
+    cliOutput(logsDir);
     return;
   }
 
@@ -2320,14 +2422,14 @@ async function handleLogs(commandArgs: string[]): Promise<void> {
 
   if (clear) {
     if (!fs.existsSync(logsDir)) {
-      console.log('No logs directory');
+      cliOutput('No logs directory');
       return;
     }
     const files = fs.readdirSync(logsDir).filter(f => f.startsWith('nano-brain-') && f.endsWith('.log'));
     for (const file of files) {
       fs.unlinkSync(path.join(logsDir, file));
     }
-    console.log('Cleared ' + files.length + ' log file(s)');
+    cliOutput('Cleared ' + files.length + ' log file(s)');
     return;
   }
 
@@ -2336,8 +2438,8 @@ async function handleLogs(commandArgs: string[]): Promise<void> {
   }
 
   if (!fs.existsSync(logFile)) {
-    console.log('No log file: ' + logFile);
-    console.log('Enable logging: set logging.enabled: true in ~/.nano-brain/config.yml');
+    cliOutput('No log file: ' + logFile);
+    cliOutput('Enable logging: set logging.enabled: true in ~/.nano-brain/config.yml');
     return;
   }
 
@@ -2345,7 +2447,7 @@ async function handleLogs(commandArgs: string[]): Promise<void> {
     const { spawn } = await import('child_process');
     const tail = spawn('tail', ['-f', '-n', String(lines), logFile], { stdio: 'inherit' });
     tail.on('error', () => {
-      console.error('tail command not available, showing last ' + lines + ' lines instead');
+      cliError('tail command not available, showing last ' + lines + ' lines instead');
       printLastLines(logFile!, lines);
     });
     await new Promise<void>((resolve) => {
@@ -2363,10 +2465,10 @@ function printLastLines(filePath: string, n: number): void {
   const start = Math.max(0, allLines.length - n);
   const selected = allLines.slice(start);
   if (start > 0) {
-    console.log('... (' + start + ' earlier lines omitted, use -n to show more)');
+    cliOutput('... (' + start + ' earlier lines omitted, use -n to show more)');
   }
   for (const line of selected) {
-    console.log(line);
+    cliOutput(line);
   }
 }
 
@@ -2381,7 +2483,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
   const subcommand = commandArgs[0];
 
   if (!subcommand) {
-    console.error('Missing qdrant subcommand (up, down, status, migrate, verify, activate, cleanup)');
+    cliError('Missing qdrant subcommand (up, down, status, migrate, verify, activate, cleanup, recreate)');
     process.exit(1);
   }
 
@@ -2394,18 +2496,18 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
     case 'up': {
       if (!fs.existsSync(composeTarget)) {
         if (!fs.existsSync(composeSource)) {
-          console.error('❌ docker-compose.qdrant.yml not found in package');
+          cliError('❌ docker-compose.qdrant.yml not found in package');
           process.exit(1);
         }
         fs.mkdirSync(path.dirname(composeTarget), { recursive: true });
         fs.copyFileSync(composeSource, composeTarget);
       }
 
-      console.log('Starting Qdrant...');
+      cliOutput('Starting Qdrant...');
       try {
         execSync(`docker compose -f "${composeTarget}" up -d`, { stdio: 'inherit' });
       } catch {
-        console.error('❌ Failed to start Qdrant. Is Docker running?');
+        cliError('❌ Failed to start Qdrant. Is Docker running?');
         process.exit(1);
       }
 
@@ -2421,11 +2523,11 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           }
         } catch {
         }
-        console.log(`Waiting for Qdrant... (${i + 1}/5)`);
+        cliOutput(`Waiting for Qdrant... (${i + 1}/5)`);
       }
 
       if (!healthy) {
-        console.error('❌ Qdrant failed to start. Check: docker logs nano-brain-qdrant');
+        cliError('❌ Qdrant failed to start. Check: docker logs nano-brain-qdrant');
         process.exit(1);
       }
 
@@ -2441,16 +2543,16 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       config.vector = vectorConfig;
       saveCollectionConfig(globalOpts.configPath, config);
 
-      console.log('✅ Qdrant is running. Dashboard: http://localhost:6333/dashboard');
+      cliOutput('✅ Qdrant is running. Dashboard: http://localhost:6333/dashboard');
       break;
     }
 
     case 'down': {
-      console.log('Stopping Qdrant...');
+      cliOutput('Stopping Qdrant...');
       try {
         execSync(`docker compose -f "${composeTarget}" down`, { stdio: 'inherit' });
       } catch {
-        console.error('❌ Failed to stop Qdrant');
+        cliError('❌ Failed to stop Qdrant');
         process.exit(1);
       }
 
@@ -2461,7 +2563,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         saveCollectionConfig(globalOpts.configPath, config);
       }
 
-      console.log('✅ Qdrant stopped. Vector provider switched to sqlite-vec. Data persists in Docker volume.');
+      cliOutput('✅ Qdrant stopped. Vector provider switched to sqlite-vec. Data persists in Docker volume.');
       break;
     }
 
@@ -2470,14 +2572,14 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       const vectorConfig = config?.vector;
       const currentProvider = vectorConfig?.provider || 'sqlite-vec';
 
-      console.log('Qdrant Status');
-      console.log('═══════════════════════════════════════════════════');
+      cliOutput('Qdrant Status');
+      cliOutput('═══════════════════════════════════════════════════');
       if (currentProvider === 'qdrant') {
-        console.log(`Active provider: qdrant ✓`);
+        cliOutput(`Active provider: qdrant ✓`);
       } else {
-        console.log(`Active provider: sqlite-vec (default)`);
+        cliOutput(`Active provider: sqlite-vec (default)`);
       }
-      console.log('');
+      cliOutput('');
 
       let containerStatus = 'unknown';
       try {
@@ -2497,7 +2599,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         containerStatus = 'not running';
       }
 
-      console.log(`Container: ${containerStatus}`);
+      cliOutput(`Container: ${containerStatus}`);
 
       const qdrantUrl = vectorConfig?.url || 'http://localhost:6333';
       const resolvedUrl = resolveHostUrl(qdrantUrl);
@@ -2507,28 +2609,28 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         if (!healthRes.ok) {
           throw new Error(`HTTP ${healthRes.status}`);
         }
-        console.log(`Health: ✅ reachable at ${resolvedUrl}`);
+        cliOutput(`Health: ✅ reachable at ${resolvedUrl}`);
 
         try {
           const collectionRes = await fetch(`${resolvedUrl}/collections/nano-brain`);
           if (collectionRes.ok) {
             const collectionData = await collectionRes.json();
             const result = collectionData.result || collectionData;
-            console.log(`Collection: nano-brain`);
-            console.log(`  Vectors: ${result.points_count ?? result.vectors_count ?? 'unknown'}`);
-            console.log(`  Dimensions: ${result.config?.params?.vectors?.size ?? 'unknown'}`);
+            cliOutput(`Collection: nano-brain`);
+            cliOutput(`  Vectors: ${result.points_count ?? result.vectors_count ?? 'unknown'}`);
+            cliOutput(`  Dimensions: ${result.config?.params?.vectors?.size ?? 'unknown'}`);
           } else {
-            console.log('Collection: nano-brain (not created yet)');
+            cliOutput('Collection: nano-brain (not created yet)');
           }
         } catch {
-          console.log('Collection: nano-brain (not created yet)');
+          cliOutput('Collection: nano-brain (not created yet)');
         }
       } catch {
-        console.log(`Health: ❌ Qdrant is not reachable at ${resolvedUrl}`);
+        cliOutput(`Health: ❌ Qdrant is not reachable at ${resolvedUrl}`);
         if (resolvedUrl !== qdrantUrl) {
-          console.log(`   (config URL ${qdrantUrl} resolved to ${resolvedUrl} inside container)`);
+          cliOutput(`   (config URL ${qdrantUrl} resolved to ${resolvedUrl} inside container)`);
         }
-        console.log('   Run `npx nano-brain qdrant up` to start.');
+        cliOutput('   Run `npx nano-brain qdrant up` to start.');
       }
       break;
     }
@@ -2562,15 +2664,15 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           throw new Error(`HTTP ${healthRes.status}`);
         }
       } catch {
-        console.error(`❌ Qdrant is not reachable at ${resolvedUrl}.`);
-        console.error('   Run `npx nano-brain qdrant up` first.');
-        console.error('   If running inside a container, Qdrant must be accessible at host.docker.internal:6333.');
+        cliError(`❌ Qdrant is not reachable at ${resolvedUrl}.`);
+        cliError('   Run `npx nano-brain qdrant up` first.');
+        cliError('   If running inside a container, Qdrant must be accessible at host.docker.internal:6333.');
         process.exit(1);
       }
 
       const dataDir = DEFAULT_DB_DIR;
       if (!fs.existsSync(dataDir)) {
-        console.log('No databases found in ' + dataDir);
+        cliOutput('No databases found in ' + dataDir);
         return;
       }
 
@@ -2580,13 +2682,13 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       }
 
       if (sqliteFiles.length === 0) {
-        console.log('No matching databases found');
+        cliOutput('No matching databases found');
         return;
       }
 
-      console.log(`Found ${sqliteFiles.length} database(s) to migrate`);
+      cliOutput(`Found ${sqliteFiles.length} database(s) to migrate`);
       if (dryRun) {
-        console.log('(dry-run mode - no vectors will be written)');
+        cliOutput('(dry-run mode - no vectors will be written)');
       }
 
       const startTime = Date.now();
@@ -2602,7 +2704,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         try {
           sqliteVec.load(db);
         } catch {
-          console.log(`[${sqliteFile}] sqlite-vec not available, skipping`);
+          cliOutput(`[${sqliteFile}] sqlite-vec not available, skipping`);
           db.close();
           continue;
         }
@@ -2616,19 +2718,19 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           const countRow = countStmt.get() as { cnt: number };
           vectorCount = countRow.cnt;
         } catch {
-          console.log(`[${sqliteFile}] no vector tables, skipping`);
+          cliOutput(`[${sqliteFile}] no vector tables, skipping`);
           db.close();
           continue;
         }
 
         if (vectorCount === 0) {
-          console.log(`[${sqliteFile}] 0 vectors, skipping`);
+          cliOutput(`[${sqliteFile}] 0 vectors, skipping`);
           db.close();
           continue;
         }
 
         if (dryRun) {
-          console.log(`[${sqliteFile}] ${vectorCount} vectors (dry-run)`);
+          cliOutput(`[${sqliteFile}] ${vectorCount} vectors (dry-run)`);
           totalVectors += vectorCount;
           dbCount++;
           db.close();
@@ -2683,7 +2785,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           if (batch.length >= batchSize) {
             await qdrantStore.batchUpsert(batch);
             migrated += batch.length;
-            console.log(`[${sqliteFile}] ${migrated}/${vectorCount} vectors migrated...`);
+            cliOutput(`[${sqliteFile}] ${migrated}/${vectorCount} vectors migrated...`);
             batch.length = 0;
           }
         }
@@ -2693,7 +2795,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           migrated += batch.length;
         }
 
-        console.log(`[${sqliteFile}] ${migrated}/${vectorCount} vectors migrated`);
+        cliOutput(`[${sqliteFile}] ${migrated}/${vectorCount} vectors migrated`);
         totalVectors += migrated;
         dbCount++;
 
@@ -2703,9 +2805,9 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       if (dryRun) {
-        console.log(`\n📊 Dry-run complete: ${totalVectors} vectors in ${dbCount} database(s)`);
+        cliOutput(`\n📊 Dry-run complete: ${totalVectors} vectors in ${dbCount} database(s)`);
       } else {
-        console.log(`\n✅ Migrated ${totalVectors} vectors from ${dbCount} database(s) in ${elapsed}s`);
+        cliOutput(`\n✅ Migrated ${totalVectors} vectors from ${dbCount} database(s) in ${elapsed}s`);
 
         const currentProvider = config?.vector?.provider || 'sqlite-vec';
         if (currentProvider !== 'qdrant') {
@@ -2721,11 +2823,11 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
             };
             updatedConfig.vector = newVectorConfig;
             saveCollectionConfig(globalOpts.configPath, updatedConfig);
-            console.log('\n✅ Switched to Qdrant provider');
+            cliOutput('\n✅ Switched to Qdrant provider');
           } else {
-            console.log(`\nProvider is currently: ${currentProvider}`);
-            console.log('To use Qdrant for searches, run: npx nano-brain qdrant activate');
-            console.log('Or re-run with: npx nano-brain qdrant migrate --activate');
+            cliOutput(`\nProvider is currently: ${currentProvider}`);
+            cliOutput('To use Qdrant for searches, run: npx nano-brain qdrant activate');
+            cliOutput('Or re-run with: npx nano-brain qdrant migrate --activate');
           }
         }
       }
@@ -2744,26 +2846,26 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           throw new Error(`HTTP ${healthRes.status}`);
         }
       } catch {
-        console.error(`❌ Qdrant is not reachable at ${resolvedUrl}.`);
-        console.error('   Run `npx nano-brain qdrant up` first.');
-        console.error('   If running inside a container, Qdrant must be accessible at host.docker.internal:6333.');
+        cliError(`❌ Qdrant is not reachable at ${resolvedUrl}.`);
+        cliError('   Run `npx nano-brain qdrant up` first.');
+        cliError('   If running inside a container, Qdrant must be accessible at host.docker.internal:6333.');
         process.exit(1);
       }
 
       const dataDir = DEFAULT_DB_DIR;
       if (!fs.existsSync(dataDir)) {
-        console.log('No databases found in ' + dataDir);
+        cliOutput('No databases found in ' + dataDir);
         return;
       }
 
       const sqliteFiles = fs.readdirSync(dataDir).filter(f => f.endsWith('.sqlite'));
       if (sqliteFiles.length === 0) {
-        console.log('No SQLite databases found');
+        cliOutput('No SQLite databases found');
         return;
       }
 
-      console.log('Verifying migration...');
-      console.log('═══════════════════════════════════════════════════');
+      cliOutput('Verifying migration...');
+      cliOutput('═══════════════════════════════════════════════════');
 
       const sqliteVec = await import('sqlite-vec');
 
@@ -2779,7 +2881,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         try {
           sqliteVec.load(db);
         } catch {
-          console.log(`[${sqliteFile}] sqlite-vec not available, skipping`);
+          cliOutput(`[${sqliteFile}] sqlite-vec not available, skipping`);
           db.close();
           continue;
         }
@@ -2793,7 +2895,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           const countRow = countStmt.get() as { cnt: number };
           vectorCount = countRow.cnt;
         } catch {
-          console.log(`[${sqliteFile}] no vector tables, skipping`);
+          cliOutput(`[${sqliteFile}] no vector tables, skipping`);
           db.close();
           continue;
         }
@@ -2801,7 +2903,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         sawVectorTables = true;
 
         if (vectorCount === 0) {
-          console.log(`[${sqliteFile}] 0 vectors`);
+          cliOutput(`[${sqliteFile}] 0 vectors`);
           db.close();
           continue;
         }
@@ -2815,7 +2917,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           uniqueKeys.add(row.key);
         }
 
-        console.log(`[${sqliteFile}] ${vectorCount.toLocaleString()} vectors in SQLite`);
+        cliOutput(`[${sqliteFile}] ${vectorCount.toLocaleString()} vectors in SQLite`);
         totalVectors += vectorCount;
         dbCount++;
         db.close();
@@ -2831,18 +2933,18 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
             pointsCount = result.points_count ?? result.vectors_count ?? 0;
           }
         } catch {
-          console.error('❌ Failed to check Qdrant collection');
+          cliError('❌ Failed to check Qdrant collection');
           process.exit(1);
         }
 
-        console.log('SQLite: no vector data (already cleaned up)');
-        console.log(`Qdrant: ${pointsCount.toLocaleString()} vectors`);
-        console.log(`ℹ️  Cannot verify — SQLite vectors already cleaned. Qdrant has ${pointsCount.toLocaleString()} vectors.`);
+        cliOutput('SQLite: no vector data (already cleaned up)');
+        cliOutput(`Qdrant: ${pointsCount.toLocaleString()} vectors`);
+        cliOutput(`ℹ️  Cannot verify — SQLite vectors already cleaned. Qdrant has ${pointsCount.toLocaleString()} vectors.`);
         break;
       }
 
-      console.log('───────────────────────────────────────────────────');
-      console.log(`SQLite total: ${totalVectors.toLocaleString()} vectors (across ${dbCount} databases)`);
+      cliOutput('───────────────────────────────────────────────────');
+      cliOutput(`SQLite total: ${totalVectors.toLocaleString()} vectors (across ${dbCount} databases)`);
 
       let pointsCount = 0;
       try {
@@ -2853,21 +2955,21 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           pointsCount = result.points_count ?? result.vectors_count ?? 0;
         }
       } catch {
-        console.error('❌ Failed to check Qdrant collection');
+        cliError('❌ Failed to check Qdrant collection');
         process.exit(1);
       }
 
       const uniqueCount = uniqueKeys.size;
-      console.log(`Qdrant total: ${pointsCount.toLocaleString()} unique vectors`);
+      cliOutput(`Qdrant total: ${pointsCount.toLocaleString()} unique vectors`);
       const difference = totalVectors - pointsCount;
-      console.log(`Difference: ${difference.toLocaleString()} (expected — cross-workspace duplicates share the same hash:seq key)`);
-      console.log('');
+      cliOutput(`Difference: ${difference.toLocaleString()} (expected — cross-workspace duplicates share the same hash:seq key)`);
+      cliOutput('');
 
       if (uniqueCount > pointsCount) {
         const missing = uniqueCount - pointsCount;
-        console.log(`⚠️  Found ${missing.toLocaleString()} vectors in SQLite not present in Qdrant. Run \`npx nano-brain qdrant migrate\` to sync.`);
+        cliOutput(`⚠️  Found ${missing.toLocaleString()} vectors in SQLite not present in Qdrant. Run \`npx nano-brain qdrant migrate\` to sync.`);
       } else {
-        console.log('✅ Migration verified: Qdrant has all unique vectors');
+        cliOutput('✅ Migration verified: Qdrant has all unique vectors');
       }
       break;
     }
@@ -2884,8 +2986,8 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           throw new Error(`HTTP ${healthRes.status}`);
         }
       } catch {
-        console.error(`❌ Qdrant is not reachable at ${resolvedUrl}.`);
-        console.error('   Run `npx nano-brain qdrant up` first.');
+        cliError(`❌ Qdrant is not reachable at ${resolvedUrl}.`);
+        cliError('   Run `npx nano-brain qdrant up` first.');
         process.exit(1);
       }
 
@@ -2901,9 +3003,9 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       updatedConfig.vector = newVectorConfig;
       saveCollectionConfig(globalOpts.configPath, updatedConfig);
 
-      console.log('✅ Switched to Qdrant provider');
-      console.log(`   URL: ${qdrantUrl}`);
-      console.log(`   Collection: ${newVectorConfig.collection}`);
+      cliOutput('✅ Switched to Qdrant provider');
+      cliOutput(`   URL: ${qdrantUrl}`);
+      cliOutput(`   Collection: ${newVectorConfig.collection}`);
       break;
     }
 
@@ -2913,9 +3015,9 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       const currentProvider = vectorConfig?.provider || 'sqlite-vec';
 
       if (currentProvider !== 'qdrant') {
-        console.error('❌ Cannot cleanup: provider is not set to qdrant');
-        console.error(`   Current provider: ${currentProvider}`);
-        console.error('   Run `npx nano-brain qdrant activate` first.');
+        cliError('❌ Cannot cleanup: provider is not set to qdrant');
+        cliError(`   Current provider: ${currentProvider}`);
+        cliError('   Run `npx nano-brain qdrant activate` first.');
         process.exit(1);
       }
 
@@ -2928,8 +3030,8 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           throw new Error(`HTTP ${healthRes.status}`);
         }
       } catch {
-        console.error(`❌ Qdrant is not reachable at ${resolvedUrl}.`);
-        console.error('   Cannot cleanup without verifying Qdrant has vectors.');
+        cliError(`❌ Qdrant is not reachable at ${resolvedUrl}.`);
+        cliError('   Cannot cleanup without verifying Qdrant has vectors.');
         process.exit(1);
       }
 
@@ -2942,27 +3044,27 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           pointsCount = result.points_count ?? result.vectors_count ?? 0;
         }
       } catch {
-        console.error('❌ Failed to check Qdrant collection');
+        cliError('❌ Failed to check Qdrant collection');
         process.exit(1);
       }
 
       if (pointsCount === 0) {
-        console.error('❌ Cannot cleanup: Qdrant collection has no vectors');
-        console.error('   Run `npx nano-brain qdrant migrate` first to migrate vectors.');
+        cliError('❌ Cannot cleanup: Qdrant collection has no vectors');
+        cliError('   Run `npx nano-brain qdrant migrate` first to migrate vectors.');
         process.exit(1);
       }
 
-      console.log(`Qdrant has ${pointsCount} vectors. Proceeding with SQLite cleanup...`);
+      cliOutput(`Qdrant has ${pointsCount} vectors. Proceeding with SQLite cleanup...`);
 
       const dataDir = DEFAULT_DB_DIR;
       if (!fs.existsSync(dataDir)) {
-        console.log('No databases found in ' + dataDir);
+        cliOutput('No databases found in ' + dataDir);
         return;
       }
 
       const sqliteFiles = fs.readdirSync(dataDir).filter(f => f.endsWith('.sqlite'));
       if (sqliteFiles.length === 0) {
-        console.log('No SQLite databases found');
+        cliOutput('No SQLite databases found');
         return;
       }
 
@@ -2979,7 +3081,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         try {
           sqliteVec.load(db);
         } catch {
-          console.log(`[${sqliteFile}] sqlite-vec not available, skipping`);
+          cliOutput(`[${sqliteFile}] sqlite-vec not available, skipping`);
           db.close();
           continue;
         }
@@ -2994,7 +3096,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         }
 
         if (!hasVectorTables) {
-          console.log(`[${sqliteFile}] no vector tables, skipping`);
+          cliOutput(`[${sqliteFile}] no vector tables, skipping`);
           db.close();
           continue;
         }
@@ -3009,22 +3111,118 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
           const spaceSaved = statBefore.size - statAfter.size;
           totalSpaceSaved += Math.max(0, spaceSaved);
 
-          console.log(`[${sqliteFile}] cleaned`);
+          cliOutput(`[${sqliteFile}] cleaned`);
         } catch (err) {
-          console.error(`[${sqliteFile}] cleanup failed:`, err);
+          cliError(`[${sqliteFile}] cleanup failed:`, err);
         }
 
         db.close();
       }
 
       const spaceMB = (totalSpaceSaved / (1024 * 1024)).toFixed(2);
-      console.log(`\n✅ Cleaned ${cleanedCount} database(s), ~${spaceMB} MB freed`);
+      cliOutput(`\n✅ Cleaned ${cleanedCount} database(s), ~${spaceMB} MB freed`);
+      break;
+    }
+
+    case 'recreate': {
+      const config = loadCollectionConfig(globalOpts.configPath);
+      const vectorConfig = config?.vector;
+      if (!vectorConfig) {
+        cliError('❌ Qdrant not configured. Run `npx nano-brain qdrant activate` first.');
+        process.exit(1);
+      }
+
+      const qdrantUrl = vectorConfig.url || 'http://localhost:6333';
+      const resolvedUrl = resolveHostUrl(qdrantUrl);
+      const collectionName = vectorConfig.collection || 'nano-brain';
+
+      const embedderResult = await createEmbeddingProvider({
+        embeddingConfig: config?.embedding,
+      });
+      if (!embedderResult) {
+        cliError('❌ No embedding provider available. Configure embedding in config.yml.');
+        process.exit(1);
+      }
+      const newDimensions = embedderResult.getDimensions();
+
+      if (!commandArgs.includes('--force')) {
+        cliOutput(`⚠️  This will DELETE all vectors in collection "${collectionName}" and recreate with ${newDimensions} dimensions.`);
+        cliOutput('   Run with --force to skip this prompt.');
+        const readline = await import('readline');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await new Promise<string>((resolve) => rl.question('Continue? (y/N) ', resolve));
+        rl.close();
+        if (answer.toLowerCase() !== 'y') {
+          cliOutput('Aborted.');
+          process.exit(0);
+        }
+      }
+
+      const qdrantStore = new QdrantVecStore({
+        url: resolvedUrl,
+        apiKey: vectorConfig.apiKey,
+        collection: collectionName,
+        dimensions: newDimensions,
+      });
+
+      try {
+        const { QdrantClient } = await import('@qdrant/js-client-rest');
+        const client = new QdrantClient({ url: resolvedUrl, apiKey: vectorConfig.apiKey });
+
+        cliOutput(`Deleting collection "${collectionName}"...`);
+        try {
+          await client.deleteCollection(collectionName);
+        } catch {
+          cliOutput('Collection did not exist, creating fresh.');
+        }
+
+        cliOutput(`Creating collection "${collectionName}" with ${newDimensions} dimensions...`);
+        await client.createCollection(collectionName, {
+          vectors: { size: newDimensions, distance: 'Cosine' },
+        });
+        await client.createPayloadIndex(collectionName, { field_name: 'hash', field_schema: 'keyword' });
+        await client.createPayloadIndex(collectionName, { field_name: 'collection', field_schema: 'keyword' });
+        await client.createPayloadIndex(collectionName, { field_name: 'projectHash', field_schema: 'keyword' });
+
+        const dataDir = path.join(NANO_BRAIN_HOME, 'data');
+        if (fs.existsSync(dataDir)) {
+          const dbFiles = fs.readdirSync(dataDir).filter(f => f.endsWith('.db'));
+          for (const dbFile of dbFiles) {
+            const dbPath = path.join(dataDir, dbFile);
+            try {
+              const db = new Database(dbPath);
+              db.exec('DELETE FROM content_vectors');
+              const llmCacheExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='llm_cache'").get();
+              if (llmCacheExists) {
+                db.exec('DELETE FROM llm_cache');
+              }
+              db.close();
+              cliOutput(`  Cleared vectors + cache in ${dbFile}`);
+            } catch {
+              cliError(`  Skipped ${dbFile} (could not open)`);
+            }
+          }
+        }
+
+        cliOutput('');
+        cliOutput('✅ Collection recreated successfully.');
+        cliOutput(`   Collection: ${collectionName}`);
+        cliOutput(`   Dimensions: ${newDimensions}`);
+        cliOutput('');
+        cliOutput('Next step: Run `npx nano-brain embed` to re-embed all documents.');
+      } catch (err) {
+        cliError('❌ Failed to recreate collection:', err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+
+      await qdrantStore.close();
+      embedderResult.dispose();
       break;
     }
 
     default:
-      console.error(`Unknown qdrant subcommand: ${subcommand}`);
-      console.error('Available: up, down, status, migrate, verify, activate, cleanup');
+      cliError(`Unknown qdrant subcommand: ${subcommand}`);
+      cliError('Available: up, down, status, migrate, verify, activate, cleanup, recreate');
       process.exit(1);
   }
 }
@@ -3105,8 +3303,8 @@ async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   const deleteVectors = !hasAnyFlag || flagVectors;
 
   if (!confirm && !dryRun) {
-    console.error('⚠️  This will permanently delete nano-brain data.');
-    console.error('   Run with --confirm to proceed, or --dry-run to preview.');
+    cliError('⚠️  This will permanently delete nano-brain data.');
+    cliError('   Run with --confirm to proceed, or --dry-run to preview.');
     process.exit(1);
   }
 
@@ -3148,25 +3346,25 @@ async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   }
 
   if (dryRun) {
-    console.log('Dry run — would delete:');
-    console.log('');
+    cliOutput('Dry run — would delete:');
+    cliOutput('');
     if (deleteDatabases) {
-      console.log(`  SQLite databases:    ${sqliteFiles.length} files in ${dataDir}`);
+      cliOutput(`  SQLite databases:    ${sqliteFiles.length} files in ${dataDir}`);
     }
     if (deleteSessions) {
-      console.log(`  Harvested sessions:  ${sessionsExist ? sessionsDir : '(not found)'}`);
+      cliOutput(`  Harvested sessions:  ${sessionsExist ? sessionsDir : '(not found)'}`);
     }
     if (deleteMemory) {
-      console.log(`  Memory notes:        ${memoryExists ? memoryDir : '(not found)'}`);
+      cliOutput(`  Memory notes:        ${memoryExists ? memoryDir : '(not found)'}`);
     }
     if (deleteLogs) {
-      console.log(`  Log files:           ${logsExist ? logsDir : '(not found)'}`);
+      cliOutput(`  Log files:           ${logsExist ? logsDir : '(not found)'}`);
     }
     if (deleteVectors) {
       if (qdrantReachable) {
-        console.log(`  Qdrant collection:   nano-brain (${qdrantPointsCount} vectors)`);
+        cliOutput(`  Qdrant collection:   nano-brain (${qdrantPointsCount} vectors)`);
       } else {
-        console.log(`  Qdrant collection:   (not reachable at ${qdrantUrl})`);
+        cliOutput(`  Qdrant collection:   (not reachable at ${qdrantUrl})`);
       }
     }
     return;
@@ -3177,36 +3375,36 @@ async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       fs.unlinkSync(path.join(dataDir, file));
     }
     if (sqliteFiles.length > 0) {
-      console.log(`🗑️  Deleted ${sqliteFiles.length} database files from ${dataDir}`);
+      cliOutput(`🗑️  Deleted ${sqliteFiles.length} database files from ${dataDir}`);
     } else {
-      console.log(`ℹ️  No database files found in ${dataDir}`);
+      cliOutput(`ℹ️  No database files found in ${dataDir}`);
     }
   }
 
   if (deleteSessions) {
     if (sessionsExist) {
       fs.rmSync(sessionsDir, { recursive: true, force: true });
-      console.log(`🗑️  Deleted harvested sessions from ${sessionsDir}`);
+      cliOutput(`🗑️  Deleted harvested sessions from ${sessionsDir}`);
     } else {
-      console.log(`ℹ️  No harvested sessions directory found`);
+      cliOutput(`ℹ️  No harvested sessions directory found`);
     }
   }
 
   if (deleteMemory) {
     if (memoryExists) {
       fs.rmSync(memoryDir, { recursive: true, force: true });
-      console.log(`🗑️  Deleted memory notes from ${memoryDir}`);
+      cliOutput(`🗑️  Deleted memory notes from ${memoryDir}`);
     } else {
-      console.log(`ℹ️  No memory directory found`);
+      cliOutput(`ℹ️  No memory directory found`);
     }
   }
 
   if (deleteLogs) {
     if (logsExist) {
       fs.rmSync(logsDir, { recursive: true, force: true });
-      console.log(`🗑️  Deleted log files from ${logsDir}`);
+      cliOutput(`🗑️  Deleted log files from ${logsDir}`);
     } else {
-      console.log(`ℹ️  No logs directory found`);
+      cliOutput(`ℹ️  No logs directory found`);
     }
   }
 
@@ -3215,20 +3413,20 @@ async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       try {
         const deleteRes = await fetch(`${qdrantUrl}/collections/nano-brain`, { method: 'DELETE' });
         if (deleteRes.ok) {
-          console.log(`🗑️  Deleted Qdrant collection 'nano-brain' (${qdrantPointsCount} vectors)`);
+          cliOutput(`🗑️  Deleted Qdrant collection 'nano-brain' (${qdrantPointsCount} vectors)`);
         } else {
-          console.warn(`⚠️  Failed to delete Qdrant collection: HTTP ${deleteRes.status}`);
+          cliError(`⚠️  Failed to delete Qdrant collection: HTTP ${deleteRes.status}`);
         }
       } catch (err) {
-        console.warn(`⚠️  Failed to delete Qdrant collection: ${err}`);
+        cliError(`⚠️  Failed to delete Qdrant collection: ${err}`);
       }
     } else {
-      console.log(`ℹ️  Qdrant not reachable at ${qdrantUrl} — skipping vector cleanup`);
+      cliOutput(`ℹ️  Qdrant not reachable at ${qdrantUrl} — skipping vector cleanup`);
     }
   }
 
-  console.log('');
-  console.log('✅ Reset complete.');
+  cliOutput('');
+  cliOutput('✅ Reset complete.');
 }
 
 async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
@@ -3254,19 +3452,19 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
     try {
       dbFiles = fs.readdirSync(dataDir).filter(f => f.endsWith('.sqlite')).map(f => path.join(dataDir, f));
     } catch {
-      console.error(`Cannot read data directory: ${dataDir}`);
+      cliError(`Cannot read data directory: ${dataDir}`);
       process.exit(1);
     }
 
     if (dbFiles.length === 0) {
-      console.log('No workspaces found.');
+      cliOutput('No workspaces found.');
       return;
     }
 
-    console.log('Known workspaces:');
-    console.log('');
-    console.log('  Name                 Hash          Path                                           Docs');
-    console.log('  ───────────────────  ────────────  ─────────────────────────────────────────────  ────');
+    cliOutput('Known workspaces:');
+    cliOutput('');
+    cliOutput('  Name                 Hash          Path                                           Docs');
+    cliOutput('  ───────────────────  ────────────  ─────────────────────────────────────────────  ────');
 
     for (const dbFile of dbFiles) {
       const wsName = extractWorkspaceName(dbFile);
@@ -3291,16 +3489,16 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
         }
       }
 
-      console.log(`  ${wsName.padEnd(21)}  ${fileHash.padEnd(12)}  ${(wsPath || '(unknown)').padEnd(45)}  ${docs}`);
+      cliOutput(`  ${wsName.padEnd(21)}  ${fileHash.padEnd(12)}  ${(wsPath || '(unknown)').padEnd(45)}  ${docs}`);
     }
     return;
   }
 
   if (!identifier) {
-    console.error('Usage: nano-brain rm <workspace> [--dry-run]');
-    console.error('       nano-brain rm --list');
-    console.error('');
-    console.error('<workspace> can be: absolute path, hash prefix, or workspace name');
+    cliError('Usage: nano-brain rm <workspace> [--dry-run]');
+    cliError('       nano-brain rm --list');
+    cliError('');
+    cliError('<workspace> can be: absolute path, hash prefix, or workspace name');
     process.exit(1);
   }
 
@@ -3317,17 +3515,17 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
         } catch { return 0; }
       };
 
-      console.log(`Dry run — would remove workspace ${resolveProjectLabel(projectHash)}${workspacePath ? ` (${workspacePath})` : ''}:`);
-      console.log('');
-      console.log(`  documents:        ${count('documents')}`);
-      console.log(`  file_edges:       ${count('file_edges')}`);
-      console.log(`  symbols:          ${count('symbols')}`);
-      console.log(`  code_symbols:     ${count('code_symbols')}`);
-      console.log(`  symbol_edges:     ${count('symbol_edges')}`);
-      console.log(`  execution_flows:  ${count('execution_flows')}`);
-      console.log(`  llm_cache:        ${count('llm_cache')}`);
+      cliOutput(`Dry run — would remove workspace ${resolveProjectLabel(projectHash)}${workspacePath ? ` (${workspacePath})` : ''}:`);
+      cliOutput('');
+      cliOutput(`  documents:        ${count('documents')}`);
+      cliOutput(`  file_edges:       ${count('file_edges')}`);
+      cliOutput(`  symbols:          ${count('symbols')}`);
+      cliOutput(`  code_symbols:     ${count('code_symbols')}`);
+      cliOutput(`  symbol_edges:     ${count('symbol_edges')}`);
+      cliOutput(`  execution_flows:  ${count('execution_flows')}`);
+      cliOutput(`  llm_cache:        ${count('llm_cache')}`);
       if (workspacePath && config?.workspaces?.[workspacePath]) {
-        console.log(`  config entry:     ${workspacePath}`);
+        cliOutput(`  config entry:     ${workspacePath}`);
       }
       if (workspacePath && config?.collections) {
         const normalizedWs = workspacePath.replace(/\/$/, '');
@@ -3338,23 +3536,23 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
           })
           .map(([name]) => name);
         if (affectedCollections.length > 0) {
-          console.log(`  collections:      ${affectedCollections.join(', ')}`);
+          cliOutput(`  collections:      ${affectedCollections.join(', ')}`);
         }
       }
       if (workspacePath) {
         const dataDir = path.dirname(globalOpts.dbPath);
         const wsDbPath = resolveWorkspaceDbPath(dataDir, workspacePath);
         if (fs.existsSync(wsDbPath)) {
-          console.log(`  database file:    ${path.basename(wsDbPath)}`);
+          cliOutput(`  database file:    ${path.basename(wsDbPath)}`);
         }
       }
-      console.log('');
-      console.log('Run without --dry-run to execute.');
+      cliOutput('');
+      cliOutput('Run without --dry-run to execute.');
       db.close();
       return;
     }
 
-    console.log(`Removing workspace ${resolveProjectLabel(projectHash)}${workspacePath ? ` (${workspacePath})` : ''}...`);
+    cliOutput(`Removing workspace ${resolveProjectLabel(projectHash)}${workspacePath ? ` (${workspacePath})` : ''}...`);
     const result = store.removeWorkspace(projectHash);
 
     let configRemoved = false;
@@ -3382,24 +3580,24 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
       + result.cacheDeleted + result.fileEdgesDeleted + result.symbolsDeleted
       + result.codeSymbolsDeleted + result.symbolEdgesDeleted + result.executionFlowsDeleted;
 
-    console.log('');
-    console.log('Removed:');
-    console.log(`  documents:        ${result.documentsDeleted}`);
-    console.log(`  embeddings:       ${result.embeddingsDeleted}`);
-    console.log(`  content:          ${result.contentDeleted}`);
-    console.log(`  cache:            ${result.cacheDeleted}`);
-    console.log(`  file_edges:       ${result.fileEdgesDeleted}`);
-    console.log(`  symbols:          ${result.symbolsDeleted}`);
-    console.log(`  code_symbols:     ${result.codeSymbolsDeleted}`);
-    console.log(`  symbol_edges:     ${result.symbolEdgesDeleted}`);
-    console.log(`  execution_flows:  ${result.executionFlowsDeleted}`);
+    cliOutput('');
+    cliOutput('Removed:');
+    cliOutput(`  documents:        ${result.documentsDeleted}`);
+    cliOutput(`  embeddings:       ${result.embeddingsDeleted}`);
+    cliOutput(`  content:          ${result.contentDeleted}`);
+    cliOutput(`  cache:            ${result.cacheDeleted}`);
+    cliOutput(`  file_edges:       ${result.fileEdgesDeleted}`);
+    cliOutput(`  symbols:          ${result.symbolsDeleted}`);
+    cliOutput(`  code_symbols:     ${result.codeSymbolsDeleted}`);
+    cliOutput(`  symbol_edges:     ${result.symbolEdgesDeleted}`);
+    cliOutput(`  execution_flows:  ${result.executionFlowsDeleted}`);
     if (configRemoved) {
-      console.log(`  config entry:     ${workspacePath}`);
+      cliOutput(`  config entry:     ${workspacePath}`);
     }
     if (collectionsRemoved > 0) {
-      console.log(`  collections:      ${collectionsRemoved} removed`);
+      cliOutput(`  collections:      ${collectionsRemoved} removed`);
     }
-    console.log(`  total rows:       ${totalDeleted}`);
+    cliOutput(`  total rows:       ${totalDeleted}`);
 
     const db = openDatabase(globalOpts.dbPath, { readonly: true });
     const tables = ['documents', 'file_edges', 'symbols', 'code_symbols', 'symbol_edges', 'execution_flows', 'llm_cache'];
@@ -3411,11 +3609,11 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
     }
     db.close();
 
-    console.log('');
+    cliOutput('');
     if (remaining === 0) {
-      console.log('✅ Verified: zero rows remain for this workspace.');
+      cliOutput('✅ Verified: zero rows remain for this workspace.');
     } else {
-      console.log(`⚠️  Warning: ${remaining} rows still found for ${resolveProjectLabel(projectHash)}. Partial removal.`);
+      cliOutput(`⚠️  Warning: ${remaining} rows still found for ${resolveProjectLabel(projectHash)}. Partial removal.`);
     }
 
     if (workspacePath) {
@@ -3433,18 +3631,127 @@ async function handleRm(globalOpts: GlobalOptions, commandArgs: string[]): Promi
             fs.unlinkSync(wsDbPath);
             try { fs.unlinkSync(wsDbPath + '-wal'); } catch { /* ignore */ }
             try { fs.unlinkSync(wsDbPath + '-shm'); } catch { /* ignore */ }
-            console.log(`  database file:    ${path.basename(wsDbPath)} deleted`);
+            cliOutput(`  database file:    ${path.basename(wsDbPath)} deleted`);
           }
         } catch {
-          console.warn(`  ⚠️  Could not clean up database file: ${path.basename(wsDbPath)}`);
+          cliError(`  ⚠️  Could not clean up database file: ${path.basename(wsDbPath)}`);
         }
       }
     }
   } catch (err) {
-    console.error((err as Error).message);
+    cliError((err as Error).message);
     process.exit(1);
   } finally {
     store.close();
+  }
+}
+
+async function handleCategorizeBackfill(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  let batchSize = 50;
+  let rateLimit = 10;
+  let dryRun = false;
+  let workspace: string | undefined;
+
+  for (const arg of commandArgs) {
+    if (arg.startsWith('--batch-size=')) {
+      batchSize = parseInt(arg.substring(13), 10);
+    } else if (arg.startsWith('--rate-limit=')) {
+      rateLimit = parseInt(arg.substring(13), 10);
+    } else if (arg === '--dry-run') {
+      dryRun = true;
+    } else if (arg.startsWith('--workspace=')) {
+      workspace = arg.substring(12);
+    }
+  }
+
+  log('cli', 'categorize-backfill batch=' + batchSize + ' rate=' + rateLimit + ' dry=' + dryRun);
+
+  const config = loadCollectionConfig(globalOpts.configPath);
+  if (!config?.consolidation) {
+    cliError('No consolidation config found. Set consolidation section in config.yml');
+    process.exit(1);
+  }
+
+  const consolidationConfig = config.consolidation as ConsolidationConfig;
+  const llmProvider = createLLMProvider(consolidationConfig);
+  if (!llmProvider) {
+    cliError('No LLM provider configured. Set consolidation.apiKey in config.yml or CONSOLIDATION_API_KEY env var');
+    process.exit(1);
+  }
+
+  const categorizationConfig = {
+    llm_enabled: config?.categorization?.llm_enabled ?? true,
+    confidence_threshold: config?.categorization?.confidence_threshold ?? 0.6,
+    max_content_length: config?.categorization?.max_content_length ?? 2000,
+  };
+
+  const store = await createStore(globalOpts.dbPath);
+  const projectHash = workspace
+    ? crypto.createHash('sha256').update(workspace).digest('hex').substring(0, 12)
+    : undefined;
+
+  const uncategorized = store.getUncategorizedDocuments(batchSize, projectHash);
+  const total = uncategorized.length;
+
+  if (total === 0) {
+    cliOutput('No uncategorized documents found.');
+    store.close();
+    return;
+  }
+
+  cliOutput(`Found ${total} uncategorized document(s)${dryRun ? ' (dry run)' : ''}`);
+
+  const tagCounts = new Map<string, number>();
+  let processed = 0;
+  let categorized = 0;
+  const delayMs = Math.ceil(1000 / rateLimit);
+
+  for (const doc of uncategorized) {
+    processed++;
+    const truncatedContent = doc.body.slice(0, categorizationConfig.max_content_length);
+
+    if (dryRun) {
+      cliOutput(`[${processed}/${total}] Would categorize: ${doc.path}`);
+      continue;
+    }
+
+    try {
+      const { categorizeMemory } = await import('./llm-categorizer.js');
+      const tags = await categorizeMemory(truncatedContent, llmProvider, categorizationConfig);
+
+      if (tags.length > 0) {
+        store.insertTags(doc.id, tags);
+        categorized++;
+        for (const tag of tags) {
+          tagCounts.set(tag, (tagCounts.get(tag) ?? 0) + 1);
+        }
+      }
+
+      const tagStr = tags.length > 0 ? tags.join(', ') : '(no tags)';
+      cliOutput(`[${processed}/${total}] ${doc.path}: ${tagStr}`);
+
+      if (processed < total) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    } catch (err) {
+      cliError(`[${processed}/${total}] Error categorizing ${doc.path}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  store.close();
+
+  cliOutput('');
+  if (dryRun) {
+    cliOutput(`Dry run complete. Would process ${total} document(s).`);
+  } else {
+    cliOutput(`Categorization complete: ${categorized}/${processed} documents tagged`);
+    if (tagCounts.size > 0) {
+      cliOutput('Tag distribution:');
+      const sorted = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]);
+      for (const [tag, count] of sorted) {
+        cliOutput(`  ${tag}: ${count}`);
+      }
+    }
   }
 }
 
@@ -3454,13 +3761,40 @@ async function handleConsolidate(globalOpts: GlobalOptions, commandArgs: string[
   const config = loadCollectionConfig(globalOpts.configPath);
 
   if (!config?.consolidation?.enabled) {
-    console.log('Consolidation is not enabled. Set consolidation.enabled=true in config.yml');
+    cliOutput('Consolidation is not enabled. Set consolidation.enabled=true in config.yml');
     store.close();
     return;
   }
 
-  console.log('Consolidation requires an LLM provider. Configure consolidation.model and consolidation.endpoint in config.yml');
-  store.close();
+  try {
+    const consolidationConfig = config.consolidation as ConsolidationConfig;
+    const provider = createLLMProvider(consolidationConfig);
+
+    if (!provider) {
+      cliOutput('No API key configured. Set consolidation.apiKey in config.yml or CONSOLIDATION_API_KEY env var');
+      return;
+    }
+
+    const agent = new ConsolidationAgent(store, {
+      llmProvider: provider,
+      maxMemoriesPerCycle: consolidationConfig.max_memories_per_cycle,
+      minMemoriesThreshold: consolidationConfig.min_memories_threshold,
+      confidenceThreshold: consolidationConfig.confidence_threshold,
+    });
+
+    const results = await agent.runConsolidationCycle();
+
+    if (results.length === 0) {
+      cliOutput('No memories to consolidate');
+    } else {
+      cliOutput(`Consolidation complete: ${results.length} consolidation(s) created`);
+    }
+  } catch (err) {
+    cliError('Consolidation failed:', err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  } finally {
+    store.close();
+  }
 }
 
 async function handleLearning(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
@@ -3473,19 +3807,19 @@ async function handleLearning(globalOpts: GlobalOptions, commandArgs: string[]):
       if (versionId) {
         const version = store.getConfigVersion(versionId);
         if (!version) {
-          console.error('Config version ' + versionId + ' not found');
+          cliError('Config version ' + versionId + ' not found');
           process.exit(1);
         }
-        console.log('Config version ' + versionId + ' (created ' + version.created_at + ')');
-        console.log('Config:', version.config_json);
+        cliOutput('Config version ' + versionId + ' (created ' + version.created_at + ')');
+        cliOutput('Config:', version.config_json);
       } else {
         const latest = store.getLatestConfigVersion();
         if (!latest) {
-          console.log('No config versions found. Learning has not been active.');
+          cliOutput('No config versions found. Learning has not been active.');
         } else {
-          console.log('Latest config version: ' + latest.version_id + ' (created ' + latest.created_at + ')');
-          console.log('Config:', latest.config_json);
-          console.log('\nUse: nano-brain learning rollback <version_id>');
+          cliOutput('Latest config version: ' + latest.version_id + ' (created ' + latest.created_at + ')');
+          cliOutput('Config:', latest.config_json);
+          cliOutput('\nUse: nano-brain learning rollback <version_id>');
         }
       }
     } finally {
@@ -3494,10 +3828,10 @@ async function handleLearning(globalOpts: GlobalOptions, commandArgs: string[]):
     return;
   }
 
-  console.error('Usage: nano-brain learning rollback [version_id]');
-  console.error('');
-  console.error('Commands:');
-  console.error('  rollback [version_id]  View or rollback to a previous config version');
+  cliError('Usage: nano-brain learning rollback [version_id]');
+  cliError('');
+  cliError('Commands:');
+  cliError('  rollback [version_id]  View or rollback to a previous config version');
   process.exit(1);
 }
 
@@ -3581,10 +3915,12 @@ async function main() {
       return handleReindex(globalOpts, commandArgs);
     case 'consolidate':
       return handleConsolidate(globalOpts, commandArgs);
+    case 'categorize-backfill':
+      return handleCategorizeBackfill(globalOpts, commandArgs);
     case 'learning':
       return handleLearning(globalOpts, commandArgs);
     default:
-      console.error(`Unknown command: ${command}`);
+      cliError(`Unknown command: ${command}`);
       showHelp();
       process.exit(1);
   }
@@ -3596,7 +3932,7 @@ const isMain = process.argv[1]?.endsWith('index.ts') ||
 
 if (isMain) {
   main().catch(err => {
-    console.error('Fatal error:', err);
+    cliError('Fatal error:', err);
     process.exit(1);
   });
 }

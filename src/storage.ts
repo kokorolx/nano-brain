@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { Store, StorageConfig } from './types.js';
 import { log } from './logger.js';
+import type Database from 'better-sqlite3';
 
 const DEFAULT_MAX_SIZE = 2147483648;
 const DEFAULT_RETENTION = 7776000000;
@@ -65,7 +66,7 @@ export function parseStorageConfig(raw?: { maxSize?: string; retention?: string;
     if (parsed > 0) {
       maxSize = parsed;
     } else {
-      console.warn(`[storage] Invalid maxSize "${raw.maxSize}", using default 2GB`);
+      log('storage', `Invalid maxSize "${raw.maxSize}", using default 2GB`, 'warn');
     }
   }
   
@@ -74,7 +75,7 @@ export function parseStorageConfig(raw?: { maxSize?: string; retention?: string;
     if (parsed > 0) {
       retention = parsed;
     } else {
-      console.warn(`[storage] Invalid retention "${raw.retention}", using default 90d`);
+      log('storage', `Invalid retention "${raw.retention}", using default 90d`, 'warn');
     }
   }
   
@@ -83,7 +84,7 @@ export function parseStorageConfig(raw?: { maxSize?: string; retention?: string;
     if (parsed > 0) {
       minFreeDisk = parsed;
     } else {
-      console.warn(`[storage] Invalid minFreeDisk "${raw.minFreeDisk}", using default 100MB`);
+      log('storage', `Invalid minFreeDisk "${raw.minFreeDisk}", using default 100MB`, 'warn');
     }
   }
   
@@ -103,7 +104,7 @@ export function checkDiskSpace(dir: string, minFreeDisk: number): { ok: boolean;
     };
   } catch {
     log('storage', 'disk space check unavailable');
-    console.warn('[storage] statfs unavailable, disk safety check disabled');
+    log('storage', 'statfs unavailable, disk safety check disabled', 'warn');
     return { ok: true, freeBytes: -1 };
   }
 }
@@ -207,6 +208,8 @@ export function evictBySize(sessionsDir: string, dbPath: string, maxSize: number
   }
   
   const files = collectSessionFiles(sessionsDir);
+  // NOTE: This sorts session FILES by mtime, not documents by access_count.
+  // For document-level access-aware eviction, use evictLowAccessDocuments().
   files.sort((a, b) => a.mtime - b.mtime);
   
   let evictedCount = 0;
@@ -227,4 +230,40 @@ export function evictBySize(sessionsDir: string, dbPath: string, maxSize: number
   
   log('storage', 'evictBySize evicted=' + evictedCount);
   return evictedCount;
+}
+
+export function evictLowAccessDocuments(db: Database.Database, maxDocuments: number, decayEnabled: boolean = true): number {
+  const countStmt = db.prepare('SELECT COUNT(*) as count FROM documents WHERE active = 1');
+  const { count } = countStmt.get() as { count: number };
+  
+  if (count <= maxDocuments) {
+    log('storage', 'evictLowAccessDocuments count=' + count + ' maxDocuments=' + maxDocuments + ' no eviction needed');
+    return 0;
+  }
+  
+  const toEvict = count - maxDocuments;
+  
+  const orderClause = decayEnabled
+    ? 'ORDER BY access_count ASC, last_accessed_at ASC NULLS FIRST'
+    : 'ORDER BY last_accessed_at ASC NULLS FIRST, modified_at ASC';
+  
+  const selectStmt = db.prepare(`
+    SELECT id FROM documents
+    WHERE active = 1
+    ${orderClause}
+    LIMIT ?
+  `);
+  const rows = selectStmt.all(toEvict) as Array<{ id: number }>;
+  
+  if (rows.length === 0) {
+    return 0;
+  }
+  
+  const ids = rows.map(r => r.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const updateStmt = db.prepare(`UPDATE documents SET active = 0 WHERE id IN (${placeholders})`);
+  updateStmt.run(...ids);
+  
+  log('storage', 'evictLowAccessDocuments evicted=' + ids.length + ' decayEnabled=' + decayEnabled);
+  return ids.length;
 }

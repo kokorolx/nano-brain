@@ -1,6 +1,7 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { createHash } from 'crypto';
 import { resolveHostUrl } from '../host.js';
+import { log } from '../logger.js';
 import type {
   VectorStore,
   VectorSearchOptions,
@@ -148,7 +149,7 @@ export class QdrantVecStore implements VectorStore {
         
         if (isSocketError && attempt < maxRetries) {
           const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
-          console.warn(`[qdrant] Socket error, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+          log('qdrant', 'Socket error, retrying in ' + delay + 'ms (attempt ' + (attempt + 1) + '/' + maxRetries + ')', 'warn');
           await new Promise(resolve => setTimeout(resolve, delay));
           continue;
         }

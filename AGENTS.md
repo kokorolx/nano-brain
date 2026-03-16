@@ -50,8 +50,14 @@ npx nano-brain update
 
 <!-- OPENCODE-MEMORY:END -->
 
+## ⛔ CRITICAL: nano-brain Server Rule
 
-
+**NEVER start nano-brain server/serve inside the container.** It will crash the entire environment.
+- `npx nano-brain serve start` — **FORBIDDEN** inside container
+- `npx nano-brain mcp` — **FORBIDDEN** inside container
+- `node ... src/index.ts serve` — **FORBIDDEN** inside container
+- nano-brain server runs on the **HOST only** (macOS). The container accesses it via MCP proxy.
+- CLI read commands (`npx nano-brain query/status/search`) are OK inside container.
 
 
 

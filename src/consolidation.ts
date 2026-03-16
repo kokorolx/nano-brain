@@ -22,7 +22,7 @@ export interface ConsolidationAgentOptions {
   confidenceThreshold?: number;
 }
 
-interface UnconsolidatedMemory {
+export interface UnconsolidatedMemory {
   id: number;
   title: string;
   path: string;
@@ -83,7 +83,28 @@ export class ConsolidationAgent {
   }
 
   private getUnconsolidatedMemories(): UnconsolidatedMemory[] {
-    return [];
+    const db = this.store.getDb();
+    const stmt = db.prepare(`
+      SELECT d.id, d.title, d.path, d.hash, c.body 
+      FROM documents d 
+      JOIN content c ON d.hash = c.hash 
+      WHERE d.collection = 'memory' 
+        AND d.active = 1 
+        AND d.superseded_by IS NULL 
+        AND d.id NOT IN (
+          SELECT json_each.value FROM consolidations, json_each(consolidations.source_ids)
+        )
+      ORDER BY d.modified_at DESC 
+      LIMIT ?
+    `);
+    const rows = stmt.all(this.maxMemoriesPerCycle) as Array<{
+      id: number;
+      title: string;
+      path: string;
+      hash: string;
+      body: string;
+    }>;
+    return rows;
   }
 
   private buildConsolidationPrompt(memories: UnconsolidatedMemory[]): string {
@@ -124,10 +145,243 @@ Respond with ONLY a JSON array, no other text.`;
   }
 
   private applyConsolidation(result: ConsolidationResult): void {
+    const db = this.store.getDb();
+    const stmt = db.prepare(`
+      INSERT INTO consolidations (source_ids, summary, insight, connections, confidence, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      JSON.stringify(result.sourceIds),
+      result.summary,
+      result.insight,
+      JSON.stringify(result.connections),
+      result.overallConfidence,
+      new Date().toISOString()
+    );
     log('consolidation', 'Applied consolidation for ' + result.sourceIds.length + ' memories, confidence=' + result.overallConfidence.toFixed(2));
   }
 
   private recordFailedBatch(docIds: number[]): void {
-    log('consolidation', 'Recording failed batch for retry: ' + docIds.length + ' documents');
+    log('consolidation', 'Recording failed batch for retry: ' + docIds.length + ' documents, ids=[' + docIds.join(',') + ']', 'warn');
+  }
+
+  async findConsolidationCandidates(documentId: number, maxCandidates: number = 5): Promise<UnconsolidatedMemory[]> {
+    const db = this.store.getDb();
+    const docRow = db.prepare(`
+      SELECT d.id, d.title, d.path, d.hash, c.body
+      FROM documents d
+      JOIN content c ON d.hash = c.hash
+      WHERE d.id = ? AND d.active = 1
+    `).get(documentId) as UnconsolidatedMemory | undefined;
+
+    if (!docRow) {
+      log('consolidation', 'Document not found for consolidation: ' + documentId);
+      return [];
+    }
+
+    const results = this.store.searchFTS(docRow.title + ' ' + docRow.body.substring(0, 200), {
+      limit: maxCandidates + 1,
+      collection: 'memory',
+    });
+
+    const candidates: UnconsolidatedMemory[] = [];
+    for (const result of results) {
+      if (String(result.id) === String(documentId)) continue;
+      if (candidates.length >= maxCandidates) break;
+
+      const candidateRow = db.prepare(`
+        SELECT d.id, d.title, d.path, d.hash, c.body
+        FROM documents d
+        JOIN content c ON d.hash = c.hash
+        WHERE d.id = ? AND d.active = 1
+      `).get(result.id) as UnconsolidatedMemory | undefined;
+
+      if (candidateRow) {
+        candidates.push(candidateRow);
+      }
+    }
+
+    log('consolidation', 'Found ' + candidates.length + ' candidates for document ' + documentId);
+    return candidates;
+  }
+
+  async processConsolidationJob(jobId: number, documentId: number): Promise<void> {
+    if (!this.llmProvider) {
+      throw new Error('No LLM provider configured');
+    }
+
+    const db = this.store.getDb();
+    const docRow = db.prepare(`
+      SELECT d.id, d.title, d.path, d.hash, c.body
+      FROM documents d
+      JOIN content c ON d.hash = c.hash
+      WHERE d.id = ? AND d.active = 1
+    `).get(documentId) as UnconsolidatedMemory | undefined;
+
+    if (!docRow) {
+      this.store.updateJobStatus(jobId, 'failed', undefined, 'Document not found');
+      this.store.addConsolidationLog({
+        documentId,
+        action: 'FAILED',
+        reason: 'Document not found',
+        model: this.llmProvider.model ?? 'unknown',
+        tokensUsed: 0,
+      });
+      return;
+    }
+
+    const candidates = await this.findConsolidationCandidates(documentId, this.maxMemoriesPerCycle);
+
+    const prompt = this.buildSingleDocConsolidationPrompt(docRow, candidates);
+    
+    try {
+      const response = await this.llmProvider.complete(prompt);
+      this.store.recordTokenUsage('consolidation:' + (this.llmProvider.model ?? 'unknown'), response.tokensUsed);
+
+      const decision = this.parseSingleDocResponse(response.text);
+
+      if (decision.contradictedEntities.length > 0) {
+        this.markContradictedEntities(decision.contradictedEntities, documentId);
+        log('consolidation', 'Detected ' + decision.contradictedEntities.length + ' contradicted entities for document ' + documentId);
+      }
+
+      const reasonWithContradictions = decision.contradictedEntities.length > 0
+        ? decision.reason + ' [Contradicted: ' + decision.contradictedEntities.join(', ') + ']'
+        : decision.reason;
+
+      this.store.addConsolidationLog({
+        documentId,
+        action: decision.action,
+        reason: reasonWithContradictions,
+        targetDocId: decision.targetDocId ?? undefined,
+        model: this.llmProvider.model ?? 'unknown',
+        tokensUsed: response.tokensUsed,
+      });
+
+      this.store.updateJobStatus(jobId, 'completed', JSON.stringify(decision));
+      log('consolidation', 'Processed job ' + jobId + ' for document ' + documentId + ': ' + decision.action);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.store.updateJobStatus(jobId, 'failed', undefined, errorMsg);
+      this.store.addConsolidationLog({
+        documentId,
+        action: 'FAILED',
+        reason: errorMsg,
+        model: this.llmProvider.model ?? 'unknown',
+        tokensUsed: 0,
+      });
+      throw err;
+    }
+  }
+
+  private buildSingleDocConsolidationPrompt(doc: UnconsolidatedMemory, candidates: UnconsolidatedMemory[]): string {
+    let prompt = `You are a memory consolidation agent. Analyze the following new memory and determine the best action.
+
+New Memory (ID: ${doc.id}):
+Title: ${doc.title}
+Content:
+${doc.body.substring(0, 1000)}
+
+`;
+
+    if (candidates.length > 0) {
+      prompt += `Existing similar memories:\n`;
+      for (const c of candidates) {
+        prompt += `\n[ID: ${c.id}] ${c.title}\n${c.body.substring(0, 300)}\n---\n`;
+      }
+    } else {
+      prompt += `No similar existing memories found.\n`;
+    }
+
+    prompt += `
+Decide the best action:
+- ADD: Keep the new memory as-is (no duplicates found)
+- UPDATE: Merge with an existing memory (specify targetDocId and provide mergedContent)
+- DELETE: Remove as duplicate (specify targetDocId of the better version)
+- NOOP: No action needed
+
+Also detect contradictions:
+- If the new memory contradicts facts in existing memories, list the contradicted entity names
+
+Examples:
+- ADD: When the new memory introduces entirely new information not covered by any existing memory.
+- UPDATE: When the new memory refines, corrects, or adds detail to an existing memory. Return mergedContent with the combined information.
+- DELETE: When the new memory explicitly contradicts or supersedes an existing memory.
+- NOOP: When the new memory is already fully covered by existing memories.
+
+Respond with ONLY a JSON object:
+{
+  "action": "ADD" | "UPDATE" | "DELETE" | "NOOP",
+  "reason": "brief explanation",
+  "targetDocId": null or number (for UPDATE/DELETE),
+  "contradictedEntities": ["entity1", "entity2"] or [] if no contradictions
+}`;
+
+    return prompt;
+  }
+
+  private parseSingleDocResponse(text: string): { action: string; reason: string; targetDocId: number | null; contradictedEntities: string[] } {
+    try {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        return { action: 'NOOP', reason: 'Failed to parse response', targetDocId: null, contradictedEntities: [] };
+      }
+      const parsed = JSON.parse(jsonMatch[0]);
+      const contradictedEntities: string[] = [];
+      if (Array.isArray(parsed.contradictedEntities)) {
+        for (const e of parsed.contradictedEntities) {
+          if (typeof e === 'string' && e.trim()) {
+            contradictedEntities.push(e.trim());
+          }
+        }
+      }
+      return {
+        action: String(parsed.action ?? 'NOOP').toUpperCase(),
+        reason: String(parsed.reason ?? ''),
+        targetDocId: typeof parsed.targetDocId === 'number' ? parsed.targetDocId : null,
+        contradictedEntities,
+      };
+    } catch {
+      log('consolidation', 'Failed to parse single doc consolidation response');
+      return { action: 'NOOP', reason: 'Parse error', targetDocId: null, contradictedEntities: [] };
+    }
+  }
+
+  private markContradictedEntities(entityNames: string[], memoryId: number): void {
+    if (entityNames.length === 0) return;
+
+    const db = this.store.getDb();
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS memory_entities (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          type TEXT NOT NULL,
+          description TEXT,
+          project_hash TEXT NOT NULL,
+          first_learned_at TEXT NOT NULL DEFAULT (datetime('now')),
+          last_confirmed_at TEXT NOT NULL DEFAULT (datetime('now')),
+          contradicted_at TEXT,
+          contradicted_by_memory_id INTEGER,
+          UNIQUE(name, project_hash)
+        )
+      `);
+    } catch {
+    }
+
+    const updateStmt = db.prepare(`
+      UPDATE memory_entities
+      SET contradicted_at = datetime('now'), contradicted_by_memory_id = ?
+      WHERE name = ? AND contradicted_at IS NULL
+    `);
+
+    for (const name of entityNames) {
+      try {
+        updateStmt.run(memoryId, name);
+        log('consolidation', 'Marked entity as contradicted: ' + name);
+      } catch (err) {
+        log('consolidation', 'Failed to mark entity as contradicted: ' + name + ' - ' + (err instanceof Error ? err.message : String(err)));
+      }
+    }
   }
 }
