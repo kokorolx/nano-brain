@@ -112,7 +112,7 @@ export class GitlabDuoLLMProvider implements LLMProvider {
 export function createLLMProvider(config: ConsolidationConfig): LLMProvider | null {
   const apiKey = config.apiKey || process.env.CONSOLIDATION_API_KEY;
   const endpoint = config.endpoint || 'https://ai-proxy.thnkandgrow.com';
-  const model = config.model || 'litellm/claude-haiku-4-5';
+  const model = config.model || 'gitlab/claude-haiku-4-5';
   const provider = config.provider;
 
   const isOllama = provider === 'ollama' || endpoint.includes('/api/generate');

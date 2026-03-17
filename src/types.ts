@@ -318,7 +318,7 @@ export interface ConsolidationConfig {
 export const DEFAULT_CONSOLIDATION_CONFIG: ConsolidationConfig = {
   enabled: false,
   interval_ms: 3600000,
-  model: 'litellm/claude-haiku-4-5',
+  model: 'gitlab/claude-haiku-4-5',
   endpoint: 'https://ai-proxy.thnkandgrow.com',
   max_memories_per_cycle: 20,
   min_memories_threshold: 2,
@@ -335,7 +335,7 @@ export interface ExtractionConfig {
 
 export const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
   enabled: false,
-  model: 'litellm/claude-haiku-4-5',
+  model: 'gitlab/claude-haiku-4-5',
   endpoint: 'https://ai-proxy.thnkandgrow.com',
   maxFactsPerSession: 20,
 };

@@ -783,6 +783,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
       const effectiveProjectHash = wsResult.projectHash
       const effectiveWorkspaceRoot = wsResult.workspaceRoot
       const effectiveStore = wsResult.store
+      let asyncCategorizationPending = false;
       
       try {
         const date = new Date().toISOString().split('T')[0];
@@ -910,13 +911,19 @@ export function createMcpServer(deps: ServerDeps): McpServer {
           const llmProviderForCategorization = createLLMProvider(consolidationConfig as ConsolidationConfig);
           if (llmProviderForCategorization) {
             const capturedDocId = docId;
+            const tagStore = effectiveStore;
+            asyncCategorizationPending = true;
             categorizeMemory(content, llmProviderForCategorization, categorizationConfig).then(llmTags => {
               if (llmTags.length > 0) {
-                store.insertTags(capturedDocId, llmTags);
+                tagStore.insertTags(capturedDocId, llmTags);
                 log('mcp', 'LLM categorization complete: ' + llmTags.join(', '));
               }
             }).catch(err => {
               log('mcp', 'LLM categorization failed: ' + (err instanceof Error ? err.message : String(err)));
+            }).finally(() => {
+              if (wsResult.needsClose) {
+                try { tagStore.close(); } catch {}
+              }
             });
           }
         }
@@ -930,7 +937,7 @@ export function createMcpServer(deps: ServerDeps): McpServer {
           ],
         };
       } finally {
-        if (wsResult.needsClose) {
+        if (wsResult.needsClose && !asyncCategorizationPending) {
           wsResult.store.close()
         }
       }
