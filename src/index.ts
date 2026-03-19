@@ -546,11 +546,19 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
 
   // serve status
   if (subcommand === 'status') {
+    let pidAlive = false;
+    let pid: number | null = null;
     try {
-      const pid = parseInt(fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim(), 10);
-      process.kill(pid, 0); // check if alive
+      pid = parseInt(fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim(), 10);
+      process.kill(pid, 0);
+      pidAlive = true;
+    } catch {}
+    const portActive = await detectRunningServer(port);
+    if (pidAlive && pid) {
       cliOutput(`nano-brain server is running (PID: ${pid}, port: ${port})`);
-    } catch {
+    } else if (portActive) {
+      cliOutput(`nano-brain server is responding on port ${port} but PID file is stale. Run: npx nano-brain serve stop --force`);
+    } else {
       cliOutput('nano-brain server is not running');
     }
     return;
@@ -588,22 +596,23 @@ async function handleServe(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   }
 
   // Check if already running via PID file
-  let pidFileValid = false;
+  let pidAlive = false;
   try {
     if (fs.existsSync(SERVE_PID_FILE)) {
       const existingPid = parseInt(fs.readFileSync(SERVE_PID_FILE, 'utf-8').trim(), 10);
       process.kill(existingPid, 0);
+      pidAlive = true;
       cliOutput(`Server already running (PID: ${existingPid}). Stop first: npx nano-brain serve stop`);
       return;
     }
   } catch {
-    // PID file process not running, or PID file invalid
+    try { fs.unlinkSync(SERVE_PID_FILE); } catch {}
   }
 
   // Secondary check: verify if port is already in use by another instance
   const isPortActive = await detectRunningServer(port);
   if (isPortActive) {
-    cliOutput(`Server already running on port ${port}. Stop first: npx nano-brain serve stop`);
+    cliOutput(`Port ${port} is in use by an orphaned process. Run: npx nano-brain serve stop --force`);
     return;
   }
 
