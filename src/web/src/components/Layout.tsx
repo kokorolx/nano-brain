@@ -49,9 +49,9 @@ export default function Layout({ children }: PropsWithChildren) {
           </select>
         </div>
       </header>
-      <div className="flex">
-        <aside className="panel w-64 border-r border-[#1b1b26] p-4">
-          <nav className="flex flex-col gap-2">
+      <div className="flex min-h-[calc(100vh-65px)]">
+        <aside className="w-56 shrink-0 border-r border-[#1b1b26] bg-[#111118] p-4">
+          <nav className="flex flex-col gap-1">
             {navItems.map((item) => {
               const Icon = item.icon;
               return (
@@ -72,10 +72,12 @@ export default function Layout({ children }: PropsWithChildren) {
           </nav>
           <div className="mt-8 border-t border-[#1f1f2c] pt-4 text-xs text-[#8888a0]">
             <p>Workspace</p>
-            <p className="mt-1 text-sm text-[#e4e4ed]">{status?.primaryWorkspace ?? 'loading'}</p>
+            <p className="mt-1 truncate text-sm text-[#e4e4ed]" title={status?.primaryWorkspace}>
+              {status?.primaryWorkspace?.split('/').pop() ?? 'loading'}
+            </p>
           </div>
         </aside>
-        <main className="flex-1 px-6 py-6">{children}</main>
+        <main className="min-w-0 flex-1 overflow-auto px-6 py-6">{children}</main>
       </div>
     </div>
   );
