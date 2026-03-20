@@ -12,7 +12,7 @@ function randomLayout(graph: Graph, scale: number) {
 type GraphNodeMeta = {
   id: string;
   label: string;
-  type: string;
+  entityType: string;
   size: number;
   color: string;
   description?: string | null;
@@ -36,7 +36,7 @@ export function buildEntityGraph(data: GraphEntitiesResponse) {
     graph.addNode(String(node.id), {
       id: String(node.id),
       label: node.name,
-      type: node.type,
+      entityType: node.type,
       size,
       color: typeColorMap[node.type] || '#64748b',
       description: node.description,
