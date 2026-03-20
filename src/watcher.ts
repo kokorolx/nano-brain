@@ -329,8 +329,6 @@ export function startWatcher(options: WatcherOptions): Watcher {
 
   const setupWatcher = () => {
     const pathsToWatch: string[] = []
-    // Function-based ignore so chokidar skips entire directory trees BEFORE opening them.
-    // Regex-only ignored still causes EMFILE because chokidar opens dirs before filtering.
     const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.nuxt', '__pycache__', '.venv', 'venv', '.tox', 'target', 'vendor', '.bundle'])
     const ignoredPatterns: (string | RegExp | ((path: string) => boolean))[] = [
       (p: string) => {
@@ -347,10 +345,6 @@ export function startWatcher(options: WatcherOptions): Watcher {
         watchedPaths.add(expandedPath)
       }
     }
-    // NOTE: We intentionally do NOT watch the workspace root for codebase changes.
-    // Large workspaces (e.g. 30+ subprojects, 8000+ dirs) exhaust OS file descriptor
-    // limits even with node_modules excluded. Codebase changes are picked up by the
-    // poll-based reindex cycle instead (pollIntervalMs, default 5min).
     if (codebaseConfig?.enabled) {
       log('watcher', 'Codebase watching uses poll-based reindex (not fs.watch) to avoid EMFILE on large workspaces')
     }
@@ -368,11 +362,15 @@ export function startWatcher(options: WatcherOptions): Watcher {
       ignored: ignoredPatterns,
       persistent: true,
       ignoreInitial: true,
+      usePolling: true,
+      interval: 5000,
+      binaryInterval: 10000,
       awaitWriteFinish: {
         stabilityThreshold: 100,
         pollInterval: 100,
       },
     })
+    log('watcher', `Watching ${deduped.length} collection paths (polling mode)`)
     watcher.on('error', (err: unknown) => {
       log('watcher', `Error: ${err instanceof Error ? err.message : String(err)}`, 'error')
     })
