@@ -72,7 +72,7 @@ export default function Dashboard() {
               <h2 className="text-lg font-semibold">Bandit Stats</h2>
               <p className="text-xs text-[#8888a0]">Success vs failure per variant.</p>
             </div>
-            <span className="text-xs text-[#8888a0]">{isLoading ? 'loading' : `${banditData.length} variants`}</span>
+            <span className="text-xs text-[#8888a0]">{telemetryLoading ? 'loading' : `${banditData.length} variants`}</span>
           </div>
           <div className="mt-4 h-64">
             <ResponsiveContainer width="100%" height="100%">
