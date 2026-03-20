@@ -76,7 +76,7 @@ export default function FlowsView() {
                 </span>
               </div>
               <p className="mt-1 text-xs text-[#8888a0]">
-                {flow.step_count} steps · {flow.entry_file.split('/').pop()} → {flow.terminal_file.split('/').pop()}
+                {flow.step_count} steps · {flow.entry_file?.split('/').pop() ?? '?'} → {flow.terminal_file?.split('/').pop() ?? '?'}
               </p>
             </div>
           ))}
@@ -96,15 +96,15 @@ export default function FlowsView() {
                     <div className="shrink-0 rounded-lg border border-[#232331] bg-[#1c1c27] px-3 py-2">
                       <p className="text-sm font-medium">{step.name}</p>
                       <p className="text-xs text-[#8888a0]">
-                        {step.kind} · {step.file_path.split('/').pop()}:{step.start_line}
+                        {step.kind} · {step.file_path?.split('/').pop() ?? '?'}:{step.start_line}
                       </p>
                     </div>
                   </Fragment>
                 ))}
               </div>
               <div className="mt-4 border-t border-[#1f1f2c] pt-3 text-xs text-[#8888a0]">
-                <p>Entry: {selectedFlow.entry_name} ({selectedFlow.entry_file})</p>
-                <p>Terminal: {selectedFlow.terminal_name} ({selectedFlow.terminal_file})</p>
+                <p>Entry: {selectedFlow.entry_name ?? '?'} ({selectedFlow.entry_file ?? '?'})</p>
+                <p>Terminal: {selectedFlow.terminal_name ?? '?'} ({selectedFlow.terminal_file ?? '?'})</p>
               </div>
             </div>
           ) : (
