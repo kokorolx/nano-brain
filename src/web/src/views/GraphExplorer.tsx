@@ -8,14 +8,33 @@ import { useAppStore } from '../store/app';
 
 export default function GraphExplorer() {
   const workspace = useAppStore((state) => state.workspace);
-  const { data, isLoading } = useQuery({
+  console.log('[GraphExplorer] render workspace=', workspace);
+
+  const { data, isLoading, error } = useQuery({
     queryKey: ['graph-entities', workspace],
     queryFn: () => fetchGraphEntities(workspace),
   });
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
 
-  const graph = useMemo(() => (data ? buildEntityGraph(data) : null), [data]);
+  if (isLoading) console.log('[GraphExplorer] loading...');
+  if (error) console.error('[GraphExplorer] error:', error);
+  if (data) console.log('[GraphExplorer] data: nodes=', data.nodes.length, 'edges=', data.edges.length, 'stats=', data.stats);
+
+  const graph = useMemo(() => {
+    if (!data) { console.log('[GraphExplorer] no data, skipping graph build'); return null; }
+    console.log('[GraphExplorer] building graph from', data.nodes.length, 'nodes', data.edges.length, 'edges');
+    try {
+      const g = buildEntityGraph(data);
+      console.log('[GraphExplorer] graph built: order=', g.order, 'size=', g.size);
+      return g;
+    } catch (err) {
+      console.error('[GraphExplorer] graph build FAILED:', err);
+      return null;
+    }
+  }, [data]);
+
   const selectedEntity = data?.nodes.find((node) => String(node.id) === selectedNode);
+  if (selectedNode) console.log('[GraphExplorer] selected:', selectedNode, selectedEntity?.name);
 
   return (
     <div className="space-y-6">

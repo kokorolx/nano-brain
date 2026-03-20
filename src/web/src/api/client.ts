@@ -1,12 +1,25 @@
 const BASE = '/api/v1';
 
 async function requestJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Request failed: ${res.status}`);
+  const url = `${BASE}${path}`;
+  console.log(`[api] → GET ${url}`);
+  const t0 = performance.now();
+  try {
+    const res = await fetch(url);
+    const ms = Math.round(performance.now() - t0);
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`[api] ✗ ${url} ${res.status} (${ms}ms)`, text);
+      throw new Error(text || `Request failed: ${res.status}`);
+    }
+    const data = await res.json() as T;
+    console.log(`[api] ✓ ${url} ${res.status} (${ms}ms)`, data);
+    return data;
+  } catch (err) {
+    const ms = Math.round(performance.now() - t0);
+    console.error(`[api] ✗ ${url} FAILED (${ms}ms)`, err);
+    throw err;
   }
-  return res.json() as Promise<T>;
 }
 
 export type StatusResponse = {

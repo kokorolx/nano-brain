@@ -157,9 +157,14 @@ export function checkAndRecoverDB(
     checkDb.close();
 
   } catch (openError) {
-    // If we can't even open the database, it's corrupted
+    const errMsg = openError instanceof Error ? openError.message : String(openError);
+    const errCode = (openError as NodeJS.ErrnoException)?.code;
+    if (errCode === 'ERR_DLOPEN_FAILED' || errMsg.includes('dlopen') || errMsg.includes('mach-o') || errMsg.includes('MODULE_NOT_FOUND')) {
+      logger?.error(`Native module loading failed (NOT corruption): ${errMsg}`);
+      throw openError;
+    }
     isCorrupted = true;
-    logger?.error(`Failed to open database: ${openError instanceof Error ? openError.message : String(openError)}`);
+    logger?.error(`Failed to open database: ${errMsg}`);
   }
 
   // If corruption detected, perform recovery

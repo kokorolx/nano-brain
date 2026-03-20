@@ -5,26 +5,37 @@ import { useAppStore } from '../store/app';
 
 export default function Dashboard() {
   const workspace = useAppStore((state) => state.workspace);
-  const { data: status } = useQuery({ queryKey: ['status'], queryFn: fetchStatus });
-  const { data: telemetry, isLoading } = useQuery({
+  console.log('[Dashboard] render workspace=', workspace);
+
+  const { data: status, error: statusError, isLoading: statusLoading } = useQuery({ queryKey: ['status'], queryFn: fetchStatus });
+  const { data: telemetry, error: telemetryError, isLoading: telemetryLoading } = useQuery({
     queryKey: ['telemetry', workspace],
     queryFn: () => fetchTelemetry(workspace),
   });
 
-  const banditData = telemetry
-    ? Object.entries(telemetry.banditStats || {}).map(([variant, stats]) => ({
-        variant,
-        success: stats.success,
-        failure: stats.failure,
-      }))
-    : [];
+  if (statusLoading) console.log('[Dashboard] status loading...');
+  if (statusError) console.error('[Dashboard] status error:', statusError);
+  if (status) console.log('[Dashboard] status:', status);
 
-  const weightData = telemetry
-    ? Object.entries(telemetry.preferenceWeights || {}).map(([category, weight]) => ({
-        category,
-        weight,
-      }))
+  if (telemetryLoading) console.log('[Dashboard] telemetry loading...');
+  if (telemetryError) console.error('[Dashboard] telemetry error:', telemetryError);
+  if (telemetry) console.log('[Dashboard] telemetry:', telemetry);
+
+  const banditData = telemetry?.banditStats
+    ? Object.entries(telemetry.banditStats).map(([variant, stats]) => {
+        console.log('[Dashboard] bandit variant:', variant, stats);
+        return { variant, success: (stats as { success: number; failure: number }).success, failure: (stats as { success: number; failure: number }).failure };
+      })
     : [];
+  console.log('[Dashboard] banditData:', banditData.length, 'variants');
+
+  const weightData = telemetry?.preferenceWeights
+    ? Object.entries(telemetry.preferenceWeights).map(([category, weight]) => {
+        console.log('[Dashboard] preference:', category, '=', weight);
+        return { category, weight };
+      })
+    : [];
+  console.log('[Dashboard] weightData:', weightData.length, 'categories');
 
   return (
     <div className="space-y-6">
