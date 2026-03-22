@@ -6,6 +6,7 @@ import * as os from 'os';
 import { parse, stringify } from 'yaml';
 import fg from 'fast-glob';
 import { log } from './logger.js';
+import { BUILTIN_EXCLUDE_PATTERNS, loadGitignorePatterns } from './codebase.js';
 
 export function loadCollectionConfig(configPath: string): CollectionConfig | null {
   if (!fs.existsSync(configPath)) {
@@ -193,10 +194,14 @@ export async function scanCollectionFiles(collection: Collection): Promise<strin
     return [];
   }
   
+  const gitignorePatterns = loadGitignorePatterns(expandedPath);
+  const ignore = [...BUILTIN_EXCLUDE_PATTERNS, ...gitignorePatterns];
+  
   const files = await fg(collection.pattern, {
     cwd: expandedPath,
     absolute: true,
     onlyFiles: true,
+    ignore,
   });
   
   log('collections', 'scan collection=' + collection.name + ' path=' + expandedPath + ' files=' + files.length);

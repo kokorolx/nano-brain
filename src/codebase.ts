@@ -32,7 +32,7 @@ const DEFAULT_CODEBASE_MAX_SIZE = 2 * 1024 * 1024 * 1024
 const EMBEDDING_CONCURRENCY = parseInt(process.env.NANO_BRAIN_EMBEDDING_CONCURRENCY || '3', 10)
 const MAX_PENDING_BATCHES = 10
 
-const BUILTIN_EXCLUDE_PATTERNS = [
+export const BUILTIN_EXCLUDE_PATTERNS = [
   // Version control
   '**/.git/**',
   '**/.svn/**',
