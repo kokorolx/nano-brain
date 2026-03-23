@@ -2572,10 +2572,11 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       if (!config) {
         config = { collections: {} };
       }
+      const existingCollection = config.vector?.collection || 'nano-brain';
       const vectorConfig: VectorConfigSection = {
         provider: 'qdrant',
         url: 'http://localhost:6333',
-        collection: 'nano-brain',
+        collection: existingCollection,
       };
       config.vector = vectorConfig;
       saveCollectionConfig(globalOpts.configPath, config);
@@ -2648,19 +2649,20 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
         }
         cliOutput(`Health: ✅ reachable at ${resolvedUrl}`);
 
+        const collectionName = vectorConfig?.collection || 'nano-brain';
         try {
-          const collectionRes = await fetch(`${resolvedUrl}/collections/nano-brain`);
+          const collectionRes = await fetch(`${resolvedUrl}/collections/${encodeURIComponent(collectionName)}`);
           if (collectionRes.ok) {
             const collectionData = await collectionRes.json();
             const result = collectionData.result || collectionData;
-            cliOutput(`Collection: nano-brain`);
+            cliOutput(`Collection: ${collectionName}`);
             cliOutput(`  Vectors: ${result.points_count ?? result.vectors_count ?? 'unknown'}`);
             cliOutput(`  Dimensions: ${result.config?.params?.vectors?.size ?? 'unknown'}`);
           } else {
-            cliOutput('Collection: nano-brain (not created yet)');
+            cliOutput(`Collection: ${collectionName} (not created yet)`);
           }
         } catch {
-          cliOutput('Collection: nano-brain (not created yet)');
+          cliOutput(`Collection: ${collectionName} (not created yet)`);
         }
       } catch {
         cliOutput(`Health: ❌ Qdrant is not reachable at ${resolvedUrl}`);
@@ -2874,6 +2876,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
     case 'verify': {
       const config = loadCollectionConfig(globalOpts.configPath);
       const vectorConfig = config?.vector;
+      const collectionName = vectorConfig?.collection || 'nano-brain';
       const qdrantUrl = vectorConfig?.url || 'http://localhost:6333';
       const resolvedUrl = resolveHostUrl(qdrantUrl);
 
@@ -2963,7 +2966,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
       if (!sawVectorTables || totalVectors === 0) {
         let pointsCount = 0;
         try {
-          const collectionRes = await fetch(`${resolvedUrl}/collections/nano-brain`);
+          const collectionRes = await fetch(`${resolvedUrl}/collections/${encodeURIComponent(collectionName)}`);
           if (collectionRes.ok) {
             const collectionData = await collectionRes.json();
             const result = collectionData.result || collectionData;
@@ -2985,7 +2988,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
 
       let pointsCount = 0;
       try {
-        const collectionRes = await fetch(`${resolvedUrl}/collections/nano-brain`);
+        const collectionRes = await fetch(`${resolvedUrl}/collections/${encodeURIComponent(collectionName)}`);
         if (collectionRes.ok) {
           const collectionData = await collectionRes.json();
           const result = collectionData.result || collectionData;
@@ -3049,6 +3052,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
     case 'cleanup': {
       const config = loadCollectionConfig(globalOpts.configPath);
       const vectorConfig = config?.vector;
+      const collectionName = vectorConfig?.collection || 'nano-brain';
       const currentProvider = vectorConfig?.provider || 'sqlite-vec';
 
       if (currentProvider !== 'qdrant') {
@@ -3074,7 +3078,7 @@ async function handleQdrant(globalOpts: GlobalOptions, commandArgs: string[]): P
 
       let pointsCount = 0;
       try {
-        const collectionRes = await fetch(`${resolvedUrl}/collections/nano-brain`);
+        const collectionRes = await fetch(`${resolvedUrl}/collections/${encodeURIComponent(collectionName)}`);
         if (collectionRes.ok) {
           const collectionData = await collectionRes.json();
           const result = collectionData.result || collectionData;
@@ -3361,6 +3365,7 @@ async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Pr
 
   const config = loadCollectionConfig(globalOpts.configPath);
   const vectorConfig = config?.vector;
+  const collectionName = vectorConfig?.collection || 'nano-brain';
   const qdrantUrl = resolveHostUrl(vectorConfig?.url || 'http://localhost:6333');
   let qdrantReachable = false;
   let qdrantPointsCount = 0;
@@ -3370,7 +3375,7 @@ async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Pr
       const healthRes = await fetch(`${qdrantUrl}/healthz`);
       if (healthRes.ok) {
         qdrantReachable = true;
-        const collectionRes = await fetch(`${qdrantUrl}/collections/nano-brain`);
+        const collectionRes = await fetch(`${qdrantUrl}/collections/${encodeURIComponent(collectionName)}`);
         if (collectionRes.ok) {
           const data = await collectionRes.json();
           const result = data.result || data;
@@ -3448,9 +3453,9 @@ async function handleReset(globalOpts: GlobalOptions, commandArgs: string[]): Pr
   if (deleteVectors) {
     if (qdrantReachable) {
       try {
-        const deleteRes = await fetch(`${qdrantUrl}/collections/nano-brain`, { method: 'DELETE' });
+        const deleteRes = await fetch(`${qdrantUrl}/collections/${encodeURIComponent(collectionName)}`, { method: 'DELETE' });
         if (deleteRes.ok) {
-          cliOutput(`🗑️  Deleted Qdrant collection 'nano-brain' (${qdrantPointsCount} vectors)`);
+          cliOutput(`🗑️  Deleted Qdrant collection '${collectionName}' (${qdrantPointsCount} vectors)`);
         } else {
           cliError(`⚠️  Failed to delete Qdrant collection: HTTP ${deleteRes.status}`);
         }
