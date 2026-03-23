@@ -4,7 +4,7 @@ import { scanCollectionFiles } from './collections.js';
 import { indexDocument, computeHash, extractProjectHashFromPath, openWorkspaceStore, resolveWorkspaceDbPath } from './store.js';
 import { harvestSessions } from './harvester.js';
 import { checkDiskSpace, evictExpiredSessions, evictBySize } from './storage.js';
-import { indexCodebase, mergeExcludePatterns, resolveExtensions, embedPendingCodebase } from './codebase.js'
+import { indexCodebase, mergeExcludePatterns, resolveExtensions, embedPendingCodebase, BUILTIN_EXCLUDE_PATTERNS } from './codebase.js'
 import { runPruningCycle, hardDeletePrunedEntities } from './pruning.js';
 import { runMergeCycle } from './entity-merger.js';
 import { log } from './logger.js';
@@ -337,6 +337,8 @@ export function startWatcher(options: WatcherOptions): Watcher {
         if (base.startsWith('.') && base !== '.nano-brain') return true
         return false
       },
+      // Apply the same exclude patterns used by codebase indexing & collection scanning
+      ...BUILTIN_EXCLUDE_PATTERNS.map(globToChokidarMatcher),
     ]
     for (const collection of collections) {
       const expandedPath = collection.path.replace(/^~/, os.homedir())
