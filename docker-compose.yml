@@ -12,7 +12,7 @@ services:
       - QDRANT__SERVICE__GRPC_PORT=6334
 
   nano-brain:
-    image: node:22-slim
+    image: node:22
     container_name: nano-brain-server
     restart: unless-stopped
     working_dir: /app
@@ -20,10 +20,13 @@ services:
       - "3100:3100"
     volumes:
       - ${NANO_BRAIN_APP:-.}:/app
+      - nano-brain-node-modules:/app/node_modules
       - ${NANO_BRAIN_HOME:-~/.nano-brain}:/root/.nano-brain
     environment:
       - NODE_ENV=production
-    command: ["node", "--import", "tsx", "src/index.ts", "mcp", "--http", "--port=3100", "--host=0.0.0.0"]
+    command: >
+      sh -c "npm install --production --prefer-offline &&
+             npx tsx src/index.ts mcp --http --port=3100 --host=0.0.0.0"
     depends_on:
       - qdrant
     healthcheck:
@@ -31,7 +34,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 30s
     deploy:
       resources:
         limits:
@@ -39,4 +42,6 @@ services:
 
 volumes:
   nano-brain-qdrant-data:
+    driver: local
+  nano-brain-node-modules:
     driver: local
