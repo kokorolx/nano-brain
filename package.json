@@ -1,6 +1,6 @@
 {
   "name": "nano-brain",
-  "version": "2026.7.0-rc.7",
+  "version": "2026.7.0-rc.8",
   "description": "Persistent memory and code intelligence for AI coding agents. Local MCP server with self-learning hybrid search (BM25 + vector + knowledge graph + LLM reranking), automatic session ingestion, codebase indexing, and 22 tools. Learns your preferences over time. Works with OpenCode, Claude, Cursor, Windsurf, and any MCP client.",
   "type": "module",
   "bin": {
@@ -17,7 +17,9 @@
     "SKILL.md",
     "AGENTS.md",
     "AGENTS_SNIPPET.md",
-    "opencode-mcp.json"
+    "opencode-mcp.json",
+    "docker-compose.yml",
+    "config.default.yml"
   ],
   "scripts": {
     "dev": "bun src/index.ts",
