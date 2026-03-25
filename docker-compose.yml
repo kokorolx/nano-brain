@@ -25,11 +25,7 @@ services:
       - ${NANO_BRAIN_WORKSPACE:-/Users/tamlh/workspaces/NUSTechnology/Projects/zengamingx}:${NANO_BRAIN_WORKSPACE:-/Users/tamlh/workspaces/NUSTechnology/Projects/zengamingx}:ro
     environment:
       - NODE_ENV=production
-    command: >
-      sh -c "npm install --omit=dev --prefer-offline --legacy-peer-deps &&
-             npm rebuild tree-sitter tree-sitter-python tree-sitter-typescript tree-sitter-javascript &&
-             npx tsx src/index.ts mcp --http --port=3100 --host=0.0.0.0
-             --root=${NANO_BRAIN_WORKSPACE:-/Users/tamlh/workspaces/NUSTechnology/Projects/zengamingx}"
+    command: sh -c "npm install --omit=dev --prefer-offline --legacy-peer-deps && npm rebuild tree-sitter tree-sitter-python tree-sitter-typescript tree-sitter-javascript && npx tsx src/index.ts mcp --http --port=3100 --host=0.0.0.0 --root=${NANO_BRAIN_WORKSPACE:-/Users/tamlh/workspaces/NUSTechnology/Projects/zengamingx}"
     depends_on:
       - qdrant
     healthcheck:
