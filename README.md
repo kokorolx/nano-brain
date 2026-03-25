@@ -521,6 +521,7 @@ embedding:
   url: https://api.voyageai.com       # VoyageAI, Azure, LM Studio, etc.
   model: voyage-code-3
   apiKey: ${VOYAGE_API_KEY}
+  dimensions: 1024                    # Output dimensions (default: 1024); omit to use model default
   # OR: provider: ollama, url: http://localhost:11434, model: nomic-embed-text
 
 # Reranker (uses embedding.apiKey if not set separately)
