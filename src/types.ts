@@ -260,14 +260,14 @@ export interface SearchConfig {
 
 export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
   rrf_k: 60,
-  top_k: 30,
+  top_k: 15,
   blending: {
     top3: { rrf: 0.75, rerank: 0.25 },
     mid: { rrf: 0.60, rerank: 0.40 },
     tail: { rrf: 0.40, rerank: 0.60 },
   },
   expansion: {
-    enabled: true,
+    enabled: false,
     weight: 1,
   },
   reranking: {
