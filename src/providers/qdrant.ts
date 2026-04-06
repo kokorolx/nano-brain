@@ -43,6 +43,14 @@ export class QdrantVecStore implements VectorStore {
     this.client = new QdrantClient({
       url: resolvedUrl,
       apiKey: options.apiKey,
+      // Disable the background version-compatibility check. When Qdrant is
+      // unreachable the check hangs for up to the full 300 s default timeout
+      // before the promise rejects, keeping the Node process alive long after
+      // the CLI command has finished its work.
+      checkCompatibility: false,
+      // Use a short timeout for CLI / health-check calls so we fail fast
+      // instead of waiting 5 minutes for a connection that will never arrive.
+      timeout: 5000,
     });
     const baseName = options.collection ?? 'nano-brain';
     this.dimensions = options.dimensions ?? 1024;
@@ -127,10 +135,10 @@ export class QdrantVecStore implements VectorStore {
     return searchResult.map((point) => {
       const payload = point.payload as { hashSeq?: string; hash?: string; seq?: number } | null;
       const hashSeq = payload?.hashSeq ?? String(point.id);
-      
+
       let hash = payload?.hash ?? '';
       let seq = payload?.seq ?? 0;
-      
+
       if (!hash && hashSeq.includes(':')) {
         const parts = hashSeq.split(':');
         hash = parts[0];
@@ -160,7 +168,7 @@ export class QdrantVecStore implements VectorStore {
           msg.includes('other side closed') ||
           msg.includes('fetch failed') ||
           msg.includes('socket hang up');
-        
+
         if (isSocketError && attempt < maxRetries) {
           const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
           log('qdrant', 'Socket error, retrying in ' + delay + 'ms (attempt ' + (attempt + 1) + '/' + maxRetries + ')', 'warn');
@@ -200,10 +208,10 @@ export class QdrantVecStore implements VectorStore {
     await this.ensureCollection();
 
     const BATCH_SIZE = 100;
-    
+
     for (let i = 0; i < points.length; i += BATCH_SIZE) {
       const batch = points.slice(i, i + BATCH_SIZE);
-      
+
       await this.retryOnSocketError(() =>
         this.client.upsert(this.collectionName, {
           wait: true,
@@ -224,7 +232,7 @@ export class QdrantVecStore implements VectorStore {
     await this.ensureCollection();
 
     const uuid = stringToUuid(id);
-    
+
     await this.client.delete(this.collectionName, {
       wait: true,
       points: [uuid],
@@ -251,7 +259,7 @@ export class QdrantVecStore implements VectorStore {
     try {
       await this.ensureCollection();
       const info = await this.client.getCollection(this.collectionName);
-      
+
       return {
         ok: true,
         provider: 'qdrant',

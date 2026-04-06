@@ -26,7 +26,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 import { execSync, spawn } from 'child_process';
-import { log, initLogger, cliOutput, cliError } from './logger.js';
+import { log, initLogger, cliOutput, cliError, setStdioMode } from './logger.js';
 
 const DEFAULT_HTTP_PORT = 3100;
 
@@ -413,6 +413,11 @@ async function handleMcp(globalOpts: GlobalOptions, commandArgs: string[]): Prom
       cliOutput('Daemon stop not implemented yet');
       return;
     }
+  }
+
+  if (!useHttp) {
+    // In stdio transport mode, stdout/stderr must be reserved for MCP JSON-RPC frames.
+    setStdioMode(true);
   }
 
   log('cli', 'mcp server start transport=' + (useHttp ? `http:${host}:${port}` : 'stdio'));
@@ -4077,6 +4082,12 @@ async function main() {
 
   const command = globalOpts.remaining[0] || 'mcp';
   const commandArgs = globalOpts.remaining.slice(1);
+
+  // Enable stdio-safe logging as early as possible for MCP stdio mode.
+  // This prevents top-level CLI logs from polluting MCP JSON-RPC transport.
+  if (command === 'mcp' && !commandArgs.includes('--http')) {
+    setStdioMode(true);
+  }
 
   log('cli', 'command=' + command);
 

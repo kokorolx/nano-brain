@@ -2768,6 +2768,13 @@ export async function startServer(options: ServerOptions): Promise<void> {
   process.stdout?.on('error', () => {});
   process.stderr?.on('error', () => {});
 
+  const { dbPath, configPath, httpPort, httpHost = '127.0.0.1', daemon, root } = options;
+  const isStdioTransport = !httpPort;
+  if (isStdioTransport) {
+    // In stdio transport mode, stdout/stderr must be reserved for MCP JSON-RPC frames.
+    setStdioMode(true);
+  }
+
   let cleanupRef: (() => void) | null = null;
 
   process.on('uncaughtException', (err: Error) => {
@@ -2784,8 +2791,6 @@ export async function startServer(options: ServerOptions): Promise<void> {
 
   const rejectionThreshold = createRejectionThreshold(3, 60000);
   process.on('unhandledRejection', rejectionThreshold.handler);
-
-  const { dbPath, configPath, httpPort, httpHost = '127.0.0.1', daemon, root } = options;
 
   const homeDir = os.homedir();
   const nanoBrainHome = path.join(homeDir, '.nano-brain');
