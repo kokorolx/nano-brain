@@ -1,6 +1,6 @@
 {
   "name": "nano-brain",
-  "version": "2026.7.6",
+  "version": "2026.7.7",
   "description": "Persistent memory and code intelligence for AI coding agents. Local MCP server with self-learning hybrid search (BM25 + vector + knowledge graph + LLM reranking), automatic session ingestion, codebase indexing, and 22 tools. Learns your preferences over time. Works with OpenCode, Claude, Cursor, Windsurf, and any MCP client.",
   "type": "module",
   "bin": {
