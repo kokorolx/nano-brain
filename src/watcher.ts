@@ -1,5 +1,6 @@
 import { watch, type FSWatcher } from 'chokidar';
 import type { Store, Collection, StorageConfig, CodebaseConfig, PruningConfig, MergeConfig } from './types.js'
+import type { VectorStore } from './vector-store.js'
 import { scanCollectionFiles } from './collections.js';
 import { indexDocument, computeHash, extractProjectHashFromPath, openWorkspaceStore, resolveWorkspaceDbPath } from './store.js';
 import { harvestSessions } from './harvester.js';
@@ -49,6 +50,7 @@ export interface WatcherOptions {
   preferencesConfig?: import('./types.js').PreferenceConfig
   pruningConfig?: PruningConfig
   mergeConfig?: MergeConfig
+  vectorStore?: VectorStore | null
   /** Chokidar file polling interval in ms (default: 5000). Lower values detect changes faster but use more CPU. */
   chokidarIntervalMs?: number
 }
@@ -140,6 +142,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
     embedQuietPeriodMs = 60000,
     learningConfig,
     sampler,
+    vectorStore = null,
   } = options
 
   const codebaseExtensions = codebaseConfig?.enabled
@@ -270,6 +273,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
               log('watcher', 'Skipping workspace (no DB): ' + wsPath);
               continue;
             }
+            if (vectorStore) wsStore.setVectorStore(vectorStore);
             const wsDb = wsStore.getDb();
             const wsHash = crypto.createHash('sha256').update(wsPath).digest('hex').substring(0, 12);
             try {
@@ -498,6 +502,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
                     log('watcher', 'Skipping workspace (no DB): ' + wsPath);
                     continue;
                   }
+                  if (vectorStore) wsStore.setVectorStore(vectorStore);
                   const wsHash = crypto.createHash('sha256').update(wsPath).digest('hex').substring(0, 12);
                   try {
                     const wsCount = await embedPendingCodebase(wsStore, embedder, 50, wsHash);

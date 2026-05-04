@@ -3006,6 +3006,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
       codebaseConfig: resolvedCodebaseConfig,
       workspaceRoot: resolvedWorkspaceRoot,
       projectHash: currentProjectHash,
+      vectorStore,
     });
   };
 
