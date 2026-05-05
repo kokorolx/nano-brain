@@ -120,6 +120,18 @@ export function parseSearchConfig(partial?: Partial<SearchConfig>): SearchConfig
     };
   }
 
+  if (partial.length_norm_anchor !== undefined) {
+    config.length_norm_anchor = partial.length_norm_anchor > 0 ? partial.length_norm_anchor : DEFAULT_SEARCH_CONFIG.length_norm_anchor;
+  }
+
+  if (partial.recency_weight !== undefined) {
+    config.recency_weight = partial.recency_weight >= 0 && partial.recency_weight <= 1 ? partial.recency_weight : DEFAULT_SEARCH_CONFIG.recency_weight;
+  }
+
+  if (partial.recency_half_life_days !== undefined) {
+    config.recency_half_life_days = partial.recency_half_life_days > 0 ? partial.recency_half_life_days : DEFAULT_SEARCH_CONFIG.recency_half_life_days;
+  }
+
   return config;
 }
 
@@ -347,6 +359,41 @@ export function applyCategoryWeightBoost(
       ...r,
       score: r.score * maxWeight,
     };
+  });
+}
+
+export function applyLengthNorm(
+  results: SearchResult[],
+  config: SearchConfig
+): SearchResult[] {
+  const anchor = config.length_norm_anchor ?? 2000;
+  return results.map(r => {
+    const charLength = r.charLength;
+    if (!charLength || charLength <= 0) return r;
+    const penalty = 1 / (1 + Math.log2(Math.max(1, charLength / anchor)));
+    return { ...r, score: r.score * penalty };
+  });
+}
+
+export function applyRecencyBoost(
+  results: SearchResult[],
+  config: SearchConfig
+): SearchResult[] {
+  const weight = config.recency_weight ?? 0.3;
+  const halfLife = config.recency_half_life_days ?? 180;
+  const now = Date.now();
+
+  return results.map(r => {
+    if (r.collection === 'codebase') return r;
+    if (!r.createdAt) return r;
+
+    const parsed = Date.parse(r.createdAt);
+    if (isNaN(parsed)) return r;
+
+    const ageDays = (now - parsed) / 86400000;
+    const decayFactor = Math.exp(-Math.log(2) * ageDays / halfLife);
+    const score = r.score * (1 - weight) + r.score * weight * decayFactor;
+    return { ...r, score };
   });
 }
 
@@ -648,6 +695,10 @@ export async function hybridSearch(
   }
 
   fusedResults = applySupersedeDemotion(fusedResults, config.supersede_demotion);
+
+  fusedResults = applyLengthNorm(fusedResults, config);
+
+  fusedResults = applyRecencyBoost(fusedResults, config);
 
   if (options.importanceScorer) {
     fusedResults = fusedResults.map(r => {
