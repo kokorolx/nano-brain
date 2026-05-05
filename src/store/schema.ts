@@ -517,8 +517,6 @@ export function runMigrations(db: Database.Database): void {
   void TARGET_VERSION;
 }
 
-export type Stmts = Record<string, any>;
-
 export function initStatements(db: Database.Database): Stmts {
   return {
     insertContent: db.prepare(`INSERT OR IGNORE INTO content (hash, body) VALUES (?, ?)`),
@@ -540,6 +538,13 @@ export function initStatements(db: Database.Database): Stmts {
     findDocumentByDocid: db.prepare(`
       SELECT id, collection, path, title, hash, agent, created_at as createdAt, modified_at as modifiedAt, active, project_hash as projectHash
       FROM documents WHERE substr(hash, 1, 6) = ? AND active = 1
+    `),
+    findDocumentByPathAnyCollection: db.prepare(`
+      SELECT id, collection, path, title, hash, agent, created_at as createdAt, modified_at as modifiedAt, active, project_hash as projectHash
+      FROM documents WHERE path = ? AND active = 1 LIMIT 1
+    `),
+    findDocMetadataByHash: db.prepare(`
+      SELECT project_hash, created_at FROM documents WHERE hash = ? LIMIT 1
     `),
     getContent: db.prepare(`SELECT body FROM content WHERE hash = ?`),
     deactivateDocument: db.prepare(`UPDATE documents SET active = 0 WHERE collection = ? AND path = ?`),
@@ -995,3 +1000,5 @@ export function initStatements(db: Database.Database): Stmts {
     `),
   };
 }
+
+export type Stmts = Record<string, Database.Statement<unknown[], unknown>>;

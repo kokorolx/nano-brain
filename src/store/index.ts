@@ -1024,7 +1024,6 @@ export function createStore(dbPath: string): Store {
   _cached = true;
   storeCache.set(resolvedPath, store);
   storeCacheUncache.set(resolvedPath, () => { _cached = false; });
-  storeCreating.delete(resolvedPath);
 
   return store;
 

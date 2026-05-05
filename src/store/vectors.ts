@@ -62,7 +62,7 @@ export function makeVectorMethods(
         let projectHash: string | undefined;
         let createdAt: string | undefined;
         try {
-          const docRow = db.prepare(`SELECT project_hash, created_at FROM documents WHERE hash = ? LIMIT 1`).get(hash) as { project_hash: string; created_at: string } | undefined;
+          const docRow = stmts.findDocMetadataByHash.get(hash) as { project_hash: string; created_at: string } | undefined;
           projectHash = docRow?.project_hash ?? undefined;
           createdAt = docRow?.created_at ?? undefined;
         } catch {

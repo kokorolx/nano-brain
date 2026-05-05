@@ -93,10 +93,7 @@ export function makeDocumentMethods(
 
       if (!row) {
         const relativePath = toRel(pathOrDocid);
-        row = db.prepare(`
-          SELECT id, collection, path, title, hash, agent, created_at as createdAt, modified_at as modifiedAt, active, project_hash as projectHash
-          FROM documents WHERE path = ? AND active = 1 LIMIT 1
-        `).get(relativePath) as Record<string, unknown> | undefined;
+        row = stmts.findDocumentByPathAnyCollection.get(relativePath) as Record<string, unknown> | undefined;
       }
 
       if (!row) return null;
@@ -306,12 +303,12 @@ export function makeDocumentMethods(
 
         if (docs.length > 0) {
           const uniqueHashes = [...new Set(docs.map(d => d.hash))];
-          const placeholders = uniqueHashes.map(() => '?').join(',');
-          const referencedRows = db.prepare(
-            `SELECT hash FROM documents WHERE hash IN (${placeholders}) AND project_hash != ? GROUP BY hash`
-          ).all(...uniqueHashes, projectHash) as Array<{ hash: string }>;
-          const nonOrphans = new Set(referencedRows.map(r => r.hash));
-          const orphanedHashes = uniqueHashes.filter(h => !nonOrphans.has(h));
+          const orphanRows = db.prepare(
+            `SELECT hash FROM documents WHERE project_hash = ?
+             EXCEPT
+             SELECT hash FROM documents WHERE project_hash != ?`
+          ).all(projectHash, projectHash) as Array<{ hash: string }>;
+          const orphanedHashes = orphanRows.map(r => r.hash).filter(h => uniqueHashes.includes(h));
 
           for (const hash of orphanedHashes) {
             const cvResult = db.prepare('DELETE FROM content_vectors WHERE hash = ?').run(hash);
