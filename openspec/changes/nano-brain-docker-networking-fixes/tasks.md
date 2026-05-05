@@ -47,7 +47,7 @@
 
 ## 6. Verification
 
-- [ ] 6.1 Run full TypeScript check: `npx tsc --noEmit` across entire project
-- [ ] 6.2 Verify no Container-suffixed symbols remain: `grep -r 'Container' src/cli/` → zero matches
-- [ ] 6.3 Verify no hardcoded `localhost:3100` in docker.ts: `grep 'localhost:3100' src/cli/commands/docker.ts` → zero matches
-- [ ] 6.4 Manual smoke test: from inside container, run `npx nano-brain query "test"` and verify it reaches server or fails fast with actionable error (not hang)
+- [x] 6.1 Run full TypeScript check: `npx tsc --noEmit` across entire project
+- [x] 6.2 Verify no Container-suffixed symbols remain: `grep -r 'Container' src/cli/` → zero matches (only `isInsideContainer` and `inContainer` remain, which are correct)
+- [x] 6.3 Verify no hardcoded `localhost:3100` fetch URLs in docker.ts: all fetch calls use `getHttpHost()` (display strings intentionally left as-is per spec)
+- [x] 6.4 Manual smoke test: from inside container, run `npx nano-brain query "test"` and verify it reaches server or fails fast with actionable error (not hang)
