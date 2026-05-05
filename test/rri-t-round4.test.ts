@@ -640,7 +640,7 @@ describe('D6: Infrastructure — Server and Provider resilience', () => {
 
   it('TC-042: embedding batch handles partial failure with zero-vector', async () => {
     const embeddingSrc = fs.readFileSync(
-      path.join(__dirname, '..', 'src', 'embeddings.ts'), 'utf-8'
+      path.join(__dirname, '..', 'src', 'providers', 'embeddings.ts'), 'utf-8'
     );
 
     // Verify per-sub-batch try/catch pattern
@@ -652,7 +652,7 @@ describe('D6: Infrastructure — Server and Provider resilience', () => {
 
   it('TC-043: reranker filters out-of-bounds indices', async () => {
     const rerankerSrc = fs.readFileSync(
-      path.join(__dirname, '..', 'src', 'reranker.ts'), 'utf-8'
+      path.join(__dirname, '..', 'src', 'providers', 'reranker.ts'), 'utf-8'
     );
 
     // Verify bounds check exists
@@ -662,7 +662,7 @@ describe('D6: Infrastructure — Server and Provider resilience', () => {
 
   it('TC-044: watcher cleans up timers on stop', async () => {
     const watcherSrc = fs.readFileSync(
-      path.join(__dirname, '..', 'src', 'watcher.ts'), 'utf-8'
+      path.join(__dirname, '..', 'src', 'jobs', 'watcher.ts'), 'utf-8'
     );
 
     // Verify timer cleanup in stop()
