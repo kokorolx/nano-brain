@@ -65,8 +65,9 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
 
       const healthUrl = `http://${getHttpHost()}:3100/health`;
       let healthy = false;
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 2000));
+      const maxRetries = 20;
+      for (let i = 0; i < maxRetries; i++) {
+        await new Promise(r => setTimeout(r, 3000));
         try {
           const res = await fetch(healthUrl);
           if (res.ok) {
@@ -74,7 +75,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
             break;
           }
         } catch {}
-        cliOutput(`Waiting for nano-brain... (${i + 1}/10)`);
+        cliOutput(`Waiting for nano-brain... (${i + 1}/${maxRetries})`);
       }
 
       if (healthy) {
