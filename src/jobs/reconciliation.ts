@@ -8,7 +8,7 @@ export class ReconciliationRunner {
     let skipped = 0;
     let errors = 0;
 
-    this.store.markNoopLogsApplied();
+    if (!dryRun) this.store.markNoopLogsApplied();
 
     const pending = this.store.getPendingConsolidationActions();
 
@@ -25,8 +25,16 @@ export class ReconciliationRunner {
         continue;
       }
       if (srcStatus.supersededBy != null) {
-        this.store.markConsolidationLogError(entry.id, 'source document already superseded');
-        errors++;
+        if (srcStatus.supersededBy === entry.target_doc_id) {
+          if (dryRun) skipped++;
+          else {
+            this.store.markConsolidationLogApplied(entry.id);
+            applied++;
+          }
+        } else {
+          this.store.markConsolidationLogError(entry.id, 'source document already superseded by another document');
+          errors++;
+        }
         continue;
       }
 

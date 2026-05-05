@@ -102,7 +102,7 @@ export class ConsolidationWorker {
       await this.currentJobPromise;
       log('consolidation-worker', 'Job ' + job.id + ' completed');
       this.reconciler.applyPendingDecisions().catch((err: unknown) => {
-        console.error('[ReconciliationRunner] failed:', err);
+        log('consolidation-worker', '[ReconciliationRunner] failed: ' + (err instanceof Error ? err.message : String(err)), 'error');
       });
       return true;
     } catch (err) {
