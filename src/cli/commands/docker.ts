@@ -24,6 +24,19 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
     process.exit(1);
   }
 
+  try {
+    const dockerVersion = execSync('docker --version', { encoding: 'utf-8' }).trim();
+    if (!dockerVersion.toLowerCase().includes('docker version') && !dockerVersion.toLowerCase().includes('docker desktop')) {
+      cliError(`"docker" binary is not Docker Desktop: ${dockerVersion}`);
+      cliError('Run: which -a docker — you may have "npm install -g docker" (a doc generator) shadowing Docker.');
+      cliError('Fix: npm uninstall -g docker');
+      process.exit(1);
+    }
+  } catch {
+    cliError('Docker CLI not found. Is Docker Desktop running?');
+    process.exit(1);
+  }
+
   const env = {
     ...process.env,
     NANO_BRAIN_APP: packageRoot,
