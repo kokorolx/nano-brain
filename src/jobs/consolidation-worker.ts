@@ -1,7 +1,7 @@
 import { log } from '../logger.js';
 import type { Store } from '../types.js';
-import { ConsolidationAgent } from '../consolidation.js';
-import type { LLMProvider } from '../consolidation.js';
+import { ConsolidationAgent } from './consolidation.js';
+import type { LLMProvider } from './consolidation.js';
 
 export interface ConsolidationWorkerOptions {
   store: Store;

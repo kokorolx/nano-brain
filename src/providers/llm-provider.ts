@@ -1,5 +1,5 @@
 import { log } from '../logger.js';
-import type { LLMProvider } from '../consolidation.js';
+import type { LLMProvider } from '../jobs/consolidation.js';
 import type { ConsolidationConfig } from '../types.js';
 
 export class OllamaLLMProvider implements LLMProvider {

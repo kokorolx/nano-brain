@@ -1,11 +1,11 @@
 import { watch, type FSWatcher } from 'chokidar';
 import type { Store, Collection, StorageConfig, CodebaseConfig, PruningConfig, MergeConfig } from '../types.js'
-import type { VectorStore } from '../vector-store.js'
+import type { VectorStore } from '../providers/vector-store.js'
 import { scanCollectionFiles } from '../collections.js';
-import { indexDocument, computeHash, extractProjectHashFromPath, openWorkspaceStore, resolveWorkspaceDbPath } from '../store.js';
+import { indexDocument, computeHash, extractProjectHashFromPath, openWorkspaceStore } from '../store.js';
 import { harvestSessions } from '../harvester.js';
 import { checkDiskSpace, evictExpiredSessions, evictBySize } from '../storage.js';
-import { indexCodebase, mergeExcludePatterns, resolveExtensions, embedPendingCodebase, BUILTIN_EXCLUDE_PATTERNS } from '../codebase.js'
+import { indexCodebase, resolveExtensions, embedPendingCodebase, BUILTIN_EXCLUDE_PATTERNS } from '../codebase.js'
 import { runPruningCycle, hardDeletePrunedEntities } from '../pruning.js';
 import { runMergeCycle } from '../entity-merger.js';
 import { log } from '../logger.js';
@@ -40,7 +40,7 @@ export interface WatcherOptions {
   embedQuietPeriodMs?: number
   learningConfig?: import('../types.js').LearningConfig
   sampler?: import('../bandits.js').ThompsonSampler
-  consolidationAgent?: import('../consolidation.js').ConsolidationAgent
+  consolidationAgent?: import('./consolidation.js').ConsolidationAgent
   consolidationIntervalMs?: number
   importanceScorer?: import('../importance.js').ImportanceScorer
   importanceIntervalMs?: number

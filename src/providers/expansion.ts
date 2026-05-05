@@ -1,5 +1,5 @@
 import { log } from '../logger.js';
-import type { LLMProvider } from '../consolidation.js';
+import type { LLMProvider } from '../jobs/consolidation.js';
 
 export interface QueryExpander {
   expand(query: string): Promise<string[]>;
