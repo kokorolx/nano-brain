@@ -1019,6 +1019,50 @@ export function createStore(dbPath: string): Store {
       const row = stmts.getTagCountForDocument.get(docId) as { cnt: number } | undefined;
       return row?.cnt ?? 0;
     },
+
+    getPendingConsolidationActions(): Array<{ id: number; document_id: number; target_doc_id: number }> {
+      try {
+        return stmts.getPendingConsolidationActions.all() as Array<{ id: number; document_id: number; target_doc_id: number }>;
+      } catch (err) {
+        log('store', `getPendingConsolidationActions failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+        return [];
+      }
+    },
+
+    markConsolidationLogApplied(id: number): void {
+      try {
+        stmts.markConsolidationLogApplied.run(id);
+      } catch (err) {
+        log('store', `markConsolidationLogApplied failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+      }
+    },
+
+    markConsolidationLogError(id: number, error: string): void {
+      try {
+        stmts.markConsolidationLogError.run(error, id);
+      } catch (err) {
+        log('store', `markConsolidationLogError failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+      }
+    },
+
+    markNoopLogsApplied(): void {
+      try {
+        stmts.markNoopLogsApplied.run();
+      } catch (err) {
+        log('store', `markNoopLogsApplied failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+      }
+    },
+
+    getDocumentActiveStatus(id: number): { id: number; active: boolean; supersededBy: number | null } | null {
+      try {
+        const row = stmts.getDocumentActiveStatus.get(id) as { id: number; active: number; superseded_by: number | null } | undefined;
+        if (!row) return null;
+        return { id: row.id, active: row.active !== 0, supersededBy: row.superseded_by ?? null };
+      } catch (err) {
+        log('store', `getDocumentActiveStatus failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+        return null;
+      }
+    },
   };
 
   _cached = true;

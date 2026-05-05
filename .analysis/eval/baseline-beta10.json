@@ -1,0 +1,577 @@
+{
+  "version": "2026.8.1-beta.10",
+  "timestamp": "2026-05-05T12:00:00Z",
+  "note": "Baseline before deploying beta.12 (workspace isolation, length norm, recency boost, supersede fix)",
+  "queries": [
+    {
+      "query": "authentication flow login",
+      "results": [
+        {
+          "rank": 1,
+          "score": 0.511161,
+          "collection": "memory",
+          "path": "/root/.nano-brain/memory/2026-03-25.md",
+          "supersededBy": null,
+          "access_count": 98,
+          "lastAccessedAt": "2026-05-05 13:48:08"
+        },
+        {
+          "rank": 2,
+          "score": 0.223747,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/20483278aa82/2026-02-10-silent-pixel.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 3,
+          "score": 0.085983,
+          "collection": "codebase",
+          "path": "tradeit/i18n/locales/en.js",
+          "supersededBy": null,
+          "access_count": 14,
+          "lastAccessedAt": "2026-05-05 13:48:07"
+        },
+        {
+          "rank": 4,
+          "score": 0.082787,
+          "collection": "zengamingx",
+          "path": "docs/tradeit-auth-module.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 5,
+          "score": 0.073189,
+          "collection": "zengamingx",
+          "path": "ai/test-case/rri-t/payment-failure-reason/04-execute.md",
+          "supersededBy": null,
+          "access_count": 12,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 6,
+          "score": 0.067968,
+          "collection": "zengamingx",
+          "path": "openspec/changes/dev-4591-china-login-backend/proposal.md",
+          "supersededBy": null,
+          "access_count": 1,
+          "lastAccessedAt": "2026-05-05 13:47:55"
+        },
+        {
+          "rank": 7,
+          "score": 0.051746,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/20483278aa82/2026-02-10-explore-existing-e2e-test-patterns-and-playwright-setup-expl.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 8,
+          "score": 0.039927,
+          "collection": "zengamingx",
+          "path": "ai/test-case/tradeit-auth-tests.md",
+          "supersededBy": null,
+          "access_count": 2,
+          "lastAccessedAt": "2026-05-05 13:47:55"
+        },
+        {
+          "rank": 9,
+          "score": 0.039091,
+          "collection": "zengamingx",
+          "path": "ai/blackbox-test/2026-03-17-1225/02-security.md",
+          "supersededBy": null,
+          "access_count": 5,
+          "lastAccessedAt": "2026-05-05 13:47:55"
+        },
+        {
+          "rank": 10,
+          "score": 0.034172,
+          "collection": "zengamingx",
+          "path": "ai/test-case/rri-t/payment-failure-reason/05-analyze.md",
+          "supersededBy": null,
+          "access_count": 11,
+          "lastAccessedAt": "2026-05-05 13:47:55"
+        }
+      ]
+    },
+    {
+      "query": "redis cache invalidation",
+      "results": [
+        {
+          "rank": 1,
+          "score": 0.446273,
+          "collection": "memory",
+          "path": "/root/.nano-brain/memory/2026-03-25.md",
+          "supersededBy": null,
+          "access_count": 99,
+          "lastAccessedAt": "2026-05-05 13:48:25"
+        },
+        {
+          "rank": 2,
+          "score": 0.258742,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/d1915ee19311/2026-02-12-hidden-harbor.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 3,
+          "score": 0.083343,
+          "collection": "zengamingx",
+          "path": "openspec/changes/state-machine-analyzer-skill/design.md",
+          "supersededBy": null,
+          "access_count": 7,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 4,
+          "score": 0.073202,
+          "collection": "zengamingx",
+          "path": "ai/test-case/rri-t/payment-failure-reason/04-execute.md",
+          "supersededBy": null,
+          "access_count": 13,
+          "lastAccessedAt": "2026-05-05 13:48:25"
+        },
+        {
+          "rank": 5,
+          "score": 0.067836,
+          "collection": "codebase",
+          "path": "tradeit-inventory-server/cinvbot.js",
+          "supersededBy": null,
+          "access_count": 2,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 6,
+          "score": 0.057921,
+          "collection": "codebase",
+          "path": "tradeit-inventory-server/cinvbot.ts",
+          "supersededBy": null,
+          "access_count": 1,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 7,
+          "score": 0.052258,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/d1915ee19311/2026-02-12-find-caching-implementation-in-tradeit-backend-explore-subag.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 8,
+          "score": 0.051746,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/d1915ee19311/2026-02-12-find-cache-invalidation-triggers-and-cron-jobs-explore-subag.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 9,
+          "score": 0.050163,
+          "collection": "zengamingx",
+          "path": "bymykel-scraper/README.md",
+          "supersededBy": null,
+          "access_count": 12,
+          "lastAccessedAt": "2026-05-05 13:48:08"
+        },
+        {
+          "rank": 10,
+          "score": 0.045401,
+          "collection": "codebase",
+          "path": "tradeit-inventory-server/sinvbot.ts",
+          "supersededBy": null,
+          "access_count": 8,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        }
+      ]
+    },
+    {
+      "query": "docker container deployment",
+      "results": [
+        {
+          "rank": 1,
+          "score": 0.298568,
+          "collection": "memory",
+          "path": "/root/.nano-brain/memory/2026-03-25.md",
+          "supersededBy": null,
+          "access_count": 100,
+          "lastAccessedAt": "2026-05-05 13:48:26"
+        },
+        {
+          "rank": 2,
+          "score": 0.228943,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/9f6dae78e18a/2026-02-13-stellar-comet.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 3,
+          "score": 0.075505,
+          "collection": "zengamingx",
+          "path": "tradeit-infra/docker/README.md",
+          "supersededBy": null,
+          "access_count": 3,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 4,
+          "score": 0.068664,
+          "collection": "zengamingx",
+          "path": "bymykel-scraper/README.md",
+          "supersededBy": null,
+          "access_count": 13,
+          "lastAccessedAt": "2026-05-05 13:48:26"
+        },
+        {
+          "rank": 5,
+          "score": 0.063484,
+          "collection": "codebase",
+          "path": "doc/doc-script.js",
+          "supersededBy": null,
+          "access_count": 2,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 6,
+          "score": 0.052258,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/9f6dae78e18a/2026-02-13-analyze-vps-wordpress-and-other-web-apps-explore-subagent.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 7,
+          "score": 0.050059,
+          "collection": "zengamingx",
+          "path": "tradeit-admin-backend/CLAUDE.md",
+          "supersededBy": null,
+          "access_count": 1,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 8,
+          "score": 0.043397,
+          "collection": "zengamingx",
+          "path": "openspec/changes/review-automation/design.md",
+          "supersededBy": null,
+          "access_count": 10,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 9,
+          "score": 0.042414,
+          "collection": "zengamingx",
+          "path": "openspec/changes/dev-4745-index-trade-locked-items-directly/analysis.md",
+          "supersededBy": null,
+          "access_count": 24,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 10,
+          "score": 0.039293,
+          "collection": "zengamingx",
+          "path": "claude-skills/deploy/SKILL.md",
+          "supersededBy": null,
+          "access_count": 2,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        }
+      ]
+    },
+    {
+      "query": "search ranking algorithm",
+      "results": [
+        {
+          "rank": 1,
+          "score": 1.022567,
+          "collection": "memory",
+          "path": "/root/.nano-brain/memory/2026-03-25.md",
+          "supersededBy": null,
+          "access_count": 101,
+          "lastAccessedAt": "2026-05-05 13:48:26"
+        },
+        {
+          "rank": 2,
+          "score": 0.254955,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/aeedd3af6f8d/2026-04-08-lucky-pixel.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 3,
+          "score": 0.095837,
+          "collection": "zengamingx",
+          "path": "claude-skills/aws-cost-monitor/SKILL.md",
+          "supersededBy": null,
+          "access_count": 2,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 4,
+          "score": 0.082787,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/aeedd3af6f8d/2026-04-08-mempalace-search-and-algorithms-explore-subagent.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 5,
+          "score": 0.07043,
+          "collection": "zengamingx",
+          "path": "openspec/changes/api-explorer-app/specs/api-explorer-ui/spec.md",
+          "supersededBy": null,
+          "access_count": 1,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 6,
+          "score": 0.070418,
+          "collection": "codebase",
+          "path": "tradeit/i18n/locales/en.js",
+          "supersededBy": null,
+          "access_count": 15,
+          "lastAccessedAt": "2026-05-05 13:48:25"
+        },
+        {
+          "rank": 7,
+          "score": 0.051746,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/aeedd3af6f8d/2026-04-08-nano-brain-search-and-algorithms-explore-subagent.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 8,
+          "score": 0.040494,
+          "collection": "zengamingx",
+          "path": "hr-reviews/rick-2026-03/rick-review-2026-detailed.md",
+          "supersededBy": null,
+          "access_count": 9,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 9,
+          "score": 0.036508,
+          "collection": "zengamingx",
+          "path": "docs/SEO_TESTING_PLAN.md",
+          "supersededBy": null,
+          "access_count": 1,
+          "lastAccessedAt": "2026-05-05 13:48:01"
+        },
+        {
+          "rank": 10,
+          "score": 0.034265,
+          "collection": "zengamingx",
+          "path": "openspec/changes/state-machine-analyzer-skill/specs/state-report/spec.md",
+          "supersededBy": null,
+          "access_count": 5,
+          "lastAccessedAt": "2026-05-05 13:48:08"
+        }
+      ]
+    },
+    {
+      "query": "payment failure trade error",
+      "results": [
+        {
+          "rank": 1,
+          "score": 0.486882,
+          "collection": "memory",
+          "path": "/root/.nano-brain/memory/2026-03-25.md",
+          "supersededBy": null,
+          "access_count": 102,
+          "lastAccessedAt": "2026-05-05 13:48:26"
+        },
+        {
+          "rank": 2,
+          "score": 0.226297,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/d1915ee19311/2026-03-06-glowing-wizard.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 3,
+          "score": 0.168951,
+          "collection": "codebase",
+          "path": "tradeit/i18n/locales/en.js",
+          "supersededBy": null,
+          "access_count": 16,
+          "lastAccessedAt": "2026-05-05 13:48:26"
+        },
+        {
+          "rank": 4,
+          "score": 0.116765,
+          "collection": "codebase",
+          "path": "tradebot/src/tradebot.js",
+          "supersededBy": null,
+          "access_count": 1,
+          "lastAccessedAt": "2026-05-05 13:48:07"
+        },
+        {
+          "rank": 5,
+          "score": 0.090086,
+          "collection": "zengamingx",
+          "path": "0z_tmp/IMPLEMENTATION_PLAN_PAYOUT_MOENGAGE.md",
+          "supersededBy": null,
+          "access_count": 4,
+          "lastAccessedAt": "2026-05-05 13:48:07"
+        },
+        {
+          "rank": 6,
+          "score": 0.082787,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/d1915ee19311/2026-03-06-find-payment-reason-status-codes-explore-subagent.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 7,
+          "score": 0.074715,
+          "collection": "zengamingx",
+          "path": "ai/test-case/rri-t/payment-failure-reason/01-prepare.md",
+          "supersededBy": null,
+          "access_count": 5,
+          "lastAccessedAt": "2026-05-05 13:48:07"
+        },
+        {
+          "rank": 8,
+          "score": 0.070813,
+          "collection": "zengamingx",
+          "path": "hr-reviews/rick-2026-03/rick-raw-data-2026.md",
+          "supersededBy": null,
+          "access_count": 16,
+          "lastAccessedAt": "2026-05-05 13:48:07"
+        },
+        {
+          "rank": 9,
+          "score": 0.060166,
+          "collection": "memory",
+          "path": "/root/.nano-brain/memory/2026-04-01.md",
+          "supersededBy": null,
+          "access_count": 3,
+          "lastAccessedAt": "2026-05-05 13:48:07"
+        },
+        {
+          "rank": 10,
+          "score": 0.051746,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/d1915ee19311/2026-03-04-find-payment-failure-handling-patterns-across-repos-explore-.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        }
+      ]
+    },
+    {
+      "query": "nano-brain memory indexing",
+      "results": [
+        {
+          "rank": 1,
+          "score": 0.776053,
+          "collection": "memory",
+          "path": "/root/.nano-brain/memory/2026-03-25.md",
+          "supersededBy": null,
+          "access_count": 103,
+          "lastAccessedAt": "2026-05-05 13:48:27"
+        },
+        {
+          "rank": 2,
+          "score": 0.226599,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/9f6dae78e18a/2026-02-23-calm-nebula.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 3,
+          "score": 0.088178,
+          "collection": "zengamingx",
+          "path": "openspec/changes/state-machine-analyzer-skill/specs/state-report/spec.md",
+          "supersededBy": null,
+          "access_count": 6,
+          "lastAccessedAt": "2026-05-05 13:48:26"
+        },
+        {
+          "rank": 4,
+          "score": 0.082787,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/9f6dae78e18a/2026-02-23-find-codebase-indexing-implementation-in-opencode-memory-exp.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 5,
+          "score": 0.067566,
+          "collection": "zengamingx",
+          "path": "openspec/changes/insight-service-refactor/design.md",
+          "supersededBy": null,
+          "access_count": 3,
+          "lastAccessedAt": "2026-05-05 13:48:08"
+        },
+        {
+          "rank": 6,
+          "score": 0.053067,
+          "collection": "zengamingx",
+          "path": "openspec/changes/state-machine-analyzer-skill/specs/state-discovery/spec.md",
+          "supersededBy": null,
+          "access_count": 3,
+          "lastAccessedAt": "2026-05-05 13:48:08"
+        },
+        {
+          "rank": 7,
+          "score": 0.051746,
+          "collection": "sessions",
+          "path": "/root/.nano-brain/sessions/d1915ee19311/2026-02-23-nano-brain-status-check-and-memory-readiness.md",
+          "supersededBy": null,
+          "access_count": 0,
+          "lastAccessedAt": null
+        },
+        {
+          "rank": 8,
+          "score": 0.046593,
+          "collection": "memory",
+          "path": "/root/.nano-brain/memory/2026-04-03.md",
+          "supersededBy": null,
+          "access_count": 6,
+          "lastAccessedAt": "2026-05-05 13:48:08"
+        },
+        {
+          "rank": 9,
+          "score": 0.042866,
+          "collection": "zengamingx",
+          "path": "bymykel-scraper/README.md",
+          "supersededBy": null,
+          "access_count": 14,
+          "lastAccessedAt": "2026-05-05 13:48:26"
+        },
+        {
+          "rank": 10,
+          "score": 0.041935,
+          "collection": "memory",
+          "path": "/root/.nano-brain/memory/2026-05-03.md",
+          "supersededBy": null,
+          "access_count": 3,
+          "lastAccessedAt": "2026-05-05 13:48:08"
+        }
+      ]
+    }
+  ]
+}

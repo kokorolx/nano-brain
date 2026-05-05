@@ -62,11 +62,14 @@ Query → Intent Classification → Bandit Config Selection
       ├── Vector search (embedding → sqlite-vec/Qdrant)
       └── Symbol graph search (code symbols by name)
   → RRF fusion (weighted Reciprocal Rank Fusion)
+        preserves createdAt + charLength from whichever source has them
   → Top-rank bonus (FTS top-3)
   → Centrality boost (PageRank-like graph centrality)
   → Usage boost (access count × temporal decay)
   → Category weight boost (tag-based)
-  → Supersede demotion (outdated documents)
+  → Supersede demotion (×0.05 — effectively buries outdated documents)
+  → Length normalization (log2 penalty for large documents)
+  → Recency boost (exponential decay, sessions/memory only)
   → Importance scoring boost
   → Neural reranking (Voyage AI, cached)
   → Position-aware blending (RRF × rerank scores)
@@ -225,8 +228,10 @@ The store has four prepared FTS statements for different filter combinations:
 |---------|---------|----------|
 | Basic | none | `searchFTSStmt` |
 | Collection | `collection = ?` | `searchFTSWithCollectionStmt` |
-| Workspace | `project_hash IN (?, 'global')` | `searchFTSWithWorkspaceStmt` |
+| Workspace | `project_hash = ?` (strict per-workspace) | `searchFTSWithWorkspaceStmt` |
 | Both | collection + workspace | `searchFTSWithWorkspaceAndCollectionStmt` |
+
+> **Note (2026-05-05):** Workspace filter was tightened from `IN (?, 'global')` to `= ?` to prevent cross-workspace result leakage. Pass `includeGlobal: true` in `StoreSearchOptions` to restore the old cross-workspace behavior explicitly.
 
 The dynamic `searchFTS()` method (line 1671) builds SQL dynamically to handle additional filters:
 - `since` / `until` date range on `modified_at`
@@ -329,6 +334,8 @@ WHERE substr(hash_seq, 1, instr(hash_seq, ':') - 1)
 - Supports filtering by `collection` and `projectHash` via Qdrant `must` filters
 - Returns `point.score` directly (Qdrant returns cosine similarity, not distance)
 - Extracts `hash` and `seq` from payload or falls back to parsing `hashSeq`
+- Every upsert now includes `project_hash` and `created_at` in point payload for workspace isolation and temporal scoring
+- On server startup, `backfillQdrantProjectHash()` runs async (fire-and-forget) to backfill existing points missing `project_hash` in batches of 100
 
 **Retry Logic (`retryOnSocketError`):**
 - Max 3 retries for socket errors: `UND_ERR_SOCKET`, `ECONNRESET`, `ECONNREFUSED`, `socket hang up`
@@ -451,6 +458,9 @@ export function rrfFuse(
       const existing = scoreMap.get(result.id);
       if (existing) {
         existing.score += rrfScore;
+        // Preserve temporal metadata from whichever source has them
+        if (!existing.result.createdAt && result.createdAt) existing.result.createdAt = result.createdAt;
+        if (!existing.result.charLength && result.charLength) existing.result.charLength = result.charLength;
       } else {
         scoreMap.set(result.id, { result: { ...result }, score: rrfScore });
       }
@@ -621,7 +631,7 @@ PLACEHOLDER
 
 **Source:** `src/search.ts` (lines 185u2013345, 628u2013653)
 
-After RRF fusion, six score adjustments are applied in strict order. Each function is pure (creates new arrays) and the pipeline is sequential.
+After RRF fusion, eight score adjustments are applied in strict order. Each function is pure (creates new arrays) and the pipeline is sequential.
 
 ### Adjustment 1: Top-Rank Bonus (`applyTopRankBonus`)
 
@@ -683,16 +693,55 @@ Multiplies score by tag-based category weights.
 
 ### Adjustment 5: Supersede Demotion (`applySupersedeDemotion`)
 
-**Source:** lines 263u2013276
+**Source:** `src/search.ts`
 
 Demotes documents that have been superseded by newer versions.
 
 Formula: `newScore = score * demotionFactor`
 
-- `supersede_demotion` default: **0.3** (70% penalty)
+- `supersede_demotion` default: **0.05** (95% penalty — effectively buries superseded docs)
 - Only applied if `supersededBy !== undefined && supersededBy !== null`
+- The `supersedeDocument(oldId, newId)` call now correctly receives the new doc's actual ID (was passing `0` — bug fixed 2026-05-05)
 
-### Adjustment 6: Importance Scoring (`importanceScorer.applyBoost`)
+### Adjustment 6: Length Normalization (`applyLengthNorm`)
+
+**Source:** `src/search.ts`
+
+Penalizes large documents to prevent size bias in BM25 scoring.
+
+Formula:
+```
+penalty = 1 / (1 + log2(max(1, charLength / anchor)))
+newScore = score * penalty
+```
+
+- `length_norm_anchor` default: **2000** chars
+- `charLength` = `LENGTH(body)` from SQLite (full content, not snippet)
+- Doc ≤ 2000 chars → penalty = 1.0 (no change)
+- Doc 8000 chars → penalty ≈ 0.5
+- Doc 32000 chars → penalty ≈ 0.25
+- Applied after supersede demotion, before recency boost
+
+### Adjustment 7: Recency Boost (`applyRecencyBoost`)
+
+**Source:** `src/search.ts`
+
+Boosts recently created documents via exponential decay. Only applies to `sessions` and `memory` collections — `codebase` results are never affected.
+
+Formula:
+```
+ageDays     = (now - createdAt) / 86_400_000
+decayFactor = exp(-ln(2) × ageDays / halfLife)
+newScore    = score × (1 - weight) + score × weight × decayFactor
+```
+
+- `recency_weight` default: **0.3** — 30% of score is modulated by age
+- `recency_half_life_days` default: **180** — score contribution halves every 6 months
+- `createdAt` sourced from `documents.created_at` (populated through FTS, vector, and worker paths)
+- Results without `createdAt` are skipped (no boost, no penalty)
+- `codebase` collection: explicitly guarded — recency does not apply to code
+
+### Adjustment 8: Importance Scoring (`importanceScorer.applyBoost`)
 
 **Source:** `src/importance.ts:applyBoost()` (line 35)
 
@@ -704,15 +753,17 @@ Formula: `newScore = score * (1 + importance_weight * importanceScore)`
 ### Execution Order
 
 ```
-RRF fused scores
-  u2192 applyTopRankBonus       (additive, FTS top-3 only)
-  u2192 applyCentralityBoost    (multiplicative, graph centrality)
-  u2192 applyUsageBoost         (multiplicative, access count + decay)
-  u2192 applyCategoryWeightBoost(multiplicative, tag weights)
-  u2192 applySupersedeDemotion  (multiplicative, 0.3 penalty)
-  u2192 importanceScorer.applyBoost (multiplicative, importance)
-  u2192 sort descending
-  u2192 slice to topK candidates
+RRF fused scores (with createdAt + charLength preserved)
+  → applyTopRankBonus        (additive, FTS top-3 only)
+  → applyCentralityBoost     (multiplicative, graph centrality)
+  → applyUsageBoost          (multiplicative, access count + decay)
+  → applyCategoryWeightBoost (multiplicative, tag weights)
+  → applySupersedeDemotion   (multiplicative, ×0.05 penalty)
+  → applyLengthNorm          (multiplicative, log2 size penalty)
+  → applyRecencyBoost        (multiplicative, sessions+memory only)
+  → importanceScorer.applyBoost (multiplicative, importance)
+  → sort descending
+  → slice to topK candidates
 ```
 
 ## 11. Thompson Sampling (Bandits)

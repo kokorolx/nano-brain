@@ -845,6 +845,12 @@ export interface Store {
   getActiveDocumentsWithAccess(): Array<{ id: number; path: string; hash: string; access_count: number; last_accessed_at: string | null }>;
   getTagCountForDocument(docId: number): number;
 
+  getPendingConsolidationActions(): Array<{ id: number; document_id: number; target_doc_id: number }>;
+  markConsolidationLogApplied(id: number): void;
+  markConsolidationLogError(id: number, error: string): void;
+  markNoopLogsApplied(): void;
+  getDocumentActiveStatus(id: number): { id: number; active: boolean; supersededBy: number | null } | null;
+
   getSymbolsForProject(projectHash: string): Array<{
     id: number;
     name: string;
