@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import type { VectorStore, VectorPoint } from '../vector-store.js';
 import { SqliteVecStore } from '../providers/sqlite-vec.js';
+import { QdrantVecStore, stringToUuid } from '../providers/qdrant.js';
 import type { SearchResult, StoreSearchOptions } from '../types.js';
 import { log } from '../logger.js';
 import type { Stmts } from './schema.js';
@@ -58,10 +59,19 @@ export function makeVectorMethods(
       const useExternalStore = externalVectorStore && !(externalVectorStore instanceof SqliteVecStore);
 
       if (useExternalStore) {
+        let projectHash: string | undefined;
+        let createdAt: string | undefined;
+        try {
+          const docRow = stmts.findDocMetadataByHash.get(hash) as { project_hash: string; created_at: string } | undefined;
+          projectHash = docRow?.project_hash ?? undefined;
+          createdAt = docRow?.created_at ?? undefined;
+        } catch {
+        }
+
         const point: VectorPoint = {
           id: `${hash}:${seq}`,
           embedding,
-          metadata: { hash, seq, pos, model },
+          metadata: { hash, seq, pos, model, projectHash, createdAt },
         };
         externalVectorStore.upsert(point).catch((err) => {
           log('store', 'insertEmbedding external vector store upsert failed hash=' + hash.substring(0, 8));
@@ -209,7 +219,8 @@ export function makeVectorMethods(
 
       if (state.vectorStore) {
         try {
-          const vecResults = await state.vectorStore.search(embedding, { limit: limit * 3, collection });
+          const vecProjectHash = projectHash && projectHash !== 'all' ? projectHash : undefined;
+          const vecResults = await state.vectorStore.search(embedding, { limit: limit * 3, collection, projectHash: vecProjectHash });
           if (vecResults.length === 0) return [];
 
           const results: SearchResult[] = [];
@@ -217,8 +228,10 @@ export function makeVectorMethods(
             const row = db.prepare(`
               SELECT d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
                      d.centrality, d.cluster_id, d.superseded_by, d.modified_at,
+                     d.created_at as createdAt,
                      d.access_count, d.last_accessed_at as lastAccessedAt,
-                     substr(c.body, 1, 700) as snippet
+                     substr(c.body, 1, 700) as snippet,
+                     LENGTH(c.body) as char_length
               FROM documents d
               LEFT JOIN content c ON c.hash = d.hash
               WHERE d.hash = ? AND d.active = 1
@@ -256,6 +269,8 @@ export function makeVectorMethods(
               supersededBy: row.superseded_by as number | null | undefined,
               access_count: row.access_count as number | undefined,
               lastAccessedAt: row.lastAccessedAt as string | null | undefined,
+              createdAt: row.createdAt as string | undefined,
+              charLength: row.char_length as number | undefined,
             });
           }
 
@@ -348,4 +363,34 @@ export function makeVectorMethods(
       return stmts.getNextHashNeedingEmbedding.get() as { hash: string; body: string; path: string } | null;
     },
   };
+}
+
+export async function backfillQdrantProjectHash(db: Database.Database, vectorStore: VectorStore): Promise<void> {
+  if (!(vectorStore instanceof QdrantVecStore)) return;
+
+  const rows = db.prepare(`
+    SELECT cv.hash, cv.seq, d.project_hash
+    FROM content_vectors cv
+    JOIN documents d ON d.hash = cv.hash AND d.active = 1
+    WHERE d.project_hash IS NOT NULL
+  `).all() as Array<{ hash: string; seq: number; project_hash: string }>;
+
+  if (rows.length === 0) return;
+
+  log('store', 'backfillQdrantProjectHash starting rows=' + rows.length);
+
+  const BATCH_SIZE = 100;
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const batch = rows.slice(i, i + BATCH_SIZE);
+    try {
+      await (vectorStore as QdrantVecStore).batchSetPayload(batch.map(r => ({
+        id: stringToUuid(`${r.hash}:${r.seq}`),
+        payload: { projectHash: r.project_hash },
+      })));
+    } catch (err) {
+      log('store', 'backfillQdrantProjectHash batch failed i=' + i + ' err=' + (err instanceof Error ? err.message : String(err)), 'warn');
+    }
+  }
+
+  log('store', 'backfillQdrantProjectHash complete rows=' + rows.length);
 }

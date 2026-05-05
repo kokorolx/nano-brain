@@ -5,57 +5,11 @@ import * as crypto from 'crypto';
 import { setProjectLabelDataDir } from '../store.js';
 import type { SearchResult } from '../types.js';
 import { cliOutput } from '../logger.js';
+import { isInsideContainer } from '../host.js';
 
 export const DEFAULT_HTTP_PORT = 3100;
 
 export async function detectRunningServer(port: number = getHttpPort()): Promise<boolean> {
-  const host = getHttpHost();
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 1000);
-    const resp = await fetch(`http://${host}:${port}/health`, { signal: controller.signal });
-    clearTimeout(timeout);
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}
-
-export async function proxyGet(port: number, path: string): Promise<any> {
-  const host = getHttpHost();
-  const resp = await fetch(`http://${host}:${port}${path}`);
-  return resp.json();
-}
-
-export async function proxyPost(port: number, path: string, body: any): Promise<any> {
-  const host = getHttpHost();
-  const resp = await fetch(`http://${host}:${port}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  return resp.json();
-}
-
-export function isRunningInContainer(): boolean {
-  try {
-    return fs.existsSync('/.dockerenv');
-  } catch {
-    return false;
-  }
-}
-
-export function getHttpHost(): string {
-  if (process.env.NANO_BRAIN_HOST) return process.env.NANO_BRAIN_HOST;
-  return isRunningInContainer() ? 'host.docker.internal' : 'localhost';
-}
-
-export function getHttpPort(): number {
-  if (process.env.NANO_BRAIN_PORT) return parseInt(process.env.NANO_BRAIN_PORT, 10);
-  return DEFAULT_HTTP_PORT;
-}
-
-export async function detectRunningServerContainer(port: number = getHttpPort()): Promise<boolean> {
   const host = getHttpHost();
   try {
     const controller = new AbortController();
@@ -68,20 +22,35 @@ export async function detectRunningServerContainer(port: number = getHttpPort())
   }
 }
 
-export async function proxyGetContainer(port: number, path: string): Promise<any> {
+export async function proxyGet(port: number, path: string, timeoutMs = 30_000): Promise<any> {
   const host = getHttpHost();
-  const resp = await fetch(`http://${host}:${port}${path}`);
+  const resp = await fetch(`http://${host}:${port}${path}`, {
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
   return resp.json();
 }
 
-export async function proxyPostContainer(port: number, path: string, body: any): Promise<any> {
+export async function proxyPost(port: number, path: string, body: unknown, timeoutMs = 30_000): Promise<any> {
   const host = getHttpHost();
   const resp = await fetch(`http://${host}:${port}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
   return resp.json();
+}
+
+export function getHttpHost(): string {
+  if (process.env.NANO_BRAIN_HOST) return process.env.NANO_BRAIN_HOST;
+  return isInsideContainer() ? 'host.docker.internal' : 'localhost';
+}
+
+export function getHttpPort(): number {
+  if (process.env.NANO_BRAIN_PORT) return parseInt(process.env.NANO_BRAIN_PORT, 10);
+  return DEFAULT_HTTP_PORT;
 }
 
 export function resolveOpenCodeStorageDir(): string {

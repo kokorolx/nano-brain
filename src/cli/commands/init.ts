@@ -9,19 +9,19 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { log, cliOutput, cliError } from '../../logger.js';
 import type { GlobalOptions } from '../types.js';
+import { isInsideContainer } from '../../host.js';
 import {
   DEFAULT_HTTP_PORT,
   DEFAULT_OUTPUT_DIR,
   DEFAULT_MEMORY_DIR,
   detectRunningServer,
   proxyPost,
-  isRunningInContainer,
   resolveDbPath,
   resolveOpenCodeStorageDir,
 } from '../utils.js';
 
 export async function handleInit(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
-  if (isRunningInContainer()) {
+  if (isInsideContainer()) {
     cliError('Error: Destructive operations must be run on the host, not from containers.');
     cliError('Run this command directly on the host: npx nano-brain init --force');
     process.exit(1);
@@ -42,6 +42,22 @@ export async function handleInit(globalOpts: GlobalOptions, commandArgs: string[
     } else if (arg === '--all') {
       all = true;
     }
+  }
+
+  try {
+    const { execSync } = await import('child_process');
+    const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] })
+      .toString().trim();
+    const gitTopLevel = execSync('git rev-parse --show-toplevel', { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] })
+      .toString().trim();
+    const isWorktree = !gitCommonDir.startsWith(path.join(root, '.git')) && gitTopLevel !== root;
+    if (isWorktree) {
+      const mainRepoRoot = path.dirname(gitCommonDir);
+      cliOutput(`⚠️  Detected git worktree at: ${root}`);
+      cliOutput(`   Redirecting init to main repo root: ${mainRepoRoot}`);
+      root = mainRepoRoot;
+    }
+  } catch {
   }
 
   log('cli', 'init start root=' + root + ' force=' + force + ' all=' + all);

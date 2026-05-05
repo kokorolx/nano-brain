@@ -14,7 +14,7 @@ const args = process.argv.slice(2);
 // Prefer the pre-compiled dist/index.js — works on any platform without esbuild.
 // Fall back to tsx (TypeScript source) only when dist is absent (e.g. dev checkout
 // without a build step).
-const distEntry = join(__dirname, '..', 'dist', 'index.js');
+const distEntry = join(__dirname, '..', 'dist', 'cli', 'index.js');
 
 if (existsSync(distEntry)) {
   // Run compiled JS directly — no tsx / esbuild dependency at all.

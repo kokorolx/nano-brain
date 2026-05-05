@@ -450,7 +450,7 @@ export async function createEmbeddingProvider(
     try {
       const provider = new OpenAICompatibleEmbeddingProvider(url, model, apiKey, config.maxChars, config.rpmLimit, options?.onTokenUsage, config.dimensions);
       await provider.embed('test');
-      log('embed', 'Using OpenAI-compatible provider: ' + model + ' at ' + url + ' (' + provider.getRpmLimit() + ' rpm)');
+       log('embed', '🤖 AI proxy connected: ' + model + ' at ' + url + ' (' + provider.getRpmLimit() + ' rpm)');
       return provider;
     } catch (err) {
       log('embed', 'OpenAI-compatible provider error: ' + (err instanceof Error ? err.message : String(err)), 'error');
@@ -470,20 +470,20 @@ export async function createEmbeddingProvider(
         const provider = new OllamaEmbeddingProvider(url, model);
         await provider.detectModelContext();
         await provider.embed('test');
-        log('embed', 'Using Ollama provider: ' + model + ' at ' + url);
+         log('embed', '🦙 Ollama connected: ' + model + ' at ' + url);
         return provider;
       }
     } catch (err) {
-      log('embed', 'Ollama not reachable at ' + url + ': ' + (err instanceof Error ? err.message : String(err)), 'warn');
+       log('embed', '⚠️  Ollama not reachable at ' + url + ': ' + (err instanceof Error ? err.message : String(err)), 'warn');
       if (config?.provider === 'ollama') {
-        log('embed', 'Ollama explicitly configured but not reachable, no fallback', 'error');
+         log('embed', '❌ Ollama explicitly configured but not reachable, no fallback', 'error');
         return null;
       }
-      log('embed', 'Ollama not reachable, no fallback available', 'warn');
+       log('embed', '❌ Ollama not reachable, no fallback available', 'warn');
     }
   }
 
-  log('embed', 'No embedding provider available. Configure openai or ollama in config.yml', 'error');
+  log('embed', '❌ No embedding provider available. Configure openai or ollama in config.yml', 'error');
   return null;
 }
 

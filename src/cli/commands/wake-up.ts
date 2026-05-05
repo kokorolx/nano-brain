@@ -3,13 +3,11 @@ import { generateBriefing } from '../../wake-up.js';
 import * as crypto from 'crypto';
 import { log, cliOutput, cliError } from '../../logger.js';
 import type { GlobalOptions } from '../types.js';
+import { isInsideContainer } from '../../host.js';
 import {
   DEFAULT_HTTP_PORT,
   detectRunningServer,
-  detectRunningServerContainer,
   proxyPost,
-  proxyPostContainer,
-  isRunningInContainer,
   getHttpHost,
   getHttpPort,
   resolveDbPath,
@@ -28,10 +26,8 @@ export async function handleWakeUp(globalOpts: GlobalOptions, commandArgs: strin
     }
   }
 
-  const inContainer = isRunningInContainer();
-  const serverRunning = inContainer
-    ? await detectRunningServerContainer(DEFAULT_HTTP_PORT)
-    : await detectRunningServer(DEFAULT_HTTP_PORT);
+  const inContainer = isInsideContainer();
+  const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
 
   if (inContainer && !serverRunning) {
     cliError(`Error: nano-brain server not reachable at ${getHttpHost()}:${getHttpPort()}. Ensure the Docker container is running:`);
@@ -44,8 +40,7 @@ export async function handleWakeUp(globalOpts: GlobalOptions, commandArgs: strin
       const body: Record<string, any> = {};
       if (format === 'json') body.json = true;
       body.workspace = workspaceRoot;
-      const proxyFn = inContainer ? proxyPostContainer : proxyPost;
-      const data = await proxyFn(DEFAULT_HTTP_PORT, '/api/wake-up', body);
+      const data = await proxyPost(DEFAULT_HTTP_PORT, '/api/wake-up', body);
       if (format === 'json') {
         cliOutput(JSON.stringify(data, null, 2));
       } else {

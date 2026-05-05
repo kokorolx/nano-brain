@@ -264,7 +264,7 @@ export function runMigrations(db: Database.Database): void {
 
   // Schema versioning
   const currentVersion = (db.pragma('user_version') as Array<{ user_version: number }>)[0].user_version;
-  const TARGET_VERSION = 9;
+  const TARGET_VERSION = 10;
 
   if (currentVersion < 1) {
     db.exec(`
@@ -501,12 +501,23 @@ export function runMigrations(db: Database.Database): void {
     log('store', 'Schema migrated to version 9 (path prefix compression)');
   }
 
+  if (currentVersion < 10) {
+    const hasDomainType = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'domain_type');
+    if (!hasDomainType) {
+      db.exec("ALTER TABLE documents ADD COLUMN domain_type TEXT DEFAULT 'general'");
+    }
+    const hasLastReinforcedAt = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'last_reinforced_at');
+    if (!hasLastReinforcedAt) {
+      db.exec("ALTER TABLE documents ADD COLUMN last_reinforced_at TEXT");
+    }
+    db.pragma(`user_version = 10`);
+    log('store', 'Schema migrated to version 10 (domain_type, last_reinforced_at columns)');
+  }
+
   void TARGET_VERSION;
 }
 
-export type Stmts = ReturnType<typeof initStatements>;
-
-export function initStatements(db: Database.Database) {
+export function initStatements(db: Database.Database): Record<string, Database.Statement<unknown[], unknown>> {
   return {
     insertContent: db.prepare(`INSERT OR IGNORE INTO content (hash, body) VALUES (?, ?)`),
     insertDocument: db.prepare(`
@@ -522,11 +533,18 @@ export function initStatements(db: Database.Database) {
     `),
     findDocumentByPath: db.prepare(`
       SELECT id, collection, path, title, hash, agent, created_at as createdAt, modified_at as modifiedAt, active, project_hash as projectHash
-      FROM documents WHERE path = ? AND active = 1
+      FROM documents WHERE path = ? AND collection = ? AND active = 1
     `),
     findDocumentByDocid: db.prepare(`
       SELECT id, collection, path, title, hash, agent, created_at as createdAt, modified_at as modifiedAt, active, project_hash as projectHash
       FROM documents WHERE substr(hash, 1, 6) = ? AND active = 1
+    `),
+    findDocumentByPathAnyCollection: db.prepare(`
+      SELECT id, collection, path, title, hash, agent, created_at as createdAt, modified_at as modifiedAt, active, project_hash as projectHash
+      FROM documents WHERE path = ? AND active = 1 LIMIT 1
+    `),
+    findDocMetadataByHash: db.prepare(`
+      SELECT project_hash, created_at FROM documents WHERE hash = ? LIMIT 1
     `),
     getContent: db.prepare(`SELECT body FROM content WHERE hash = ?`),
     deactivateDocument: db.prepare(`UPDATE documents SET active = 0 WHERE collection = ? AND path = ?`),
@@ -945,5 +963,42 @@ export function initStatements(db: Database.Database) {
     `),
     insertPrefix: db.prepare(`INSERT OR IGNORE INTO path_prefixes (project_hash, prefix) VALUES (?, ?)`),
     getPrefix: db.prepare(`SELECT prefix FROM path_prefixes WHERE project_hash = ?`),
+    getFileDependenciesStmt: db.prepare(`
+      SELECT target_path FROM file_edges
+      WHERE source_path = ? AND project_hash = ?
+    `),
+    getFileDependentsStmt: db.prepare(`
+      SELECT source_path FROM file_edges
+      WHERE target_path = ? AND project_hash = ?
+    `),
+    getDocumentCentralityStmt: db.prepare(`
+      SELECT centrality, cluster_id FROM documents
+      WHERE path = ? AND active = 1
+    `),
+    getClusterMembersStmt: db.prepare(`
+      SELECT path FROM documents
+      WHERE cluster_id = ? AND project_hash = ? AND active = 1
+      ORDER BY centrality DESC
+    `),
+    graphEdgeCount: db.prepare(`SELECT COUNT(*) as count FROM file_edges WHERE project_hash = ?`),
+    graphNodeCount: db.prepare(`
+      SELECT COUNT(*) as count FROM (
+        SELECT source_path as node FROM file_edges WHERE project_hash = ?
+        UNION
+        SELECT target_path as node FROM file_edges WHERE project_hash = ?
+      )
+    `),
+    graphClusterCount: db.prepare(`
+      SELECT COUNT(DISTINCT cluster_id) as count FROM documents
+      WHERE project_hash = ? AND cluster_id IS NOT NULL AND active = 1
+    `),
+    graphTopCentrality: db.prepare(`
+      SELECT path, centrality FROM documents
+      WHERE project_hash = ? AND active = 1 AND centrality > 0
+      ORDER BY centrality DESC
+      LIMIT 10
+    `),
   };
 }
+
+export type Stmts = ReturnType<typeof initStatements>;

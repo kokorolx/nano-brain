@@ -1,9 +1,35 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { log, cliOutput, cliError } from '../../logger.js';
 import type { GlobalOptions } from '../types.js';
-import { NANO_BRAIN_HOME } from '../utils.js';
+import { NANO_BRAIN_HOME, getHttpHost } from '../utils.js';
+
+function resolveDockerBin(): string | null {
+  const candidates = [
+    '/usr/local/bin/docker',
+    '/usr/bin/docker',
+    '/opt/homebrew/bin/docker',
+    '/Applications/Docker.app/Contents/Resources/bin/docker',
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      try {
+        const v = execSync(`"${p}" --version`, { encoding: 'utf-8' }).trim();
+        if (v.toLowerCase().startsWith('docker version') || v.toLowerCase().startsWith('docker desktop')) return p;
+      } catch {}
+    }
+  }
+  try {
+    const found = execSync('which docker', { encoding: 'utf-8' }).trim();
+    if (found) {
+      const v = execSync(`"${found}" --version`, { encoding: 'utf-8' }).trim();
+      if (v.toLowerCase().startsWith('docker version') || v.toLowerCase().startsWith('docker desktop')) return found;
+    }
+  } catch {}
+  return null;
+}
 
 export async function handleDocker(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const subcommand = commandArgs[0];
@@ -20,6 +46,12 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
 
   if (!fs.existsSync(composeFile)) {
     cliError('docker-compose.yml not found at ' + composeFile);
+    process.exit(1);
+  }
+
+  const dockerBin = resolveDockerBin();
+  if (!dockerBin) {
+    cliError('Docker CLI not found. Is Docker Desktop installed?');
     process.exit(1);
   }
 
@@ -43,18 +75,30 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
         fs.mkdirSync(path.join(NANO_BRAIN_HOME, dir), { recursive: true });
       }
 
+      try {
+        const configYmlPath = path.join(NANO_BRAIN_HOME, 'config.yml');
+        const rawConfig = fs.readFileSync(configYmlPath, 'utf-8');
+        const config = parseYaml(rawConfig) as Record<string, any>;
+        if (config?.vector?.url === 'http://host.docker.internal:6333') {
+          config.vector.url = 'http://qdrant:6333';
+          fs.writeFileSync(configYmlPath, stringifyYaml(config), 'utf-8');
+          cliOutput('[nano-brain] Migrated vector.url from host.docker.internal:6333 → qdrant:6333');
+        }
+      } catch {}
+
       cliOutput('Starting nano-brain + qdrant...');
       try {
-        execSync(`docker compose -f "${composeFile}" up -d`, { stdio: 'inherit', env });
+        execSync(`${dockerBin} compose -f "${composeFile}" up -d`, { stdio: 'inherit', env });
       } catch {
         cliError('Failed to start. Is Docker running?');
         process.exit(1);
       }
 
-      const healthUrl = 'http://localhost:3100/health';
+      const healthUrl = `http://${getHttpHost()}:3100/health`;
       let healthy = false;
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 2000));
+      const maxRetries = 20;
+      for (let i = 0; i < maxRetries; i++) {
+        await new Promise(r => setTimeout(r, 3000));
         try {
           const res = await fetch(healthUrl);
           if (res.ok) {
@@ -62,7 +106,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
             break;
           }
         } catch {}
-        cliOutput(`Waiting for nano-brain... (${i + 1}/10)`);
+        cliOutput(`Waiting for nano-brain... (${i + 1}/${maxRetries})`);
       }
 
       if (healthy) {
@@ -76,7 +120,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
     case 'stop': {
       cliOutput('Stopping nano-brain + qdrant...');
       try {
-        execSync(`docker compose -f "${composeFile}" down`, { stdio: 'inherit', env });
+        execSync(`${dockerBin} compose -f "${composeFile}" down`, { stdio: 'inherit', env });
       } catch {
         cliError('Failed to stop containers');
         process.exit(1);
@@ -96,18 +140,18 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
       const label = service || 'nano-brain + qdrant';
       cliOutput(`Restarting ${label}...`);
       try {
-        execSync(`docker compose -f "${composeFile}" restart ${service}`, { stdio: 'inherit', env });
+        execSync(`${dockerBin} compose -f "${composeFile}" restart ${service}`, { stdio: 'inherit', env });
       } catch {
         cliError('Failed to restart. Is Docker running?');
         process.exit(1);
       }
 
-      const healthUrl = 'http://localhost:3100/health';
+      const restartHealthUrl = `http://${getHttpHost()}:3100/health`;
       let healthy = false;
       for (let i = 0; i < 15; i++) {
         await new Promise(r => setTimeout(r, 2000));
         try {
-          const res = await fetch(healthUrl);
+          const res = await fetch(restartHealthUrl);
           if (res.ok) {
             const data = await res.json() as { ready?: boolean };
             if (data.ready) {
@@ -131,7 +175,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
       let containerOutput = '';
       try {
         containerOutput = execSync(
-          `docker compose -f "${composeFile}" ps --format json 2>/dev/null`,
+          `${dockerBin} compose -f "${composeFile}" ps --format json 2>/dev/null`,
           { env, encoding: 'utf-8' }
         ).trim();
       } catch {
@@ -160,7 +204,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
 
       cliOutput('');
       try {
-        const res = await fetch('http://localhost:3100/health');
+        const res = await fetch(`http://${getHttpHost()}:3100/health`);
         if (res.ok) {
           cliOutput('  API: ✅ http://localhost:3100');
         } else {

@@ -38,18 +38,12 @@ export function makeGraphMethods(
     },
 
     getFileDependencies(filePath: string, projectHash: string): string[] {
-      const rows = db.prepare(`
-        SELECT target_path FROM file_edges
-        WHERE source_path = ? AND project_hash = ?
-      `).all(toRel(filePath), projectHash) as Array<{ target_path: string }>;
+      const rows = stmts.getFileDependenciesStmt.all(toRel(filePath), projectHash) as Array<{ target_path: string }>;
       return rows.map(r => r.target_path);
     },
 
     getFileDependents(filePath: string, projectHash: string): string[] {
-      const rows = db.prepare(`
-        SELECT source_path FROM file_edges
-        WHERE target_path = ? AND project_hash = ?
-      `).all(toRel(filePath), projectHash) as Array<{ source_path: string }>;
+      const rows = stmts.getFileDependentsStmt.all(toRel(filePath), projectHash) as Array<{ source_path: string }>;
       return rows.map(r => r.source_path);
     },
 
@@ -75,20 +69,13 @@ export function makeGraphMethods(
     },
 
     getDocumentCentrality(filePath: string): { centrality: number; clusterId: number | null } | null {
-      const row = db.prepare(`
-        SELECT centrality, cluster_id FROM documents
-        WHERE path = ? AND active = 1
-      `).get(toRel(filePath)) as { centrality: number; cluster_id: number | null } | undefined;
+      const row = stmts.getDocumentCentralityStmt.get(toRel(filePath)) as { centrality: number; cluster_id: number | null } | undefined;
       if (!row) return null;
       return { centrality: row.centrality ?? 0, clusterId: row.cluster_id };
     },
 
     getClusterMembers(clusterId: number, projectHash: string): string[] {
-      const rows = db.prepare(`
-        SELECT path FROM documents
-        WHERE cluster_id = ? AND project_hash = ? AND active = 1
-        ORDER BY centrality DESC
-      `).all(clusterId, projectHash) as Array<{ path: string }>;
+      const rows = stmts.getClusterMembersStmt.all(clusterId, projectHash) as Array<{ path: string }>;
       return rows.map(r => r.path);
     },
 
@@ -98,27 +85,10 @@ export function makeGraphMethods(
       clusterCount: number;
       topCentrality: Array<{ path: string; centrality: number }>;
     } {
-      const edges = db.prepare(`SELECT COUNT(*) as count FROM file_edges WHERE project_hash = ?`).get(projectHash) as { count: number };
-
-      const nodes = db.prepare(`
-        SELECT COUNT(*) as count FROM (
-          SELECT source_path as node FROM file_edges WHERE project_hash = ?
-          UNION
-          SELECT target_path as node FROM file_edges WHERE project_hash = ?
-        )
-      `).get(projectHash, projectHash) as { count: number };
-
-      const clusters = db.prepare(`
-        SELECT COUNT(DISTINCT cluster_id) as count FROM documents
-        WHERE project_hash = ? AND cluster_id IS NOT NULL AND active = 1
-      `).get(projectHash) as { count: number };
-
-      const topCentrality = db.prepare(`
-        SELECT path, centrality FROM documents
-        WHERE project_hash = ? AND active = 1 AND centrality > 0
-        ORDER BY centrality DESC
-        LIMIT 10
-      `).all(projectHash) as Array<{ path: string; centrality: number }>;
+      const edges = stmts.graphEdgeCount.get(projectHash) as { count: number };
+      const nodes = stmts.graphNodeCount.get(projectHash, projectHash) as { count: number };
+      const clusters = stmts.graphClusterCount.get(projectHash) as { count: number };
+      const topCentrality = stmts.graphTopCentrality.all(projectHash) as Array<{ path: string; centrality: number }>;
 
       return {
         nodeCount: nodes.count,

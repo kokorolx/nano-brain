@@ -926,19 +926,29 @@ export async function handleRequest(
       });
       const clientServer = createMcpServer(deps);
 
+      const heartbeatInterval = setInterval(() => {
+        if (!res.writableEnded && !res.destroyed) {
+          res.write(': ping\n\n');
+        }
+      }, 30_000);
+
+      transport.onclose = () => {
+        clearInterval(heartbeatInterval);
+        if (transport.sessionId) {
+          streamableSessions.delete(transport.sessionId);
+           log('server', `🔌 Streamable HTTP client disconnected sessionId=${transport.sessionId}`);
+        }
+      };
+
+      res.on('close', () => clearInterval(heartbeatInterval));
+      res.on('error', () => clearInterval(heartbeatInterval));
+
       await clientServer.connect(transport);
       await transport.handleRequest(req, res);
 
       if (transport.sessionId) {
         streamableSessions.set(transport.sessionId, { transport, server: clientServer });
-        log('server', `Streamable HTTP client connected sessionId=${transport.sessionId}`);
-
-        transport.onclose = () => {
-          if (transport.sessionId) {
-            streamableSessions.delete(transport.sessionId);
-            log('server', `Streamable HTTP client disconnected sessionId=${transport.sessionId}`);
-          }
-        };
+         log('server', `🔌 Streamable HTTP client connected sessionId=${transport.sessionId}`);
       }
       return;
     }

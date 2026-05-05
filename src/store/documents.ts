@@ -77,7 +77,7 @@ export function makeDocumentMethods(
         doc.active ? 1 : 0,
         doc.projectHash ?? 'global'
       );
-      const existing = stmts.findDocumentByPath.get(relativePath) as { id: number } | undefined;
+      const existing = stmts.findDocumentByPath.get(relativePath, doc.collection) as { id: number } | undefined;
       if (existing) return existing.id;
       const rowid = Number(result.lastInsertRowid);
       if (rowid > 0) return rowid;
@@ -93,7 +93,7 @@ export function makeDocumentMethods(
 
       if (!row) {
         const relativePath = toRel(pathOrDocid);
-        row = stmts.findDocumentByPath.get(relativePath) as Record<string, unknown> | undefined;
+        row = stmts.findDocumentByPathAnyCollection.get(relativePath) as Record<string, unknown> | undefined;
       }
 
       if (!row) return null;
@@ -191,7 +191,7 @@ export function makeDocumentMethods(
     },
 
     searchFTS(query: string, options: StoreSearchOptions = {}): SearchResult[] {
-      const { limit = 10, collection, projectHash, tags, since, until } = options;
+      const { limit = 10, collection, projectHash, tags, since, until, includeGlobal } = options;
       const sanitized = sanitizeFTS5Query(query);
       if (!sanitized) return [];
 
@@ -200,10 +200,13 @@ export function makeDocumentMethods(
           d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
           d.centrality, d.cluster_id, d.superseded_by,
           d.access_count, d.last_accessed_at as lastAccessedAt,
+          d.created_at as createdAt,
+          LENGTH(c.body) as charLength,
           snippet(documents_fts, 2, '<mark>', '</mark>', '...', 64) as snippet,
           bm25(documents_fts) as score
         FROM documents_fts f
         JOIN documents d ON f.filepath = d.collection || '/' || d.path
+        LEFT JOIN content c ON c.hash = d.hash
         WHERE documents_fts MATCH ? AND d.active = 1
       `;
       const params: (string | number)[] = [sanitized];
@@ -213,7 +216,11 @@ export function makeDocumentMethods(
         params.push(collection);
       }
       if (projectHash && projectHash !== 'all') {
-        sql += ` AND d.project_hash IN (?, 'global')`;
+        if (includeGlobal) {
+          sql += ` AND d.project_hash IN (?, 'global')`;
+        } else {
+          sql += ` AND d.project_hash = ?`;
+        }
         params.push(projectHash);
       }
       if (since) {
@@ -258,6 +265,8 @@ export function makeDocumentMethods(
         supersededBy: row.superseded_by as number | null | undefined,
         access_count: row.access_count as number | undefined,
         lastAccessedAt: row.lastAccessedAt as string | null | undefined,
+        createdAt: row.createdAt as string | undefined,
+        charLength: row.charLength as number | undefined,
       }));
     },
 
@@ -294,15 +303,12 @@ export function makeDocumentMethods(
 
         if (docs.length > 0) {
           const uniqueHashes = [...new Set(docs.map(d => d.hash))];
-          const orphanedHashes: string[] = [];
-          for (const hash of uniqueHashes) {
-            const otherUses = db.prepare(
-              'SELECT COUNT(*) as count FROM documents WHERE hash = ? AND project_hash != ?'
-            ).get(hash, projectHash) as { count: number };
-            if (otherUses.count === 0) {
-              orphanedHashes.push(hash);
-            }
-          }
+          const orphanRows = db.prepare(
+            `SELECT hash FROM documents WHERE project_hash = ?
+             EXCEPT
+             SELECT hash FROM documents WHERE project_hash != ?`
+          ).all(projectHash, projectHash) as Array<{ hash: string }>;
+          const orphanedHashes = orphanRows.map(r => r.hash).filter(h => uniqueHashes.includes(h));
 
           for (const hash of orphanedHashes) {
             const cvResult = db.prepare('DELETE FROM content_vectors WHERE hash = ?').run(hash);

@@ -19,6 +19,8 @@ export interface SearchResult {
   access_count?: number;
   lastAccessedAt?: string | null;
   tags?: string[];
+  createdAt?: string;
+  charLength?: number;
 }
 
 export interface Document {
@@ -236,6 +238,7 @@ export interface StoreSearchOptions {
   tags?: string[];
   since?: string;
   until?: string;
+  includeGlobal?: boolean;
 }
 
 export interface SearchConfig {
@@ -256,6 +259,9 @@ export interface SearchConfig {
   centrality_weight: number;
   supersede_demotion: number;
   usage_boost_weight: number;
+  length_norm_anchor: number;
+  recency_weight: number;
+  recency_half_life_days: number;
 }
 
 export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
@@ -274,8 +280,11 @@ export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
     enabled: true,
   },
   centrality_weight: 0.1,
-  supersede_demotion: 0.3,
+  supersede_demotion: 0.05,
   usage_boost_weight: 0.15,
+  length_norm_anchor: 2000,
+  recency_weight: 0.3,
+  recency_half_life_days: 180,
 };
 
 // === Self-Learning Types ===

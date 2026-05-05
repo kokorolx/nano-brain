@@ -10,6 +10,7 @@ import { log, initLogger, setStdioMode } from '../logger.js';
 import { loadCollectionConfig, getCollections, getWorkspaceConfig } from '../collections.js';
 import { parseStorageConfig } from '../storage.js';
 import { createStore, resolveWorkspaceDbPath, setProjectLabelDataDir, migrateToRelativePaths, cleanupDuplicatePaths, getLastCorruptionRecovery, closeAllCachedStores } from '../store.js';
+import { backfillQdrantProjectHash } from '../store/vectors.js';
 import { parseSearchConfig } from '../search.js';
 import { createVectorStore, type VectorStore } from '../vector-store.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth } from '../embeddings.js';
@@ -124,24 +125,24 @@ export async function startServer(options: ServerOptions): Promise<void> {
     try {
       vectorStore = createVectorStore(config.vector);
       vectorStore.health().then((health) => {
-        log('server', 'vector provider=' + health.provider + ' ok=' + health.ok + ' vectors=' + health.vectorCount);
-        log('server', `Vector store: ${health.provider} (ok=${health.ok}, vectors=${health.vectorCount})`);
+        log('server', '🗄️  Qdrant connected provider=' + health.provider + ' ok=' + health.ok + ' vectors=' + health.vectorCount);
+        log('server', `🗄️  Qdrant connected: ${health.provider} (ok=${health.ok}, vectors=${health.vectorCount})`);
         if (health.dimensions && configuredDimensions && health.dimensions !== configuredDimensions) {
           log('server', 'vector dimension mismatch config=' + configuredDimensions + ' qdrant=' + health.dimensions);
           log('server', `Vector dimension mismatch: config=${configuredDimensions}, qdrant=${health.dimensions}`, 'warn');
           log('server', 'Will validate against embedder dimensions after provider loads.', 'warn');
         }
       }).catch((err) => {
-        log('server', 'vector health check failed error=' + (err instanceof Error ? err.message : String(err)));
-        log('server', `Vector store health check failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        log('server', '❌ Qdrant health check failed error=' + (err instanceof Error ? err.message : String(err)));
+        log('server', `❌ Qdrant health check failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       });
     } catch (err) {
       log('server', 'vector store creation failed error=' + (err instanceof Error ? err.message : String(err)));
       log('server', `Vector store creation failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
   } else {
-    log('server', 'vector provider=sqlite-vec (default)');
-    log('server', 'Vector store: sqlite-vec (default)');
+    log('server', '🗄️  Vector store: sqlite-vec (default)');
+    log('server', '🗄️  Vector store: sqlite-vec (default)');
   }
 
   if (vectorStore) {
@@ -332,7 +333,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
     setStdioMode(true);
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    log('server', 'MCP server started on stdio');
+    log('server', '🔌 MCP server started on stdio');
   }
 
   Promise.all([
@@ -348,14 +349,14 @@ export async function startServer(options: ServerOptions): Promise<void> {
             log('server', 'vector store reinitialized dims=' + loadedEmbedder.getDimensions());
           }
         }
-        log('server', 'Embedding provider initialized model=' + store.modelStatus.embedding);
-        log('server', `Embedding model: ${store.modelStatus.embedding}`);
+         log('server', '🧠 Embedding provider ready model=' + store.modelStatus.embedding);
+         log('server', `🧠 Embedding provider ready: ${store.modelStatus.embedding}`);
         startFileWatcher();
       })
       .catch((err) => {
-        store.modelStatus.embedding = 'failed';
-        log('server', 'Embedding provider failed error=' + (err instanceof Error ? err.message : String(err)));
-        log('server', `Embedding model failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+         store.modelStatus.embedding = 'failed';
+         log('server', '❌ Embedding provider failed error=' + (err instanceof Error ? err.message : String(err)));
+         log('server', `❌ Embedding provider failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
         startFileWatcher();
       }),
     createReranker({
@@ -366,18 +367,25 @@ export async function startServer(options: ServerOptions): Promise<void> {
       .then((loadedReranker) => {
         providers.reranker = loadedReranker;
         store.modelStatus.reranker = loadedReranker ? (config?.reranker?.model || 'rerank-2.5-lite') : 'disabled';
-        log('server', 'Reranker initialized model=' + store.modelStatus.reranker);
-        log('server', `Reranker model: ${store.modelStatus.reranker}`);
+         log('server', '🔀 Reranker ready model=' + store.modelStatus.reranker);
+         log('server', `🔀 Reranker ready: ${store.modelStatus.reranker}`);
       })
       .catch((err) => {
-        store.modelStatus.reranker = 'failed';
-        log('server', 'Reranker failed error=' + (err instanceof Error ? err.message : String(err)));
-        log('server', `Reranker model failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+         store.modelStatus.reranker = 'failed';
+         log('server', '❌ Reranker failed error=' + (err instanceof Error ? err.message : String(err)));
+         log('server', `❌ Reranker failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }),
   ]).then(() => {
     readyState.value = true;
-    log('server', 'Server ready (Phase 2 complete)');
-    log('server', 'Server ready');
+    log('server', '✅ Server ready (Phase 2 complete)');
+    log('server', '✅ Server ready');
+
+    const currentVectorStore = store.getVectorStore();
+    if (currentVectorStore) {
+      backfillQdrantProjectHash(store.getDb(), currentVectorStore).catch(err => {
+        log('server', 'backfillQdrantProjectHash failed err=' + (err instanceof Error ? err.message : String(err)), 'warn');
+      });
+    }
 
     if (config?.consolidation?.enabled) {
       const consolidationConfig = config.consolidation as import('../types.js').ConsolidationConfig;
@@ -390,15 +398,15 @@ export async function startServer(options: ServerOptions): Promise<void> {
           maxCandidates: consolidationConfig.max_memories_per_cycle ?? 5,
         });
         consolidationWorker.start();
-        log('server', 'Consolidation worker started');
+        log('server', '🔄 Consolidation worker started');
 
         providers.expander = createLLMQueryExpander(llmProvider);
         store.modelStatus.expander = 'llm:' + (llmProvider.model ?? 'unknown');
         log('server', 'Query expander enabled with LLM');
-      } else {
-        log('server', 'Consolidation enabled but no LLM provider configured');
-        log('server', 'Consolidation enabled but no LLM provider configured', 'warn');
-      }
+       } else {
+         log('server', '⚠️  Consolidation enabled but no LLM provider configured');
+         log('server', '⚠️  Consolidation enabled but no LLM provider configured', 'warn');
+       }
     }
   });
 
@@ -433,8 +441,8 @@ export async function startServer(options: ServerOptions): Promise<void> {
             store.modelStatus.embedding = newProvider.getModel();
             store.ensureVecTable(newProvider.getDimensions());
             if (oldProvider && 'dispose' in oldProvider) (oldProvider as { dispose(): void }).dispose();
-            log('server', 'Reconnected to Ollama url=' + ollamaUrl + ' model=' + ollamaModel);
-            log('server', `Reconnected to Ollama at ${ollamaUrl} — switched from local GGUF`);
+             log('server', '🦙 Reconnected to Ollama url=' + ollamaUrl + ' model=' + ollamaModel);
+             log('server', `🦙 Reconnected to Ollama at ${ollamaUrl} — switched from local GGUF`);
             startedWithLocalGGUF = false;
             clearInterval(reconnectTimer);
           }

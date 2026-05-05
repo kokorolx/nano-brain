@@ -148,6 +148,7 @@ export function migrateToRelativePaths(store: Store, projectHash: string, worksp
       `SELECT path FROM documents WHERE path LIKE '/%' AND project_hash = ? LIMIT 10`
     ).all(projectHash) as Array<{ path: string }>;
     for (const doc of unmatchedDocs) {
+      if (doc.path.includes('/.nano-brain/')) continue;
       log('store', `Warning: document path does not match workspace prefix, left unchanged: ${doc.path}`, 'warn');
     }
 
@@ -418,6 +419,8 @@ export function createStore(dbPath: string): Store {
   }
   storeCreating.add(resolvedPath);
 
+  try {
+
   log('store', 'createStore dbPath=' + resolvedPath);
 
   const recoveryResult = checkAndRecoverDB(resolvedPath, {
@@ -449,20 +452,6 @@ export function createStore(dbPath: string): Store {
 
   applySchema(db);
   runMigrations(db);
-
-  if (vecAvailable) {
-    try {
-      db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS vectors_vec USING vec0(
-          hash_seq TEXT PRIMARY KEY,
-          embedding float[768] distance_metric=cosine
-        );
-      `);
-    } catch (err) {
-      log('store', `Failed to create vector table: ${err instanceof Error ? err.message : String(err)}`, 'warn');
-      vecAvailable = false;
-    }
-  }
 
   const stmts = initStatements(db);
 
@@ -1035,7 +1024,10 @@ export function createStore(dbPath: string): Store {
   _cached = true;
   storeCache.set(resolvedPath, store);
   storeCacheUncache.set(resolvedPath, () => { _cached = false; });
-  storeCreating.delete(resolvedPath);
 
   return store;
+
+  } finally {
+    storeCreating.delete(resolvedPath);
+  }
 }

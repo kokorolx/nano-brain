@@ -47,10 +47,12 @@ const dbPath = workerData.dbPath as string;
 const db = new Database(dbPath, { readonly: true });
 db.pragma('busy_timeout = 0');
 
-// Prepared statement: look up doc id+hash by path for enrichment.
-// Uses the indexed (path) column — fast single-row lookup, no JOIN with FTS.
 const enrichByPathStmt = db.prepare(`
-  SELECT id, hash FROM documents WHERE path = ? AND active = 1 LIMIT 1
+  SELECT d.id, d.hash, d.created_at, LENGTH(c.body) as char_length
+  FROM documents d
+  LEFT JOIN content c ON c.hash = d.hash
+  WHERE d.path = ? AND d.active = 1
+  LIMIT 1
 `);
 
 // Try to load sqlite-vec extension for vector search
@@ -103,18 +105,19 @@ function searchFTS(query: string, options: StoreSearchOptions = {}): SearchResul
     const coll = slashIdx >= 0 ? row.filepath.substring(0, slashIdx) : '';
     const path = slashIdx >= 0 ? row.filepath.substring(slashIdx + 1) : row.filepath;
 
-    // Enrich: look up id + hash by path using a single indexed SELECT.
-    // This is safe even on a read-only connection — no WAL lock contention.
     let docId = '';
     let docHash = '';
+    let createdAt: string | undefined;
+    let charLength: number | undefined;
     try {
-      const docRow = enrichByPathStmt.get(path) as { id: number; hash: string } | undefined;
+      const docRow = enrichByPathStmt.get(path) as { id: number; hash: string; created_at: string; char_length: number | null } | undefined;
       if (docRow) {
         docId = String(docRow.id);
         docHash = docRow.hash.substring(0, 6);
+        createdAt = docRow.created_at;
+        charLength = docRow.char_length ?? undefined;
       }
     } catch {
-      // Ignore enrichment failure — return result without id/docid
     }
 
     return {
@@ -127,6 +130,8 @@ function searchFTS(query: string, options: StoreSearchOptions = {}): SearchResul
       startLine: 0,
       endLine: 0,
       docid: docHash,
+      createdAt,
+      charLength,
     };
   });
 }
@@ -144,8 +149,10 @@ function searchVec(query: string, embedding: number[], options: StoreSearchOptio
     let sql = `
       SELECT v.hash_seq, v.distance, d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
              d.centrality, d.cluster_id, d.superseded_by,
+             d.created_at as createdAt,
              d.access_count, d.last_accessed_at as lastAccessedAt,
-             substr(c.body, 1, 700) as snippet
+             substr(c.body, 1, 700) as snippet,
+             LENGTH(c.body) as char_length
       FROM vectors_vec v
       JOIN documents d ON substr(v.hash_seq, 1, instr(v.hash_seq, ':') - 1) = d.hash
       LEFT JOIN content c ON c.hash = d.hash
@@ -160,7 +167,7 @@ function searchVec(query: string, embedding: number[], options: StoreSearchOptio
       params.push(collection);
     }
     if (projectHash && projectHash !== 'all') {
-      sql += ` AND d.project_hash IN (?, 'global')`;
+      sql += ` AND d.project_hash = ?`;
       params.push(projectHash);
     }
     if (since) {
@@ -203,6 +210,8 @@ function searchVec(query: string, embedding: number[], options: StoreSearchOptio
       supersededBy: row.superseded_by as number | null | undefined,
       access_count: row.access_count as number | undefined,
       lastAccessedAt: row.lastAccessedAt as string | null | undefined,
+      createdAt: row.createdAt as string | undefined,
+      charLength: row.char_length as number | undefined,
     }));
   } catch {
     return [];
