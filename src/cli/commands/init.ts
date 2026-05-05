@@ -44,6 +44,22 @@ export async function handleInit(globalOpts: GlobalOptions, commandArgs: string[
     }
   }
 
+  try {
+    const { execSync } = await import('child_process');
+    const gitCommonDir = execSync('git rev-parse --git-common-dir', { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] })
+      .toString().trim();
+    const gitTopLevel = execSync('git rev-parse --show-toplevel', { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] })
+      .toString().trim();
+    const isWorktree = !gitCommonDir.startsWith(path.join(root, '.git')) && gitTopLevel !== root;
+    if (isWorktree) {
+      const mainRepoRoot = path.dirname(gitCommonDir);
+      cliOutput(`⚠️  Detected git worktree at: ${root}`);
+      cliOutput(`   Redirecting init to main repo root: ${mainRepoRoot}`);
+      root = mainRepoRoot;
+    }
+  } catch {
+  }
+
   log('cli', 'init start root=' + root + ' force=' + force + ' all=' + all);
 
   globalOpts.dbPath = resolveDbPath(globalOpts.dbPath, root);
