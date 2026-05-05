@@ -5,11 +5,11 @@ import { isTreeSitterAvailable } from '../../treesitter.js';
 import * as crypto from 'crypto';
 import { log, cliOutput, cliError } from '../../logger.js';
 import type { GlobalOptions } from '../types.js';
+import { isInsideContainer } from '../../host.js';
 import {
   DEFAULT_HTTP_PORT,
-  detectRunningServerContainer,
-  proxyPostContainer,
-  isRunningInContainer,
+  detectRunningServer,
+  proxyPost,
   getHttpHost,
   getHttpPort,
   resolveDbPath,
@@ -29,15 +29,15 @@ export async function handleReindex(globalOpts: GlobalOptions, commandArgs: stri
 
   log('cli', 'reindex root=' + root);
 
-  if (isRunningInContainer()) {
-    const serverRunning = await detectRunningServerContainer(DEFAULT_HTTP_PORT);
+  if (isInsideContainer()) {
+    const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
     if (!serverRunning) {
       cliError(`Error: nano-brain server not reachable at ${getHttpHost()}:${getHttpPort()}. Ensure the Docker container is running:`);
       cliError('  docker start nano-brain');
       process.exit(1);
     }
     try {
-      const result = await proxyPostContainer(DEFAULT_HTTP_PORT, '/api/reindex', { root });
+      const result = await proxyPost(DEFAULT_HTTP_PORT, '/api/reindex', { root });
       if (result.error) {
         cliError('Error:', result.error);
         process.exit(1);

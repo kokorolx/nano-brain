@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { log, cliOutput, cliError } from '../../logger.js';
 import type { GlobalOptions } from '../types.js';
-import { NANO_BRAIN_HOME } from '../utils.js';
+import { NANO_BRAIN_HOME, getHttpHost } from '../utils.js';
 
 export async function handleDocker(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const subcommand = commandArgs[0];
@@ -43,6 +44,17 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
         fs.mkdirSync(path.join(NANO_BRAIN_HOME, dir), { recursive: true });
       }
 
+      try {
+        const configYmlPath = path.join(NANO_BRAIN_HOME, 'config.yml');
+        const rawConfig = fs.readFileSync(configYmlPath, 'utf-8');
+        const config = parseYaml(rawConfig) as Record<string, any>;
+        if (config?.vector?.url === 'http://host.docker.internal:6333') {
+          config.vector.url = 'http://qdrant:6333';
+          fs.writeFileSync(configYmlPath, stringifyYaml(config), 'utf-8');
+          cliOutput('[nano-brain] Migrated vector.url from host.docker.internal:6333 → qdrant:6333');
+        }
+      } catch {}
+
       cliOutput('Starting nano-brain + qdrant...');
       try {
         execSync(`docker compose -f "${composeFile}" up -d`, { stdio: 'inherit', env });
@@ -51,7 +63,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
         process.exit(1);
       }
 
-      const healthUrl = 'http://localhost:3100/health';
+      const healthUrl = `http://${getHttpHost()}:3100/health`;
       let healthy = false;
       for (let i = 0; i < 10; i++) {
         await new Promise(r => setTimeout(r, 2000));
@@ -102,12 +114,12 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
         process.exit(1);
       }
 
-      const healthUrl = 'http://localhost:3100/health';
+      const restartHealthUrl = `http://${getHttpHost()}:3100/health`;
       let healthy = false;
       for (let i = 0; i < 15; i++) {
         await new Promise(r => setTimeout(r, 2000));
         try {
-          const res = await fetch(healthUrl);
+          const res = await fetch(restartHealthUrl);
           if (res.ok) {
             const data = await res.json() as { ready?: boolean };
             if (data.ready) {
@@ -160,7 +172,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
 
       cliOutput('');
       try {
-        const res = await fetch('http://localhost:3100/health');
+        const res = await fetch(`http://${getHttpHost()}:3100/health`);
         if (res.ok) {
           cliOutput('  API: ✅ http://localhost:3100');
         } else {

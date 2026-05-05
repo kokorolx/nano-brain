@@ -10,13 +10,11 @@ import type { SearchResult } from '../../types.js';
 import * as crypto from 'crypto';
 import { log, cliOutput, cliError } from '../../logger.js';
 import type { GlobalOptions } from '../types.js';
+import { isInsideContainer } from '../../host.js';
 import {
   DEFAULT_HTTP_PORT,
   detectRunningServer,
-  detectRunningServerContainer,
   proxyPost,
-  proxyPostContainer,
-  isRunningInContainer,
   getHttpHost,
   getHttpPort,
 } from '../utils.js';
@@ -72,10 +70,8 @@ export async function handleSearch(
     }
   }
 
-  const inContainer = isRunningInContainer();
-  const serverRunning = inContainer
-    ? await detectRunningServerContainer(DEFAULT_HTTP_PORT)
-    : await detectRunningServer(DEFAULT_HTTP_PORT);
+  const inContainer = isInsideContainer();
+  const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
 
   if (inContainer && !serverRunning) {
     cliError(`Error: nano-brain server not reachable at ${getHttpHost()}:${getHttpPort()}. Ensure the Docker container is running:`);
@@ -86,9 +82,7 @@ export async function handleSearch(
   if (serverRunning) {
     try {
       const endpoint = mode === 'fts' ? '/api/search' : '/api/query';
-      const data = inContainer
-        ? await proxyPostContainer(DEFAULT_HTTP_PORT, endpoint, { query, limit, tags: tags?.join(','), scope })
-        : await proxyPost(DEFAULT_HTTP_PORT, endpoint, { query, limit, tags: tags?.join(','), scope });
+      const data = await proxyPost(DEFAULT_HTTP_PORT, endpoint, { query, limit, tags: tags?.join(','), scope });
       if (format === 'json') {
         cliOutput(JSON.stringify(data, null, 2));
       } else if (format === 'files') {

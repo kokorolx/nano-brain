@@ -4,12 +4,12 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { log, cliOutput, cliError } from '../../logger.js';
 import type { GlobalOptions } from '../types.js';
+import { isInsideContainer } from '../../host.js';
 import {
   DEFAULT_HTTP_PORT,
   DEFAULT_MEMORY_DIR,
-  detectRunningServerContainer,
-  proxyPostContainer,
-  isRunningInContainer,
+  detectRunningServer,
+  proxyPost,
   getHttpHost,
   getHttpPort,
 } from '../utils.js';
@@ -35,15 +35,15 @@ export async function handleWrite(globalOpts: GlobalOptions, commandArgs: string
     }
   }
 
-  if (isRunningInContainer()) {
-    const serverRunning = await detectRunningServerContainer(DEFAULT_HTTP_PORT);
+  if (isInsideContainer()) {
+    const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
     if (!serverRunning) {
       cliError(`Error: nano-brain server not reachable at ${getHttpHost()}:${getHttpPort()}. Ensure the Docker container is running:`);
       cliError('  docker start nano-brain');
       process.exit(1);
     }
     try {
-      const result = await proxyPostContainer(DEFAULT_HTTP_PORT, '/api/write', {
+      const result = await proxyPost(DEFAULT_HTTP_PORT, '/api/write', {
         content,
         tags: tags?.join(','),
       });
