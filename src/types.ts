@@ -236,6 +236,7 @@ export interface StoreSearchOptions {
   tags?: string[];
   since?: string;
   until?: string;
+  includeGlobal?: boolean;
 }
 
 export interface SearchConfig {

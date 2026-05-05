@@ -194,7 +194,7 @@ export function makeDocumentMethods(
     },
 
     searchFTS(query: string, options: StoreSearchOptions = {}): SearchResult[] {
-      const { limit = 10, collection, projectHash, tags, since, until } = options;
+      const { limit = 10, collection, projectHash, tags, since, until, includeGlobal } = options;
       const sanitized = sanitizeFTS5Query(query);
       if (!sanitized) return [];
 
@@ -216,7 +216,11 @@ export function makeDocumentMethods(
         params.push(collection);
       }
       if (projectHash && projectHash !== 'all') {
-        sql += ` AND d.project_hash IN (?, 'global')`;
+        if (includeGlobal) {
+          sql += ` AND d.project_hash IN (?, 'global')`;
+        } else {
+          sql += ` AND d.project_hash = ?`;
+        }
         params.push(projectHash);
       }
       if (since) {
