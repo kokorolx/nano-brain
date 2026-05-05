@@ -936,7 +936,7 @@ export async function handleRequest(
         clearInterval(heartbeatInterval);
         if (transport.sessionId) {
           streamableSessions.delete(transport.sessionId);
-          log('server', `Streamable HTTP client disconnected sessionId=${transport.sessionId}`);
+           log('server', `🔌 Streamable HTTP client disconnected sessionId=${transport.sessionId}`);
         }
       };
 
@@ -948,7 +948,7 @@ export async function handleRequest(
 
       if (transport.sessionId) {
         streamableSessions.set(transport.sessionId, { transport, server: clientServer });
-        log('server', `Streamable HTTP client connected sessionId=${transport.sessionId}`);
+         log('server', `🔌 Streamable HTTP client connected sessionId=${transport.sessionId}`);
       }
       return;
     }
