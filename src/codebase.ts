@@ -129,7 +129,6 @@ export const BUILTIN_EXCLUDE_PATTERNS = [
   '**/log/**',
   '**/tmp/**',
   '**/temp/**',
-  '/tmp/**',
   '**/*.log',
 
   // Test coverage

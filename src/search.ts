@@ -527,10 +527,11 @@ export async function hybridSearch(
           ),
         ]);
       } catch {
-        ftsResults = [];
+        ftsResults = store.searchFTS(q, searchOpts);
       }
+    } else {
+      ftsResults = store.searchFTS(q, searchOpts);
     }
-    // NOTE: Do NOT call store.searchFTS() here — synchronous, blocks event loop
 
     let vecResults: SearchResult[] = [];
     if (embedder) {
