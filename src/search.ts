@@ -384,7 +384,7 @@ export function applyRecencyBoost(
   const now = Date.now();
 
   return results.map(r => {
-    if (r.collection === 'codebase') return r;
+    if (r.collection !== 'sessions' && r.collection !== 'memory') return r;
     if (!r.createdAt) return r;
 
     const parsed = Date.parse(r.createdAt);
