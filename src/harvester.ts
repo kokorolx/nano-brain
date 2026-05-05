@@ -216,16 +216,18 @@ export function messagesToMarkdown(messages: Array<{ role: string; agent?: strin
   return lines.join('\n');
 }
 
-export function getOutputPath(outputDir: string, projectPath: string, date: string, slug: string): string {
+export function getOutputPath(outputDir: string, projectPath: string, date: string, slug: string, title?: string): string {
   const hash = createHash('sha256').update(projectPath).digest('hex');
   const projectHash = hash.substring(0, 12);
-  
-  const sanitizedSlug = (slug || 'untitled')
+
+  const raw = (title && title.trim()) ? title : (slug || 'untitled');
+  const sanitizedSlug = raw
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .replace(/-+/g, '-');
-  
+    .replace(/-+/g, '-')
+    .substring(0, 60);
+
   return join(outputDir, projectHash, `${date}-${sanitizedSlug}.md`);
 }
 
@@ -353,7 +355,7 @@ async function harvestFromDb(
 
       const date = new Date(session.time_created);
       const dateStr = date.toISOString().split('T')[0];
-      const outputPath = getOutputPath(outputDir, session.directory, dateStr, session.slug);
+      const outputPath = getOutputPath(outputDir, session.directory, dateStr, session.slug, session.title);
       const outputDirPath = dirname(outputPath);
 
       const isIncremental = previousMessageCount > 0 && existsSync(outputPath);
@@ -642,7 +644,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
         if (session) {
           const date = new Date(session.created);
           const dateStr = date.toISOString().split('T')[0];
-          const outputPath = getOutputPath(outputDir, session.directory, dateStr, session.slug);
+          const outputPath = getOutputPath(outputDir, session.directory, dateStr, session.slug, session.title);
           if (existsSync(outputPath)) {
             // Quick check: count message files to catch additions within same mtime granularity
             const msgDir = join(sessionDir, 'message', session.id);
@@ -696,7 +698,7 @@ export async function harvestSessions(options: HarvesterOptions): Promise<Harves
       
       const date = new Date(session.created);
       const dateStr = date.toISOString().split('T')[0];
-      const outputPath = getOutputPath(outputDir, session.directory, dateStr, session.slug);
+      const outputPath = getOutputPath(outputDir, session.directory, dateStr, session.slug, session.title);
       const outputDirPath = dirname(outputPath);
       
       const effectivePreviousCount = previousMessageCount ?? 0;
