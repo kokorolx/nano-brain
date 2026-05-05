@@ -1,5 +1,9 @@
+import { createRequire } from 'module'
+import { fileURLToPath } from 'url'
 import type { SupportedLanguage } from './graph.js'
 import { log } from './logger.js'
+
+const _require = createRequire(fileURLToPath(import.meta.url))
 
 export interface CodeSymbol {
   name: string
@@ -22,27 +26,24 @@ export interface SymbolEdge {
 export type SymbolTable = Map<string, { filePath: string; kind: string }[]>
 
 let treeSitterAvailable = false
-let Parser: typeof import('tree-sitter').default | null = null
+let Parser: any = null
 let TypeScriptLang: unknown = null
 let JavaScriptLang: unknown = null
 let PythonLang: unknown = null
 
 async function initTreeSitter(): Promise<void> {
   try {
-    // NOTE: Do NOT set PREBUILDS_ONLY=1 here.
-    // In Docker ARM64, tree-sitter-typescript may not ship linux-arm64 prebuilds.
-    // npm rebuild compiles valid binaries into build/Release/ for the current platform,
-    // and node-gyp-build's default fallback path will find them correctly.
-    const ts = await import('tree-sitter')
-    Parser = ts.default
+    // Use createRequire(__filename) to always resolve tree-sitter from nano-brain's own
+    // node_modules, regardless of CWD. Dynamic import() resolves from CWD which causes
+    // nano-brain to accidentally load the host project's tree-sitter binaries (potentially
+    // wrong platform, e.g. x86_64 binaries in a linux-arm64 container).
+    Parser = _require('tree-sitter')
 
-    const tsLang = await import('tree-sitter-typescript')
-    const tsModule = (tsLang as { default: { typescript: unknown; tsx: unknown } }).default
+    const tsModule = _require('tree-sitter-typescript') as { typescript: unknown; tsx: unknown }
     TypeScriptLang = tsModule.typescript
     JavaScriptLang = tsModule.tsx
 
-    const pyLang = await import('tree-sitter-python')
-    PythonLang = (pyLang as { default: unknown }).default
+    PythonLang = _require('tree-sitter-python')
 
     treeSitterAvailable = true
   } catch (e) {
@@ -136,7 +137,7 @@ function getNodeText(node: { text: string }): string {
   return node.text
 }
 
-function hasExportModifier(node: { parent?: { type: string; children?: Array<{ type: string }> } }): boolean {
+function hasExportModifier(node: any): boolean {
   const parent = node.parent
   if (!parent) return false
 
