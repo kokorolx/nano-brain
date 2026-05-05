@@ -39,7 +39,7 @@ services:
       - OLLAMA_HOST=http://host.docker.internal:11434
       - NODE_OPTIONS=--max-old-space-size=1536
       - NANO_BRAIN_EMBEDDING_CONCURRENCY=3
-    command: sh -c "npm install --omit=dev --prefer-offline --legacy-peer-deps && npm rebuild tree-sitter tree-sitter-python tree-sitter-typescript tree-sitter-javascript && ./node_modules/.bin/tsx src/index.ts mcp --http --port=3100 --host=0.0.0.0 --root=${NANO_BRAIN_WORKSPACE:-/Users/tamlh/workspaces/NUSTechnology/Projects/zengamingx}"
+    command: sh -c "npm install --omit=dev --prefer-offline --legacy-peer-deps --no-audit --no-fund && npm rebuild tree-sitter tree-sitter-python tree-sitter-typescript tree-sitter-javascript && ./node_modules/.bin/tsx src/index.ts mcp --http --port=3100 --host=0.0.0.0 --root=${NANO_BRAIN_WORKSPACE:-/Users/tamlh/workspaces/NUSTechnology/Projects/zengamingx}"
     depends_on:
       - qdrant
     healthcheck:

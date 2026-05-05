@@ -148,6 +148,7 @@ export function migrateToRelativePaths(store: Store, projectHash: string, worksp
       `SELECT path FROM documents WHERE path LIKE '/%' AND project_hash = ? LIMIT 10`
     ).all(projectHash) as Array<{ path: string }>;
     for (const doc of unmatchedDocs) {
+      if (doc.path.includes('/.nano-brain/')) continue;
       log('store', `Warning: document path does not match workspace prefix, left unchanged: ${doc.path}`, 'warn');
     }
 
