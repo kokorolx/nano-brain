@@ -264,7 +264,7 @@ export function runMigrations(db: Database.Database): void {
 
   // Schema versioning
   const currentVersion = (db.pragma('user_version') as Array<{ user_version: number }>)[0].user_version;
-  const TARGET_VERSION = 9;
+  const TARGET_VERSION = 10;
 
   if (currentVersion < 1) {
     db.exec(`
@@ -501,12 +501,25 @@ export function runMigrations(db: Database.Database): void {
     log('store', 'Schema migrated to version 9 (path prefix compression)');
   }
 
+  if (currentVersion < 10) {
+    const hasDomainType = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'domain_type');
+    if (!hasDomainType) {
+      db.exec("ALTER TABLE documents ADD COLUMN domain_type TEXT DEFAULT 'general'");
+    }
+    const hasLastReinforcedAt = (db.prepare("PRAGMA table_info(documents)").all() as Array<{ name: string }>).some(col => col.name === 'last_reinforced_at');
+    if (!hasLastReinforcedAt) {
+      db.exec("ALTER TABLE documents ADD COLUMN last_reinforced_at TEXT");
+    }
+    db.pragma(`user_version = 10`);
+    log('store', 'Schema migrated to version 10 (domain_type, last_reinforced_at columns)');
+  }
+
   void TARGET_VERSION;
 }
 
-export type Stmts = ReturnType<typeof initStatements>;
+export type Stmts = Record<string, any>;
 
-export function initStatements(db: Database.Database) {
+export function initStatements(db: Database.Database): Stmts {
   return {
     insertContent: db.prepare(`INSERT OR IGNORE INTO content (hash, body) VALUES (?, ?)`),
     insertDocument: db.prepare(`
