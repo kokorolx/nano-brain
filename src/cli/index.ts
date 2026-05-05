@@ -140,6 +140,7 @@ export async function main() {
 }
 
 const isMain = process.argv[1]?.endsWith('index.ts') ||
+  process.argv[1]?.endsWith('index.js') ||
   process.argv[1]?.endsWith('cli.js') ||
   import.meta.url === `file://${process.argv[1]}`;
 
