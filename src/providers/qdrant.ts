@@ -20,7 +20,7 @@ export interface QdrantVecStoreOptions {
 // UUID v5-style deterministic ID from hash:seq string.
 // Uses SHA-256 truncated to 128 bits, formatted as UUID.
 // Collision-safe for millions of vectors (vs 32-bit hashStringToInt which collided at 49K).
-function stringToUuid(str: string): string {
+export function stringToUuid(str: string): string {
   const sha = createHash('sha256').update(str).digest('hex');
   return [
     sha.slice(0, 8),
@@ -273,6 +273,25 @@ export class QdrantVecStore implements VectorStore {
         vectorCount: 0,
         error: err instanceof Error ? err.message : String(err),
       };
+    }
+  }
+
+  async batchSetPayload(updates: Array<{ id: string; payload: Record<string, unknown> }>): Promise<void> {
+    if (updates.length === 0) return;
+    await this.ensureCollection();
+
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+      const batch = updates.slice(i, i + BATCH_SIZE);
+      for (const update of batch) {
+        await this.retryOnSocketError(() =>
+          this.client.setPayload(this.collectionName, {
+            payload: update.payload,
+            points: [update.id],
+            wait: true,
+          })
+        );
+      }
     }
   }
 

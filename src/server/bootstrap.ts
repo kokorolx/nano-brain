@@ -10,6 +10,7 @@ import { log, initLogger, setStdioMode } from '../logger.js';
 import { loadCollectionConfig, getCollections, getWorkspaceConfig } from '../collections.js';
 import { parseStorageConfig } from '../storage.js';
 import { createStore, resolveWorkspaceDbPath, setProjectLabelDataDir, migrateToRelativePaths, cleanupDuplicatePaths, getLastCorruptionRecovery, closeAllCachedStores } from '../store.js';
+import { backfillQdrantProjectHash } from '../store/vectors.js';
 import { parseSearchConfig } from '../search.js';
 import { createVectorStore, type VectorStore } from '../vector-store.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth } from '../embeddings.js';
@@ -378,6 +379,13 @@ export async function startServer(options: ServerOptions): Promise<void> {
     readyState.value = true;
     log('server', '✅ Server ready (Phase 2 complete)');
     log('server', '✅ Server ready');
+
+    const currentVectorStore = store.getVectorStore();
+    if (currentVectorStore) {
+      backfillQdrantProjectHash(store.getDb(), currentVectorStore).catch(err => {
+        log('server', 'backfillQdrantProjectHash failed err=' + (err instanceof Error ? err.message : String(err)), 'warn');
+      });
+    }
 
     if (config?.consolidation?.enabled) {
       const consolidationConfig = config.consolidation as import('../types.js').ConsolidationConfig;
