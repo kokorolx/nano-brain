@@ -517,7 +517,7 @@ export function runMigrations(db: Database.Database): void {
   void TARGET_VERSION;
 }
 
-export function initStatements(db: Database.Database): Stmts {
+export function initStatements(db: Database.Database): Record<string, Database.Statement<unknown[], unknown>> {
   return {
     insertContent: db.prepare(`INSERT OR IGNORE INTO content (hash, body) VALUES (?, ?)`),
     insertDocument: db.prepare(`
@@ -1001,4 +1001,4 @@ export function initStatements(db: Database.Database): Stmts {
   };
 }
 
-export type Stmts = Record<string, Database.Statement<unknown[], unknown>>;
+export type Stmts = ReturnType<typeof initStatements>;
