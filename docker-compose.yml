@@ -33,7 +33,7 @@ services:
       - nano-brain-node-modules:/app/node_modules
       - ${NANO_BRAIN_HOME:-~/.nano-brain}:/root/.nano-brain
       - ${NANO_BRAIN_WORKSPACE:-/Users/tamlh/workspaces/NUSTechnology/Projects/zengamingx}:${NANO_BRAIN_WORKSPACE:-/Users/tamlh/workspaces/NUSTechnology/Projects/zengamingx}:ro
-      - ${OPENCODE_SESSION_DIR:-~/.local/share/opencode/storage}:/root/.local/share/opencode/storage:ro
+      - ${OPENCODE_SESSION_DIR:-~/.ai-sandbox/tools/opencode/home/.local/share/opencode/storage}:/root/.local/share/opencode/storage:ro
     environment:
       - NODE_ENV=production
       - OLLAMA_HOST=http://host.docker.internal:11434
