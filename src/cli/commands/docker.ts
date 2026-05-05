@@ -6,6 +6,31 @@ import { log, cliOutput, cliError } from '../../logger.js';
 import type { GlobalOptions } from '../types.js';
 import { NANO_BRAIN_HOME, getHttpHost } from '../utils.js';
 
+function resolveDockerBin(): string | null {
+  const candidates = [
+    '/usr/local/bin/docker',
+    '/usr/bin/docker',
+    '/opt/homebrew/bin/docker',
+    '/Applications/Docker.app/Contents/Resources/bin/docker',
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      try {
+        const v = execSync(`"${p}" --version`, { encoding: 'utf-8' }).trim();
+        if (v.toLowerCase().startsWith('docker version') || v.toLowerCase().startsWith('docker desktop')) return p;
+      } catch {}
+    }
+  }
+  try {
+    const found = execSync('which docker', { encoding: 'utf-8' }).trim();
+    if (found) {
+      const v = execSync(`"${found}" --version`, { encoding: 'utf-8' }).trim();
+      if (v.toLowerCase().startsWith('docker version') || v.toLowerCase().startsWith('docker desktop')) return found;
+    }
+  } catch {}
+  return null;
+}
+
 export async function handleDocker(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   const subcommand = commandArgs[0];
 
@@ -24,16 +49,9 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
     process.exit(1);
   }
 
-  try {
-    const dockerVersion = execSync('docker --version', { encoding: 'utf-8' }).trim();
-    if (!dockerVersion.toLowerCase().includes('docker version') && !dockerVersion.toLowerCase().includes('docker desktop')) {
-      cliError(`"docker" binary is not Docker Desktop: ${dockerVersion}`);
-      cliError('Run: which -a docker — you may have "npm install -g docker" (a doc generator) shadowing Docker.');
-      cliError('Fix: npm uninstall -g docker');
-      process.exit(1);
-    }
-  } catch {
-    cliError('Docker CLI not found. Is Docker Desktop running?');
+  const dockerBin = resolveDockerBin();
+  if (!dockerBin) {
+    cliError('Docker CLI not found. Is Docker Desktop installed?');
     process.exit(1);
   }
 
@@ -70,7 +88,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
 
       cliOutput('Starting nano-brain + qdrant...');
       try {
-        execSync(`docker compose -f "${composeFile}" up -d`, { stdio: 'inherit', env });
+        execSync(`${dockerBin} compose -f "${composeFile}" up -d`, { stdio: 'inherit', env });
       } catch {
         cliError('Failed to start. Is Docker running?');
         process.exit(1);
@@ -102,7 +120,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
     case 'stop': {
       cliOutput('Stopping nano-brain + qdrant...');
       try {
-        execSync(`docker compose -f "${composeFile}" down`, { stdio: 'inherit', env });
+        execSync(`${dockerBin} compose -f "${composeFile}" down`, { stdio: 'inherit', env });
       } catch {
         cliError('Failed to stop containers');
         process.exit(1);
@@ -122,7 +140,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
       const label = service || 'nano-brain + qdrant';
       cliOutput(`Restarting ${label}...`);
       try {
-        execSync(`docker compose -f "${composeFile}" restart ${service}`, { stdio: 'inherit', env });
+        execSync(`${dockerBin} compose -f "${composeFile}" restart ${service}`, { stdio: 'inherit', env });
       } catch {
         cliError('Failed to restart. Is Docker running?');
         process.exit(1);
@@ -157,7 +175,7 @@ export async function handleDocker(globalOpts: GlobalOptions, commandArgs: strin
       let containerOutput = '';
       try {
         containerOutput = execSync(
-          `docker compose -f "${composeFile}" ps --format json 2>/dev/null`,
+          `${dockerBin} compose -f "${composeFile}" ps --format json 2>/dev/null`,
           { env, encoding: 'utf-8' }
         ).trim();
       } catch {
