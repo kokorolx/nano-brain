@@ -270,8 +270,6 @@ export async function startServer(options: ServerOptions): Promise<void> {
       await consolidationWorker.stop();
     }
 
-    await new Promise(resolve => setTimeout(resolve, 5000));
-
     for (const [_id, session] of sseSessions) {
       try { await session.transport.close(); } catch {}
     }

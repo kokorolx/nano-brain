@@ -12,11 +12,7 @@ import type { Store } from '../types.js';
 const fileWriteQueues = new Map<string, Promise<void>>();
 export function sequentialFileAppend(filePath: string, data: string): void {
   const prev = fileWriteQueues.get(filePath) ?? Promise.resolve();
-  const next = prev.then(() => {
-    fs.appendFileSync(filePath, data, 'utf-8');
-  }).catch(() => {
-    // Ensure queue continues even if a write fails
-  });
+  const next = prev.then(() => fs.promises.appendFile(filePath, data, 'utf-8')).catch(() => {});
   fileWriteQueues.set(filePath, next);
 }
 

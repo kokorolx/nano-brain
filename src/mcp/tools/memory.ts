@@ -552,7 +552,7 @@ export function registerMemoryTools(server: McpServer, ctx: McpToolContext): voi
             extractEntitiesFromMemory(content, llmProvider).then(extractionResult => {
               if (extractionResult.entities.length > 0 || extractionResult.relationships.length > 0) {
                 for (const entity of extractionResult.entities) {
-                  store.insertOrUpdateEntity({
+                  effectiveStore.insertOrUpdateEntity({
                     name: entity.name,
                     type: entity.type as 'tool' | 'service' | 'person' | 'concept' | 'decision' | 'file' | 'library',
                     description: entity.description,
@@ -563,10 +563,10 @@ export function registerMemoryTools(server: McpServer, ctx: McpToolContext): voi
                 }
 
                 for (const rel of extractionResult.relationships) {
-                  const sourceEntity = store.getEntityByName(rel.sourceName, undefined, capturedProjectHash);
-                  const targetEntity = store.getEntityByName(rel.targetName, undefined, capturedProjectHash);
+                  const sourceEntity = effectiveStore.getEntityByName(rel.sourceName, undefined, capturedProjectHash);
+                  const targetEntity = effectiveStore.getEntityByName(rel.targetName, undefined, capturedProjectHash);
                   if (sourceEntity && targetEntity) {
-                    store.insertEdge({
+                    effectiveStore.insertEdge({
                       sourceId: sourceEntity.id,
                       targetId: targetEntity.id,
                       edgeType: rel.edgeType as 'uses' | 'depends_on' | 'decided_by' | 'related_to' | 'replaces' | 'configured_with',
@@ -589,6 +589,7 @@ export function registerMemoryTools(server: McpServer, ctx: McpToolContext): voi
           if (llmProviderForCategorization) {
             const capturedDocId = docId;
             const tagStore = effectiveStore;
+            const capturedWsResult = wsResult;
             asyncCategorizationPending = true;
             categorizeMemory(content, llmProviderForCategorization, categorizationConfig).then(llmTags => {
               if (llmTags.length > 0) {
@@ -597,6 +598,10 @@ export function registerMemoryTools(server: McpServer, ctx: McpToolContext): voi
               }
             }).catch(err => {
               log('mcp', 'LLM categorization failed: ' + (err instanceof Error ? err.message : String(err)));
+            }).finally(() => {
+              if (capturedWsResult.needsClose) {
+                try { capturedWsResult.store.close(); } catch {}
+              }
             });
           }
         }
@@ -611,7 +616,7 @@ export function registerMemoryTools(server: McpServer, ctx: McpToolContext): voi
         };
       } finally {
         if (wsResult.needsClose && !asyncCategorizationPending) {
-          wsResult.store.close()
+          wsResult.store.close();
         }
       }
     }

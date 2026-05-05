@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import * as crypto from 'crypto';
 import * as http from 'http';
 import { randomUUID } from 'crypto';
@@ -38,10 +39,21 @@ export interface HttpContext {
   eventStore: SqliteEventStore;
 }
 
+const MAX_REQUEST_BODY_SIZE = 1024 * 1024; // 1MB
+
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let size = 0;
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_REQUEST_BODY_SIZE) {
+        req.destroy();
+        reject(new Error('Request body too large'));
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', () => resolve(Buffer.concat(chunks).toString()));
     req.on('error', reject);
   });
@@ -67,7 +79,7 @@ export async function handleRequest(
   if (req.method === 'GET' && pathname === '/health') {
     let version = 'unknown';
     try {
-      const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'package.json');
+      const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json');
       version = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
     } catch {}
     const recovery = getLastCorruptionRecovery();
@@ -111,7 +123,7 @@ export async function handleRequest(
     const modelStatus = store.modelStatus;
     let statusVersion = 'unknown';
     try {
-      const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'package.json');
+      const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json');
       statusVersion = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
     } catch {}
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -409,7 +421,7 @@ export async function handleRequest(
   }
 
   if (req.url?.startsWith('/web/') || req.url === '/web') {
-    const webDir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'dist', 'web');
+    const webDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'web');
     let filePath = req.url === '/web' || req.url === '/web/'
       ? path.join(webDir, 'index.html')
       : path.join(webDir, req.url.slice(5));
@@ -433,12 +445,12 @@ export async function handleRequest(
     };
 
     try {
-      const content = fs.readFileSync(resolved);
+      const content = await fs.promises.readFile(resolved);
       res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
       res.end(content);
     } catch {
       try {
-        const indexContent = fs.readFileSync(path.join(webDir, 'index.html'));
+        const indexContent = await fs.promises.readFile(path.join(webDir, 'index.html'));
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(indexContent);
       } catch {
@@ -452,7 +464,7 @@ export async function handleRequest(
   if (req.method === 'GET' && pathname === '/api/v1/status') {
     let version = 'unknown';
     try {
-      const pkgPath = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'package.json');
+      const pkgPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json');
       version = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version;
     } catch {}
     const workspaces = deps.allWorkspaces
