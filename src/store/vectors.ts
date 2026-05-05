@@ -230,7 +230,8 @@ export function makeVectorMethods(
                      d.centrality, d.cluster_id, d.superseded_by, d.modified_at,
                      d.created_at as createdAt,
                      d.access_count, d.last_accessed_at as lastAccessedAt,
-                     substr(c.body, 1, 700) as snippet
+                     substr(c.body, 1, 700) as snippet,
+                     LENGTH(c.body) as char_length
               FROM documents d
               LEFT JOIN content c ON c.hash = d.hash
               WHERE d.hash = ? AND d.active = 1
@@ -269,7 +270,7 @@ export function makeVectorMethods(
               access_count: row.access_count as number | undefined,
               lastAccessedAt: row.lastAccessedAt as string | null | undefined,
               createdAt: row.createdAt as string | undefined,
-              charLength: (row.snippet as string | null)?.length,
+              charLength: row.char_length as number | undefined,
             });
           }
 
