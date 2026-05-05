@@ -418,6 +418,8 @@ export function createStore(dbPath: string): Store {
   }
   storeCreating.add(resolvedPath);
 
+  try {
+
   log('store', 'createStore dbPath=' + resolvedPath);
 
   const recoveryResult = checkAndRecoverDB(resolvedPath, {
@@ -449,20 +451,6 @@ export function createStore(dbPath: string): Store {
 
   applySchema(db);
   runMigrations(db);
-
-  if (vecAvailable) {
-    try {
-      db.exec(`
-        CREATE VIRTUAL TABLE IF NOT EXISTS vectors_vec USING vec0(
-          hash_seq TEXT PRIMARY KEY,
-          embedding float[768] distance_metric=cosine
-        );
-      `);
-    } catch (err) {
-      log('store', `Failed to create vector table: ${err instanceof Error ? err.message : String(err)}`, 'warn');
-      vecAvailable = false;
-    }
-  }
 
   const stmts = initStatements(db);
 
@@ -1038,4 +1026,8 @@ export function createStore(dbPath: string): Store {
   storeCreating.delete(resolvedPath);
 
   return store;
+
+  } finally {
+    storeCreating.delete(resolvedPath);
+  }
 }

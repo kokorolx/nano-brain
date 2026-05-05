@@ -77,7 +77,7 @@ export function makeDocumentMethods(
         doc.active ? 1 : 0,
         doc.projectHash ?? 'global'
       );
-      const existing = stmts.findDocumentByPath.get(relativePath) as { id: number } | undefined;
+      const existing = stmts.findDocumentByPath.get(relativePath, doc.collection) as { id: number } | undefined;
       if (existing) return existing.id;
       const rowid = Number(result.lastInsertRowid);
       if (rowid > 0) return rowid;
@@ -93,7 +93,10 @@ export function makeDocumentMethods(
 
       if (!row) {
         const relativePath = toRel(pathOrDocid);
-        row = stmts.findDocumentByPath.get(relativePath) as Record<string, unknown> | undefined;
+        row = db.prepare(`
+          SELECT id, collection, path, title, hash, agent, created_at as createdAt, modified_at as modifiedAt, active, project_hash as projectHash
+          FROM documents WHERE path = ? AND active = 1 LIMIT 1
+        `).get(relativePath) as Record<string, unknown> | undefined;
       }
 
       if (!row) return null;
@@ -294,15 +297,12 @@ export function makeDocumentMethods(
 
         if (docs.length > 0) {
           const uniqueHashes = [...new Set(docs.map(d => d.hash))];
-          const orphanedHashes: string[] = [];
-          for (const hash of uniqueHashes) {
-            const otherUses = db.prepare(
-              'SELECT COUNT(*) as count FROM documents WHERE hash = ? AND project_hash != ?'
-            ).get(hash, projectHash) as { count: number };
-            if (otherUses.count === 0) {
-              orphanedHashes.push(hash);
-            }
-          }
+          const placeholders = uniqueHashes.map(() => '?').join(',');
+          const referencedRows = db.prepare(
+            `SELECT hash FROM documents WHERE hash IN (${placeholders}) AND project_hash != ? GROUP BY hash`
+          ).all(...uniqueHashes, projectHash) as Array<{ hash: string }>;
+          const nonOrphans = new Set(referencedRows.map(r => r.hash));
+          const orphanedHashes = uniqueHashes.filter(h => !nonOrphans.has(h));
 
           for (const hash of orphanedHashes) {
             const cvResult = db.prepare('DELETE FROM content_vectors WHERE hash = ?').run(hash);
