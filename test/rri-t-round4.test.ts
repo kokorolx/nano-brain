@@ -619,17 +619,13 @@ describe('D5: Data Integrity — Concurrent Writes and Consistency', () => {
 
 describe('D6: Infrastructure — Server and Provider resilience', () => {
   it('TC-040: SSE onclose pattern prevents session leaks', async () => {
-    // Verify the pattern in server.ts: onclose registered before connect
-    const serverSrc = fs.readFileSync(
-      path.join(__dirname, '..', 'src', 'server.ts'), 'utf-8'
+    const sseSrc = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'http', 'sse.ts'), 'utf-8'
     );
 
-    // The fix ensures onclose is registered BEFORE connect()
-    // Check that the cleanup pattern exists
-    expect(serverSrc).toContain('onclose');
+    expect(sseSrc).toContain('onclose');
 
-    // Also verify try/catch wrapping around transport.connect or similar
-    const hasCleanupPattern = serverSrc.includes('try') && serverSrc.includes('catch');
+    const hasCleanupPattern = sseSrc.includes('try') && sseSrc.includes('catch');
     expect(hasCleanupPattern).toBe(true);
   });
 
