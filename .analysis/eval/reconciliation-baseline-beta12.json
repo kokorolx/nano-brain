@@ -1,0 +1,37 @@
+{
+  "version": "2026.8.1-beta.12",
+  "test_date": "2026-05-05",
+  "topic": "reconciliation-test-1777994125",
+  "description": "Baseline before ReconciliationRunner (beta.14). Two conflicting docs written — old (2024/OldLibrary) and new (2026/NewLibrary). On beta.12, consolidation_log has no applied_at/applied_error columns and decisions are never executed.",
+  "schema": {
+    "consolidation_log_columns": ["id","document_id","action","reason","target_doc_id","model","tokens_used","created_at"],
+    "has_applied_at": false,
+    "has_applied_error": false
+  },
+  "docs_written": {
+    "note": "Both docs appended to same daily file — id=20447 (/root/.nano-brain/memory/2026-05-05.md)",
+    "old_doc_content": "[2024] For reconciliation-test-1777994125: use OldLibrary v1. This was the recommended approach in 2024.",
+    "new_doc_content": "[2026] For reconciliation-test-1777994125: use NewLibrary v3. OldLibrary v1 is deprecated since 2025, migrate immediately."
+  },
+  "search_results": {
+    "query": "reconciliation-test-1777994125 OldLibrary NewLibrary",
+    "results": [
+      {"id": "20447", "score": 0.0574, "supersededBy": null, "path": "/root/.nano-brain/memory/2026-05-05.md"},
+      {"id": "1",     "score": 0.0497, "supersededBy": null, "path": "/root/.nano-brain/memory/2026-03-25.md"},
+      {"id": "7767",  "score": 0.0468, "supersededBy": null, "path": "/root/.nano-brain/memory/2026-04-03.md"},
+      {"id": "4064",  "score": 0.0339, "supersededBy": null, "path": "ai/test-case/rri-t/payment-failure-reason/05-analyze.md"},
+      {"id": "5",     "score": 0.0328, "supersededBy": null, "path": "/root/.nano-brain/memory/2026-03-29.md"}
+    ]
+  },
+  "consolidation_log": {
+    "total_entries": 0,
+    "delete_entries": 0,
+    "entries_with_applied_at": "N/A - column does not exist"
+  },
+  "expected_after_beta14": {
+    "consolidation_log_has_applied_at": true,
+    "consolidation_log_has_applied_error": true,
+    "old_doc_superseded_by_new_doc": true,
+    "search_top_result_is_newer_doc": true
+  }
+}
