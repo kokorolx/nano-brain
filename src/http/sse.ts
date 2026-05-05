@@ -12,16 +12,27 @@ export async function handleSseConnect(
 ): Promise<void> {
   const transport = new SSEServerTransport('/messages', res);
 
+  const heartbeatInterval = setInterval(() => {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(': ping\n\n');
+    }
+  }, 30_000);
+
   transport.onclose = () => {
+    clearInterval(heartbeatInterval);
     sseSessions.delete(transport.sessionId);
     log('server', `SSE client disconnected sessionId=${transport.sessionId}`);
   };
+
+  res.on('close', () => clearInterval(heartbeatInterval));
+  res.on('error', () => clearInterval(heartbeatInterval));
 
   try {
     sseSessions.set(transport.sessionId, { transport, server: clientServer });
     log('server', `SSE client connected sessionId=${transport.sessionId}`);
     await clientServer.connect(transport);
   } catch (err) {
+    clearInterval(heartbeatInterval);
     sseSessions.delete(transport.sessionId);
     log('server', `SSE client connect failed sessionId=${transport.sessionId}: ${err instanceof Error ? err.message : String(err)}`, 'error');
   }

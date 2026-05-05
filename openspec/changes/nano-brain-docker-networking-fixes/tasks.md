@@ -39,11 +39,11 @@
 
 ## 5. SSE + Streamable HTTP Heartbeat (Bug 6)
 
-- [ ] 5.1 In `src/http/sse.ts` `handleSseConnect`: add `const heartbeatInterval = setInterval(() => { if (!res.writableEnded && !res.destroyed) res.write(': ping\n\n'); }, 30_000)`
-- [ ] 5.2 In `src/http/sse.ts`: add `res.on('close', () => clearInterval(heartbeatInterval))` and `res.on('error', () => clearInterval(heartbeatInterval))`
-- [ ] 5.3 In `src/http/sse.ts`: add `transport.onclose = () => clearInterval(heartbeatInterval)` after transport is created
-- [ ] 5.4 In `src/http/routes.ts`: locate the Streamable HTTP connection handler and apply the identical heartbeat + cleanup pattern
-- [ ] 5.5 Run `npx tsc --noEmit` — must be clean
+- [x] 5.1 In `src/http/sse.ts` `handleSseConnect`: add `const heartbeatInterval = setInterval(() => { if (!res.writableEnded && !res.destroyed) res.write(': ping\n\n'); }, 30_000)`
+- [x] 5.2 In `src/http/sse.ts`: add `res.on('close', () => clearInterval(heartbeatInterval))` and `res.on('error', () => clearInterval(heartbeatInterval))`
+- [x] 5.3 In `src/http/sse.ts`: add `transport.onclose = () => clearInterval(heartbeatInterval)` after transport is created
+- [x] 5.4 In `src/http/routes.ts`: locate the Streamable HTTP connection handler and apply the identical heartbeat + cleanup pattern
+- [x] 5.5 Run `npx tsc --noEmit` — must be clean
 
 ## 6. Verification
 
