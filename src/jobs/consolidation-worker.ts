@@ -2,6 +2,7 @@ import { log } from '../logger.js';
 import type { Store } from '../types.js';
 import { ConsolidationAgent } from './consolidation.js';
 import type { LLMProvider } from './consolidation.js';
+import { ReconciliationRunner } from './reconciliation.js';
 
 export interface ConsolidationWorkerOptions {
   store: Store;
@@ -15,6 +16,7 @@ export class ConsolidationWorker {
   private timer: NodeJS.Timeout | null = null;
   private currentJobPromise: Promise<void> | null = null;
   private agent: ConsolidationAgent;
+  private reconciler: ReconciliationRunner;
   private pollingIntervalMs: number;
 
   constructor(private options: ConsolidationWorkerOptions) {
@@ -23,6 +25,7 @@ export class ConsolidationWorker {
       llmProvider: options.llmProvider,
       maxMemoriesPerCycle: options.maxCandidates ?? 5,
     });
+    this.reconciler = new ReconciliationRunner(options.store);
   }
 
   start(): void {
@@ -98,6 +101,9 @@ export class ConsolidationWorker {
     try {
       await this.currentJobPromise;
       log('consolidation-worker', 'Job ' + job.id + ' completed');
+      this.reconciler.applyPendingDecisions().catch((err: unknown) => {
+        console.error('[ReconciliationRunner] failed:', err);
+      });
       return true;
     } catch (err) {
       log('consolidation-worker', 'Job ' + job.id + ' failed: ' + (err instanceof Error ? err.message : String(err)));

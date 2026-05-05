@@ -264,7 +264,7 @@ export function runMigrations(db: Database.Database): void {
 
   // Schema versioning
   const currentVersion = (db.pragma('user_version') as Array<{ user_version: number }>)[0].user_version;
-  const TARGET_VERSION = 10;
+  const TARGET_VERSION = 11;
 
   if (currentVersion < 1) {
     db.exec(`
@@ -512,6 +512,20 @@ export function runMigrations(db: Database.Database): void {
     }
     db.pragma(`user_version = 10`);
     log('store', 'Schema migrated to version 10 (domain_type, last_reinforced_at columns)');
+  }
+
+  if (currentVersion < 11) {
+    const hasAppliedAt = (db.prepare("PRAGMA table_info(consolidation_log)").all() as Array<{ name: string }>).some(col => col.name === 'applied_at');
+    if (!hasAppliedAt) {
+      db.exec("ALTER TABLE consolidation_log ADD COLUMN applied_at TEXT DEFAULT NULL");
+    }
+    const hasAppliedError = (db.prepare("PRAGMA table_info(consolidation_log)").all() as Array<{ name: string }>).some(col => col.name === 'applied_error');
+    if (!hasAppliedError) {
+      db.exec("ALTER TABLE consolidation_log ADD COLUMN applied_error TEXT");
+    }
+    db.exec("CREATE INDEX IF NOT EXISTS idx_consolidation_log_pending ON consolidation_log(action, applied_at)");
+    db.pragma(`user_version = 11`);
+    log('store', 'Schema migrated to version 11 (consolidation_log applied_at, applied_error columns)');
   }
 
   void TARGET_VERSION;
@@ -998,6 +1012,11 @@ export function initStatements(db: Database.Database): Record<string, Database.S
       ORDER BY centrality DESC
       LIMIT 10
     `),
+    getPendingConsolidationActions: db.prepare(`SELECT id, document_id, action, target_doc_id FROM consolidation_log WHERE action = 'DELETE' AND applied_at IS NULL AND target_doc_id IS NOT NULL LIMIT 50`),
+    markConsolidationLogApplied: db.prepare(`UPDATE consolidation_log SET applied_at = datetime('now') WHERE id = ?`),
+    markConsolidationLogError: db.prepare(`UPDATE consolidation_log SET applied_at = datetime('now'), applied_error = ? WHERE id = ?`),
+    markNoopLogsApplied: db.prepare(`UPDATE consolidation_log SET applied_at = datetime('now') WHERE action IN ('ADD', 'NOOP', 'FAILED') AND applied_at IS NULL`),
+    getDocumentActiveStatus: db.prepare(`SELECT id, active, superseded_by FROM documents WHERE id = ?`),
   };
 }
 
