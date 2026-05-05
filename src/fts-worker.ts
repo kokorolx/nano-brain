@@ -47,10 +47,8 @@ const dbPath = workerData.dbPath as string;
 const db = new Database(dbPath, { readonly: true });
 db.pragma('busy_timeout = 0');
 
-// Prepared statement: look up doc id+hash by path for enrichment.
-// Uses the indexed (path) column — fast single-row lookup, no JOIN with FTS.
 const enrichByPathStmt = db.prepare(`
-  SELECT id, hash FROM documents WHERE path = ? AND active = 1 LIMIT 1
+  SELECT id, hash, created_at FROM documents WHERE path = ? AND active = 1 LIMIT 1
 `);
 
 // Try to load sqlite-vec extension for vector search
@@ -103,18 +101,17 @@ function searchFTS(query: string, options: StoreSearchOptions = {}): SearchResul
     const coll = slashIdx >= 0 ? row.filepath.substring(0, slashIdx) : '';
     const path = slashIdx >= 0 ? row.filepath.substring(slashIdx + 1) : row.filepath;
 
-    // Enrich: look up id + hash by path using a single indexed SELECT.
-    // This is safe even on a read-only connection — no WAL lock contention.
     let docId = '';
     let docHash = '';
+    let createdAt: string | undefined;
     try {
-      const docRow = enrichByPathStmt.get(path) as { id: number; hash: string } | undefined;
+      const docRow = enrichByPathStmt.get(path) as { id: number; hash: string; created_at: string } | undefined;
       if (docRow) {
         docId = String(docRow.id);
         docHash = docRow.hash.substring(0, 6);
+        createdAt = docRow.created_at;
       }
     } catch {
-      // Ignore enrichment failure — return result without id/docid
     }
 
     return {
@@ -127,6 +124,7 @@ function searchFTS(query: string, options: StoreSearchOptions = {}): SearchResul
       startLine: 0,
       endLine: 0,
       docid: docHash,
+      createdAt,
     };
   });
 }

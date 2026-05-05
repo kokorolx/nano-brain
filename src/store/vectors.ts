@@ -60,16 +60,18 @@ export function makeVectorMethods(
 
       if (useExternalStore) {
         let projectHash: string | undefined;
+        let createdAt: string | undefined;
         try {
-          const docRow = db.prepare(`SELECT project_hash FROM documents WHERE hash = ? LIMIT 1`).get(hash) as { project_hash: string } | undefined;
+          const docRow = db.prepare(`SELECT project_hash, created_at FROM documents WHERE hash = ? LIMIT 1`).get(hash) as { project_hash: string; created_at: string } | undefined;
           projectHash = docRow?.project_hash ?? undefined;
+          createdAt = docRow?.created_at ?? undefined;
         } catch {
         }
 
         const point: VectorPoint = {
           id: `${hash}:${seq}`,
           embedding,
-          metadata: { hash, seq, pos, model, projectHash },
+          metadata: { hash, seq, pos, model, projectHash, createdAt },
         };
         externalVectorStore.upsert(point).catch((err) => {
           log('store', 'insertEmbedding external vector store upsert failed hash=' + hash.substring(0, 8));
@@ -226,6 +228,7 @@ export function makeVectorMethods(
             const row = db.prepare(`
               SELECT d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
                      d.centrality, d.cluster_id, d.superseded_by, d.modified_at,
+                     d.created_at as createdAt,
                      d.access_count, d.last_accessed_at as lastAccessedAt,
                      substr(c.body, 1, 700) as snippet
               FROM documents d
@@ -265,6 +268,8 @@ export function makeVectorMethods(
               supersededBy: row.superseded_by as number | null | undefined,
               access_count: row.access_count as number | undefined,
               lastAccessedAt: row.lastAccessedAt as string | null | undefined,
+              createdAt: row.createdAt as string | undefined,
+              charLength: (row.snippet as string | null)?.length,
             });
           }
 

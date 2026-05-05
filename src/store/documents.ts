@@ -203,10 +203,13 @@ export function makeDocumentMethods(
           d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
           d.centrality, d.cluster_id, d.superseded_by,
           d.access_count, d.last_accessed_at as lastAccessedAt,
+          d.created_at as createdAt,
+          LENGTH(c.body) as charLength,
           snippet(documents_fts, 2, '<mark>', '</mark>', '...', 64) as snippet,
           bm25(documents_fts) as score
         FROM documents_fts f
         JOIN documents d ON f.filepath = d.collection || '/' || d.path
+        LEFT JOIN content c ON c.hash = d.hash
         WHERE documents_fts MATCH ? AND d.active = 1
       `;
       const params: (string | number)[] = [sanitized];
@@ -265,6 +268,8 @@ export function makeDocumentMethods(
         supersededBy: row.superseded_by as number | null | undefined,
         access_count: row.access_count as number | undefined,
         lastAccessedAt: row.lastAccessedAt as string | null | undefined,
+        createdAt: row.createdAt as string | undefined,
+        charLength: row.charLength as number | undefined,
       }));
     },
 

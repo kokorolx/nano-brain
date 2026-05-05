@@ -19,6 +19,8 @@ export interface SearchResult {
   access_count?: number;
   lastAccessedAt?: string | null;
   tags?: string[];
+  createdAt?: string;
+  charLength?: number;
 }
 
 export interface Document {

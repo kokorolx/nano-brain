@@ -165,6 +165,12 @@ export function rrfFuse(
       const existing = scoreMap.get(result.id);
       if (existing) {
         existing.score += rrfScore;
+        if (!existing.result.createdAt && result.createdAt) {
+          existing.result.createdAt = result.createdAt;
+        }
+        if (!existing.result.charLength && result.charLength) {
+          existing.result.charLength = result.charLength;
+        }
       } else {
         scoreMap.set(result.id, {
           result: { ...result },

@@ -22,6 +22,7 @@ export interface VectorPointMetadata {
   model: string;
   collection?: string;
   projectHash?: string;
+  createdAt?: string;
 }
 
 export interface VectorPoint {
