@@ -77,32 +77,33 @@ export async function handleWrite(globalOpts: GlobalOptions, commandArgs: string
   let tagInfo = ''
   const store = await createStore(globalOpts.dbPath)
 
+  const fileContent = fs.readFileSync(targetPath, 'utf-8')
+  const title = path.basename(targetPath, path.extname(targetPath))
+  const hash = crypto.createHash('sha256').update(fileContent).digest('hex')
+  store.insertContent(hash, fileContent)
+  const stats = fs.statSync(targetPath)
+  const newDocId = store.insertDocument({
+    collection: 'memory',
+    path: targetPath,
+    title,
+    hash,
+    createdAt: stats.birthtime.toISOString(),
+    modifiedAt: stats.mtime.toISOString(),
+    active: true,
+    projectHash,
+  })
+
   if (supersedes) {
     const targetDoc = store.findDocument(supersedes)
     if (targetDoc) {
-      store.supersedeDocument(targetDoc.id, 0)
+      store.supersedeDocument(targetDoc.id, newDocId)
     } else {
       supersedeWarning = `\n⚠️ Supersede target not found: ${supersedes}`
     }
   }
 
   if (tags && tags.length > 0) {
-    const fileContent = fs.readFileSync(targetPath, 'utf-8')
-    const title = path.basename(targetPath, path.extname(targetPath))
-    const hash = crypto.createHash('sha256').update(fileContent).digest('hex')
-    store.insertContent(hash, fileContent)
-    const stats = fs.statSync(targetPath)
-    const docId = store.insertDocument({
-      collection: 'memory',
-      path: targetPath,
-      title,
-      hash,
-      createdAt: stats.birthtime.toISOString(),
-      modifiedAt: stats.mtime.toISOString(),
-      active: true,
-      projectHash,
-    })
-    store.insertTags(docId, tags)
+    store.insertTags(newDocId, tags)
     tagInfo = `\n📌 Tags: ${tags.join(', ')}`
   }
 

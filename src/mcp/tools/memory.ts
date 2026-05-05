@@ -473,16 +473,6 @@ export function registerMemoryTools(server: McpServer, ctx: McpToolContext): voi
 
         sequentialFileAppend(targetPath, entry);
 
-        let supersedeWarning = '';
-        if (supersedes) {
-          const targetDoc = effectiveStore.findDocument(supersedes);
-          if (targetDoc) {
-            effectiveStore.supersedeDocument(targetDoc.id, 0);
-          } else {
-            supersedeWarning = `\n⚠️ Supersede target not found: ${supersedes}`;
-          }
-        }
-
         const fileContent = fs.readFileSync(targetPath, 'utf-8');
         const title = path.basename(targetPath, path.extname(targetPath));
         const hash = crypto.createHash('sha256').update(fileContent).digest('hex');
@@ -498,6 +488,16 @@ export function registerMemoryTools(server: McpServer, ctx: McpToolContext): voi
           active: true,
           projectHash: effectiveProjectHash,
         });
+
+        let supersedeWarning = '';
+        if (supersedes) {
+          const targetDoc = effectiveStore.findDocument(supersedes);
+          if (targetDoc) {
+            effectiveStore.supersedeDocument(targetDoc.id, docId);
+          } else {
+            supersedeWarning = `\n⚠️ Supersede target not found: ${supersedes}`;
+          }
+        }
 
         let tagInfo = '';
         const autoTags = categorize(content);

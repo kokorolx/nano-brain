@@ -274,7 +274,7 @@ export const DEFAULT_SEARCH_CONFIG: SearchConfig = {
     enabled: true,
   },
   centrality_weight: 0.1,
-  supersede_demotion: 0.3,
+  supersede_demotion: 0.05,
   usage_boost_weight: 0.15,
 };
 
