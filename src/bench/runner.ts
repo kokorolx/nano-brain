@@ -212,9 +212,21 @@ async function measureQuality(
 
 async function insertDocs(
   dbPath: string,
-  fixturesDir: string
+  fixturesDir: string,
+  ollamaUrl: string | null
 ): Promise<LatencyStats> {
   const store = createStore(dbPath);
+  store.ensureVecTable(768);
+
+  let embedder: { embed(text: string): Promise<{ embedding: number[] }>; dispose(): void } | null = null;
+  if (ollamaUrl) {
+    try {
+      embedder = await createEmbeddingProvider({ embeddingConfig: { url: ollamaUrl } });
+    } catch {
+      embedder = null;
+    }
+  }
+
   const docsDir = path.join(fixturesDir, 'docs');
   const docFiles = fs.readdirSync(docsDir).filter(f => f.endsWith('.md'));
   const insertTimes: number[] = [];
@@ -240,9 +252,14 @@ async function insertDocs(
         active: true,
         projectHash,
       });
+      if (embedder) {
+        const { embedding } = await embedder.embed(content);
+        store.insertEmbedding(hash, 0, 0, embedding, 'nomic-embed-text');
+      }
       insertTimes.push(Date.now() - t0);
     }
   } finally {
+    embedder?.dispose();
     store.close();
   }
 
@@ -427,7 +444,7 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
       }
 
       console.log('  Inserting docs...');
-      const insertLatency = await insertDocs(testDbPath, fixturesDir);
+      const insertLatency = await insertDocs(testDbPath, fixturesDir, ollamaUrl);
 
       console.log('  Running quality metrics...');
       const { quality, latency: queryLatency } = await measureQuality(testDbPath, groundTruth, ollamaUrl);
