@@ -39,13 +39,18 @@ function collectMetricRows(current: BenchResult, baseline: BenchResult, scale: s
   if (!cur || !bas) return rows;
 
   const metrics: Array<{ name: string; cur: number; bas: number; thr: { warn: number; fail: number } }> = [
-    { name: `P@5 hybrid (scale=${scale})`, cur: cur.quality.hybrid?.mean_p5 ?? 0, bas: bas.quality.hybrid?.mean_p5 ?? 0, thr: THRESHOLDS.p5 },
-    { name: `R@10 hybrid (scale=${scale})`, cur: cur.quality.hybrid?.mean_r10 ?? 0, bas: bas.quality.hybrid?.mean_r10 ?? 0, thr: THRESHOLDS.r10 },
-    { name: `MRR hybrid (scale=${scale})`, cur: cur.quality.hybrid?.mean_mrr ?? 0, bas: bas.quality.hybrid?.mean_mrr ?? 0, thr: THRESHOLDS.mrr },
     { name: `P@5 fts (scale=${scale})`, cur: cur.quality.fts.mean_p5, bas: bas.quality.fts.mean_p5, thr: THRESHOLDS.p5 },
     { name: `R@10 fts (scale=${scale})`, cur: cur.quality.fts.mean_r10, bas: bas.quality.fts.mean_r10, thr: THRESHOLDS.r10 },
     { name: `MRR fts (scale=${scale})`, cur: cur.quality.fts.mean_mrr, bas: bas.quality.fts.mean_mrr, thr: THRESHOLDS.mrr },
   ];
+
+  if (cur.quality.hybrid !== null || bas.quality.hybrid !== null) {
+    metrics.unshift(
+      { name: `P@5 hybrid (scale=${scale})`, cur: cur.quality.hybrid?.mean_p5 ?? 0, bas: bas.quality.hybrid?.mean_p5 ?? 0, thr: THRESHOLDS.p5 },
+      { name: `R@10 hybrid (scale=${scale})`, cur: cur.quality.hybrid?.mean_r10 ?? 0, bas: bas.quality.hybrid?.mean_r10 ?? 0, thr: THRESHOLDS.r10 },
+      { name: `MRR hybrid (scale=${scale})`, cur: cur.quality.hybrid?.mean_mrr ?? 0, bas: bas.quality.hybrid?.mean_mrr ?? 0, thr: THRESHOLDS.mrr },
+    );
+  }
 
   for (const m of metrics) {
     const drop = m.bas - m.cur;
@@ -116,8 +121,20 @@ export function runCompare(opts: CompareOptions): number {
     return 1;
   }
 
-  const current = JSON.parse(fs.readFileSync(resultPath, 'utf-8')) as BenchResult;
-  const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8')) as BenchResult;
+  let current: BenchResult;
+  let baseline: BenchResult;
+  try {
+    current = JSON.parse(fs.readFileSync(resultPath, 'utf-8')) as BenchResult;
+  } catch (err) {
+    console.error(`Failed to parse ${resultPath}: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  try {
+    baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8')) as BenchResult;
+  } catch (err) {
+    console.error(`Failed to parse ${baselinePath}: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
 
   if (current.corpus_hash !== baseline.corpus_hash) {
     console.warn(`Warning: Corpus hash mismatch — results may not be comparable`);
@@ -156,7 +173,7 @@ export function runCompare(opts: CompareOptions): number {
   if (savePath) {
     if (fs.existsSync(savePath) && !force) {
       console.error(`Error: ${savePath} already exists, use --force to overwrite`);
-      return 1;
+      return 3;
     }
     fs.mkdirSync(path.dirname(savePath), { recursive: true });
     fs.copyFileSync(resultPath, savePath);

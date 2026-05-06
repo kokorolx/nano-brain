@@ -157,30 +157,33 @@ async function measureQuality(
 
   const docIdFromPath = (p: string): string => path.basename(p, '.md');
 
-  for (const gt of groundTruth) {
-    const t0fts = Date.now();
-    const ftsResults = store.searchFTS(gt.query, { limit: 10 });
-    ftsQueryTimes.push(Date.now() - t0fts);
-    const ftsIds = ftsResults.map(r => docIdFromPath(r.path));
-    ftsPerQuery.push({ query: gt.query, ...computeQueryMetrics(ftsIds, gt.relevant_doc_ids) });
+  try {
+    for (const gt of groundTruth) {
+      const t0fts = Date.now();
+      const ftsResults = store.searchFTS(gt.query, { limit: 10 });
+      ftsQueryTimes.push(Date.now() - t0fts);
+      const ftsIds = ftsResults.map(r => docIdFromPath(r.path));
+      ftsPerQuery.push({ query: gt.query, ...computeQueryMetrics(ftsIds, gt.relevant_doc_ids) });
 
-    if (embedder) {
-      const t0vec = Date.now();
-      const { embedding } = await embedder.embed(gt.query);
-      const vecResults = await store.searchVecAsync(gt.query, embedding, { limit: 10 });
-      vecQueryTimes.push(Date.now() - t0vec);
-      const vecIds = vecResults.map(r => docIdFromPath(r.path));
-      vecPerQuery.push({ query: gt.query, ...computeQueryMetrics(vecIds, gt.relevant_doc_ids) });
+      if (embedder) {
+        const t0vec = Date.now();
+        const { embedding } = await embedder.embed(gt.query);
+        const vecResults = await store.searchVecAsync(gt.query, embedding, { limit: 10 });
+        vecQueryTimes.push(Date.now() - t0vec);
+        const vecIds = vecResults.map(r => docIdFromPath(r.path));
+        vecPerQuery.push({ query: gt.query, ...computeQueryMetrics(vecIds, gt.relevant_doc_ids) });
 
-      const t0hyb = Date.now();
-      const hybResults = await hybridSearch(store, { query: gt.query, limit: 10 }, { embedder });
-      hybQueryTimes.push(Date.now() - t0hyb);
-      const hybIds = hybResults.map((r: { path: string }) => docIdFromPath(r.path));
-      hybPerQuery.push({ query: gt.query, ...computeQueryMetrics(hybIds, gt.relevant_doc_ids) });
+        const t0hyb = Date.now();
+        const hybResults = await hybridSearch(store, { query: gt.query, limit: 10 }, { embedder });
+        hybQueryTimes.push(Date.now() - t0hyb);
+        const hybIds = hybResults.map((r: { path: string }) => docIdFromPath(r.path));
+        hybPerQuery.push({ query: gt.query, ...computeQueryMetrics(hybIds, gt.relevant_doc_ids) });
+      }
     }
+  } finally {
+    embedder?.dispose();
+    store.close();
   }
-
-  embedder?.dispose();
 
   const ftsQuality = aggregateQuality(ftsPerQuery);
   const vecQuality = vecPerQuery.length > 0 ? aggregateQuality(vecPerQuery) : null;
@@ -191,8 +194,6 @@ async function measureQuality(
     const maxBaseline = Math.max(ftsQuality.mean_mrr, vecQuality?.mean_mrr ?? 0);
     hybridBeatsFts = hybQuality.mean_mrr >= maxBaseline - 0.03;
   }
-
-  store.close();
 
   return {
     quality: {
@@ -220,28 +221,31 @@ async function insertDocs(
   const workspaceRoot = process.cwd();
   const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
 
-  for (const fname of docFiles) {
-    const docPath = path.join(docsDir, fname);
-    const content = fs.readFileSync(docPath, 'utf-8');
-    const lines = content.split('\n');
-    const title = (lines[0] || fname).replace(/^#\s*/, '');
-    const hash = crypto.createHash('sha256').update(content).digest('hex');
-    const t0 = Date.now();
-    store.insertContent(hash, content);
-    store.insertDocument({
-      collection: 'bench',
-      path: docPath,
-      title,
-      hash,
-      createdAt: new Date().toISOString(),
-      modifiedAt: new Date().toISOString(),
-      active: true,
-      projectHash,
-    });
-    insertTimes.push(Date.now() - t0);
+  try {
+    for (const fname of docFiles) {
+      const docPath = path.join(docsDir, fname);
+      const content = fs.readFileSync(docPath, 'utf-8');
+      const lines = content.split('\n');
+      const title = (lines[0] || fname).replace(/^#\s*/, '');
+      const hash = crypto.createHash('sha256').update(content).digest('hex');
+      const t0 = Date.now();
+      store.insertContent(hash, content);
+      store.insertDocument({
+        collection: 'bench',
+        path: docPath,
+        title,
+        hash,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash,
+      });
+      insertTimes.push(Date.now() - t0);
+    }
+  } finally {
+    store.close();
   }
 
-  store.close();
   return computeLatencyStats(insertTimes);
 }
 
@@ -249,7 +253,8 @@ async function runCombinationTests(
   dbPath: string,
   cliEntry: string,
   env: Record<string, string>,
-  sessionsDir: string
+  sessionsDir: string,
+  memoryDir: string
 ): Promise<CombinationTestResult[]> {
   const results: CombinationTestResult[] = [];
   const workspaceRoot = process.cwd();
@@ -273,35 +278,38 @@ async function runCombinationTests(
     const tokenA = 'BENCH_SUPERSEDE_A_' + Date.now();
     const contentA = `Supersede test document A: ${tokenA}`;
     const hashA = crypto.createHash('sha256').update(contentA).digest('hex');
-    const memoryDir = path.join(os.homedir(), '.nano-brain', 'memory');
     fs.mkdirSync(memoryDir, { recursive: true });
-    const dateStr = new Date().toISOString().split('T')[0];
     const filePathA = path.join(memoryDir, `bench-supersede-${Date.now()}.md`);
-    fs.writeFileSync(filePathA, contentA, 'utf-8');
-    store.insertContent(hashA, contentA);
-    const docIdA = store.insertDocument({
-      collection: 'memory',
-      path: filePathA,
-      title: tokenA,
-      hash: hashA,
-      createdAt: new Date().toISOString(),
-      modifiedAt: new Date().toISOString(),
-      active: true,
-      projectHash,
-    });
+    let writeExitCode = 1;
+    let oldGone = false;
+    try {
+      fs.writeFileSync(filePathA, contentA, 'utf-8');
+      store.insertContent(hashA, contentA);
+      store.insertDocument({
+        collection: 'memory',
+        path: filePathA,
+        title: tokenA,
+        hash: hashA,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        active: true,
+        projectHash,
+      });
 
-    const tokenB = 'BENCH_SUPERSEDE_B_' + Date.now();
-    const writeResult = spawnCLI(cliEntry, ['write', tokenB, `--supersedes=${filePathA}`], env);
-    const queryResult = spawnCLI(cliEntry, ['search', tokenA], env);
-    const oldGone = !queryResult.stdout.includes(tokenA);
-
-    store.close();
-    try { fs.unlinkSync(filePathA); } catch {}
+      const tokenB = 'BENCH_SUPERSEDE_B_' + Date.now();
+      const writeResult = spawnCLI(cliEntry, ['write', tokenB, `--supersedes=${filePathA}`], env);
+      const queryResult = spawnCLI(cliEntry, ['search', tokenA], env);
+      writeExitCode = writeResult.exitCode;
+      oldGone = !queryResult.stdout.includes(tokenA);
+    } finally {
+      store.close();
+      try { fs.unlinkSync(filePathA); } catch {}
+    }
 
     results.push({
       name: 'supersede→query',
-      status: writeResult.exitCode === 0 && oldGone ? 'pass' : 'fail',
-      detail: oldGone ? 'Superseded doc absent from results' : `Old doc still present. write_exit=${writeResult.exitCode}`,
+      status: writeExitCode === 0 && oldGone ? 'pass' : 'fail',
+      detail: oldGone ? 'Superseded doc absent from results' : `Old doc still present. write_exit=${writeExitCode}`,
     });
   }
 
@@ -387,9 +395,13 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
   const sessionsDir = path.join(tmpBase, 'sessions');
   fs.mkdirSync(sessionsDir, { recursive: true });
 
+  const fakeMemoryDir = path.join(tmpBase, 'fake-memory');
+  fs.mkdirSync(fakeMemoryDir, { recursive: true });
+
   const cliBenchEnv: Record<string, string> = {
     NANO_BRAIN_DB_PATH: testDbPath,
     NANO_BRAIN_SESSIONS_DIR: sessionsDir,
+    NANO_BRAIN_MEMORY_DIR: fakeMemoryDir,
     NANO_BRAIN_DIRECT: '1',
   };
   if (ollamaUrl) cliBenchEnv['NANO_BRAIN_OLLAMA_URL'] = ollamaUrl;
@@ -439,7 +451,7 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
       commandResults.push(await runCommandTest('tags', [], cliBenchEnv, cliEntry));
 
       console.log('  Running combination tests...');
-      const combinationTests = await runCombinationTests(testDbPath, cliEntry, cliBenchEnv, sessionsDir);
+      const combinationTests = await runCombinationTests(testDbPath, cliEntry, cliBenchEnv, sessionsDir, fakeMemoryDir);
 
       scaleResults[String(scale)] = {
         quality,
