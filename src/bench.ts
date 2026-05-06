@@ -4,6 +4,7 @@ import { createEmbeddingProvider, checkOllamaHealth, detectOllamaUrl } from './e
 import { hybridSearch } from './search.js';
 import { traverse, getRelatedDocuments } from './connection-graph.js';
 import { ConsolidationAgent } from './consolidation.js';
+import { handleBenchSuite } from './bench/index.js';
 import type { GlobalOptions } from './index.js';
 import type { Store } from './types.js';
 import * as fs from 'fs';
@@ -85,19 +86,19 @@ async function runSearchSuite(
 
   results.push(
     await runBenchmark('FTS cold query', () => {
-      store.searchFTS('function', 10);
+      store.searchFTS('function', { limit: 10 });
     }, iterations)
   );
 
   results.push(
     await runBenchmark('FTS warm query', () => {
-      store.searchFTS('function', 10);
+      store.searchFTS('function', { limit: 10 });
     }, iterations)
   );
 
   results.push(
     await runBenchmark('FTS multi-term', () => {
-      store.searchFTS('authentication middleware', 10);
+      store.searchFTS('authentication middleware', { limit: 10 });
     }, iterations)
   );
 
@@ -110,7 +111,7 @@ async function runSearchSuite(
           const result = await embedder.embed('error handling async');
           cachedEmbedding = result.embedding;
         }
-        store.searchVec('error handling async', cachedEmbedding, 10);
+        store.searchVec('error handling async', cachedEmbedding, { limit: 10 });
       }, iterations)
     );
 
@@ -1027,6 +1028,11 @@ function parseOptions(commandArgs: string[]): BenchOptions {
 }
 
 export async function handleBench(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
+  const suiteSubcommands = ['generate', 'run', 'compare'];
+  if (commandArgs.length > 0 && suiteSubcommands.includes(commandArgs[0])) {
+    return handleBenchSuite(globalOpts, commandArgs);
+  }
+
   const options = parseOptions(commandArgs);
 
   const store = await createStore(globalOpts.dbPath);

@@ -79,7 +79,7 @@ export function resolveDbPath(dbPath: string, workspaceRoot: string): string {
 }
 
 export function parseGlobalOptions(args: string[]): import('./types.js').GlobalOptions {
-  let dbPath = path.join(DEFAULT_DB_DIR, 'default.sqlite');
+  let dbPath = process.env.NANO_BRAIN_DB_PATH || path.join(DEFAULT_DB_DIR, 'default.sqlite');
   let configPath = DEFAULT_CONFIG;
   const remaining: string[] = [];
 

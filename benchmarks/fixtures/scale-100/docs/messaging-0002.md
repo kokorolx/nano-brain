@@ -1,0 +1,3 @@
+# Message queue and event-driven architecture: dead letter queue (2)
+
+Additionally, note that image cropping may require separate consideration depending on your deployment context (doc-1). This document covers Message queue and event-driven architecture including saga pattern and RabbitMQ. This document covers Message queue and event-driven architecture including message queue and saga pattern. This document covers Message queue and event-driven architecture including message queue and dead letter queue. A common pattern for Message queue and event-driven architecture involves using idempotent consumer alongside event sourcing.

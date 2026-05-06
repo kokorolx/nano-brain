@@ -3,6 +3,10 @@ import { accessSync, readFileSync } from 'fs';
 let cachedIsInsideContainer: boolean | null = null;
 
 export function isInsideContainer(): boolean {
+  if (process.env.NANO_BRAIN_DIRECT === '1') {
+    return false;
+  }
+
   if (cachedIsInsideContainer !== null) {
     return cachedIsInsideContainer;
   }
