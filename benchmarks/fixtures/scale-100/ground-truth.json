@@ -1,0 +1,442 @@
+[
+  {
+    "query": "JWT authentication middleware token validation",
+    "topic": "auth",
+    "relevant_doc_ids": [
+      "auth-0001",
+      "auth-0002",
+      "auth-0003",
+      "auth-0004",
+      "auth-0005"
+    ]
+  },
+  {
+    "query": "OAuth session credentials bearer token",
+    "topic": "auth",
+    "relevant_doc_ids": [
+      "auth-0001",
+      "auth-0002",
+      "auth-0003",
+      "auth-0004",
+      "auth-0005"
+    ]
+  },
+  {
+    "query": "Redis cache TTL eviction strategy",
+    "topic": "caching",
+    "relevant_doc_ids": [
+      "caching-0001",
+      "caching-0002",
+      "caching-0003",
+      "caching-0004",
+      "caching-0005"
+    ]
+  },
+  {
+    "query": "cache invalidation LRU Memcached",
+    "topic": "caching",
+    "relevant_doc_ids": [
+      "caching-0001",
+      "caching-0002",
+      "caching-0003",
+      "caching-0004",
+      "caching-0005"
+    ]
+  },
+  {
+    "query": "Stripe payment webhook idempotency",
+    "topic": "payments",
+    "relevant_doc_ids": [
+      "payments-0001",
+      "payments-0002",
+      "payments-0003",
+      "payments-0004",
+      "payments-0005"
+    ]
+  },
+  {
+    "query": "billing subscription invoice refund",
+    "topic": "payments",
+    "relevant_doc_ids": [
+      "payments-0001",
+      "payments-0002",
+      "payments-0003",
+      "payments-0004",
+      "payments-0005"
+    ]
+  },
+  {
+    "query": "Kubernetes rolling update Helm chart",
+    "topic": "deployment",
+    "relevant_doc_ids": [
+      "deployment-0001",
+      "deployment-0002",
+      "deployment-0003",
+      "deployment-0004",
+      "deployment-0005"
+    ]
+  },
+  {
+    "query": "Docker CI/CD canary blue-green deployment",
+    "topic": "deployment",
+    "relevant_doc_ids": [
+      "deployment-0001",
+      "deployment-0002",
+      "deployment-0003",
+      "deployment-0004",
+      "deployment-0005"
+    ]
+  },
+  {
+    "query": "production debugging stack trace profiler",
+    "topic": "debugging",
+    "relevant_doc_ids": [
+      "debugging-0001",
+      "debugging-0002",
+      "debugging-0003",
+      "debugging-0004",
+      "debugging-0005"
+    ]
+  },
+  {
+    "query": "distributed tracing memory leak flamegraph",
+    "topic": "debugging",
+    "relevant_doc_ids": [
+      "debugging-0001",
+      "debugging-0002",
+      "debugging-0003",
+      "debugging-0004",
+      "debugging-0005"
+    ]
+  },
+  {
+    "query": "REST API versioning rate limiting",
+    "topic": "api_design",
+    "relevant_doc_ids": [
+      "api_design-0001",
+      "api_design-0002",
+      "api_design-0003",
+      "api_design-0004",
+      "api_design-0005"
+    ]
+  },
+  {
+    "query": "GraphQL schema OpenAPI pagination",
+    "topic": "api_design",
+    "relevant_doc_ids": [
+      "api_design-0001",
+      "api_design-0002",
+      "api_design-0003",
+      "api_design-0004",
+      "api_design-0005"
+    ]
+  },
+  {
+    "query": "PostgreSQL index query plan optimization",
+    "topic": "database",
+    "relevant_doc_ids": [
+      "database-0001",
+      "database-0002",
+      "database-0003",
+      "database-0004",
+      "database-0005"
+    ]
+  },
+  {
+    "query": "N+1 problem connection pool deadlock",
+    "topic": "database",
+    "relevant_doc_ids": [
+      "database-0001",
+      "database-0002",
+      "database-0003",
+      "database-0004",
+      "database-0005"
+    ]
+  },
+  {
+    "query": "unit test mock integration fixture",
+    "topic": "testing",
+    "relevant_doc_ids": [
+      "testing-0001",
+      "testing-0002",
+      "testing-0003",
+      "testing-0004",
+      "testing-0005"
+    ]
+  },
+  {
+    "query": "test coverage snapshot property-based testing",
+    "topic": "testing",
+    "relevant_doc_ids": [
+      "testing-0001",
+      "testing-0002",
+      "testing-0003",
+      "testing-0004",
+      "testing-0005"
+    ]
+  },
+  {
+    "query": "Prometheus metrics alerting histogram",
+    "topic": "monitoring",
+    "relevant_doc_ids": [
+      "monitoring-0001",
+      "monitoring-0002",
+      "monitoring-0003",
+      "monitoring-0004",
+      "monitoring-0005"
+    ]
+  },
+  {
+    "query": "Grafana SLO error rate latency p99",
+    "topic": "monitoring",
+    "relevant_doc_ids": [
+      "monitoring-0001",
+      "monitoring-0002",
+      "monitoring-0003",
+      "monitoring-0004",
+      "monitoring-0005"
+    ]
+  },
+  {
+    "query": "SQL injection XSS CSRF OWASP",
+    "topic": "security",
+    "relevant_doc_ids": [
+      "security-0001",
+      "security-0002",
+      "security-0003",
+      "security-0004",
+      "security-0005"
+    ]
+  },
+  {
+    "query": "TLS secret rotation vulnerability penetration test",
+    "topic": "security",
+    "relevant_doc_ids": [
+      "security-0001",
+      "security-0002",
+      "security-0003",
+      "security-0004",
+      "security-0005"
+    ]
+  },
+  {
+    "query": "React memo useCallback performance",
+    "topic": "frontend",
+    "relevant_doc_ids": [
+      "frontend-0001",
+      "frontend-0002",
+      "frontend-0003",
+      "frontend-0004",
+      "frontend-0005"
+    ]
+  },
+  {
+    "query": "code splitting lazy loading bundle hydration",
+    "topic": "frontend",
+    "relevant_doc_ids": [
+      "frontend-0001",
+      "frontend-0002",
+      "frontend-0003",
+      "frontend-0004",
+      "frontend-0005"
+    ]
+  },
+  {
+    "query": "React Native push notification offline",
+    "topic": "mobile",
+    "relevant_doc_ids": [
+      "mobile-0001",
+      "mobile-0002",
+      "mobile-0003",
+      "mobile-0004",
+      "mobile-0005"
+    ]
+  },
+  {
+    "query": "Expo deep link AsyncStorage Hermes",
+    "topic": "mobile",
+    "relevant_doc_ids": [
+      "mobile-0001",
+      "mobile-0002",
+      "mobile-0003",
+      "mobile-0004",
+      "mobile-0005"
+    ]
+  },
+  {
+    "query": "ETL Airflow Kafka pipeline batch job",
+    "topic": "data_pipeline",
+    "relevant_doc_ids": [
+      "data_pipeline-0001",
+      "data_pipeline-0002",
+      "data_pipeline-0003",
+      "data_pipeline-0004",
+      "data_pipeline-0005"
+    ]
+  },
+  {
+    "query": "data lake schema registry partitioning backfill",
+    "topic": "data_pipeline",
+    "relevant_doc_ids": [
+      "data_pipeline-0001",
+      "data_pipeline-0002",
+      "data_pipeline-0003",
+      "data_pipeline-0004",
+      "data_pipeline-0005"
+    ]
+  },
+  {
+    "query": "model serving inference feature store",
+    "topic": "ml",
+    "relevant_doc_ids": [
+      "ml-0001",
+      "ml-0002",
+      "ml-0003",
+      "ml-0004",
+      "ml-0005"
+    ]
+  },
+  {
+    "query": "ONNX model drift training embedding GPU",
+    "topic": "ml",
+    "relevant_doc_ids": [
+      "ml-0001",
+      "ml-0002",
+      "ml-0003",
+      "ml-0004",
+      "ml-0005"
+    ]
+  },
+  {
+    "query": "message queue dead letter consumer group",
+    "topic": "messaging",
+    "relevant_doc_ids": [
+      "messaging-0001",
+      "messaging-0002",
+      "messaging-0003",
+      "messaging-0004",
+      "messaging-0005"
+    ]
+  },
+  {
+    "query": "event sourcing CQRS outbox saga pattern",
+    "topic": "messaging",
+    "relevant_doc_ids": [
+      "messaging-0001",
+      "messaging-0002",
+      "messaging-0003",
+      "messaging-0004",
+      "messaging-0005"
+    ]
+  },
+  {
+    "query": "Elasticsearch BM25 index analyzer tokenizer",
+    "topic": "search",
+    "relevant_doc_ids": [
+      "search-0001",
+      "search-0002",
+      "search-0003",
+      "search-0004",
+      "search-0005"
+    ]
+  },
+  {
+    "query": "fuzzy match aggregation relevance scoring",
+    "topic": "search",
+    "relevant_doc_ids": [
+      "search-0001",
+      "search-0002",
+      "search-0003",
+      "search-0004",
+      "search-0005"
+    ]
+  },
+  {
+    "query": "S3 presigned URL CDN multipart upload",
+    "topic": "file_storage",
+    "relevant_doc_ids": [
+      "file_storage-0001",
+      "file_storage-0002",
+      "file_storage-0003",
+      "file_storage-0004",
+      "file_storage-0005"
+    ]
+  },
+  {
+    "query": "bucket policy CORS object versioning lifecycle",
+    "topic": "file_storage",
+    "relevant_doc_ids": [
+      "file_storage-0001",
+      "file_storage-0002",
+      "file_storage-0003",
+      "file_storage-0004",
+      "file_storage-0005"
+    ]
+  },
+  {
+    "query": "push notification FCM APNs email delivery",
+    "topic": "notifications",
+    "relevant_doc_ids": [
+      "notifications-0001",
+      "notifications-0002",
+      "notifications-0003",
+      "notifications-0004",
+      "notifications-0005"
+    ]
+  },
+  {
+    "query": "SMTP bounce unsubscribe webhook retry",
+    "topic": "notifications",
+    "relevant_doc_ids": [
+      "notifications-0001",
+      "notifications-0002",
+      "notifications-0003",
+      "notifications-0004",
+      "notifications-0005"
+    ]
+  },
+  {
+    "query": "event tracking funnel cohort A/B experiment",
+    "topic": "analytics",
+    "relevant_doc_ids": [
+      "analytics-0001",
+      "analytics-0002",
+      "analytics-0003",
+      "analytics-0004",
+      "analytics-0005"
+    ]
+  },
+  {
+    "query": "session replay heatmap retention DAU",
+    "topic": "analytics",
+    "relevant_doc_ids": [
+      "analytics-0001",
+      "analytics-0002",
+      "analytics-0003",
+      "analytics-0004",
+      "analytics-0005"
+    ]
+  },
+  {
+    "query": "feature flag LaunchDarkly rollout percentage",
+    "topic": "config_mgmt",
+    "relevant_doc_ids": [
+      "config_mgmt-0001",
+      "config_mgmt-0002",
+      "config_mgmt-0003",
+      "config_mgmt-0004",
+      "config_mgmt-0005"
+    ]
+  },
+  {
+    "query": "secrets manager config reload kill switch",
+    "topic": "config_mgmt",
+    "relevant_doc_ids": [
+      "config_mgmt-0001",
+      "config_mgmt-0002",
+      "config_mgmt-0003",
+      "config_mgmt-0004",
+      "config_mgmt-0005"
+    ]
+  }
+]

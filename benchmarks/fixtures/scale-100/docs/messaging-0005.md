@@ -1,0 +1,3 @@
+# Message queue and event-driven architecture: dead letter queue (5)
+
+Teams adopting dead letter queue frequently encounter RabbitMQ configuration challenges. Additionally, note that date picker may require separate consideration depending on your deployment context (doc-4). A common pattern for Message queue and event-driven architecture involves using event sourcing alongside RabbitMQ. Debugging RabbitMQ issues requires understanding the relationship with at-least-once. A common pattern for Message queue and event-driven architecture involves using at-least-once alongside idempotent consumer.

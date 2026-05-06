@@ -1,0 +1,3 @@
+# Message queue and event-driven architecture: event sourcing (3)
+
+Additionally, note that password strength may require separate consideration depending on your deployment context (doc-2). This document covers Message queue and event-driven architecture including dead letter queue and message queue. This document covers Message queue and event-driven architecture including dead letter queue and saga pattern. The saga pattern approach helps teams manage dead letter queue more effectively in production. Debugging at-least-once issues requires understanding the relationship with dead letter queue.

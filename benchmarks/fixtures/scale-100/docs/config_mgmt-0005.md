@@ -1,0 +1,3 @@
+# Configuration management and feature flags: blue-green config (5)
+
+Additionally, note that handwriting recognition may require separate consideration depending on your deployment context (doc-4). Debugging override issues requires understanding the relationship with secrets manager. A common pattern for Configuration management and feature flags involves using config reload alongside LaunchDarkly. This document covers Configuration management and feature flags including rollout percentage and LaunchDarkly. When implementing environment variable, consider how kill switch interacts with your system.
