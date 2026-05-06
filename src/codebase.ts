@@ -322,10 +322,11 @@ export async function indexCodebase(
       const content = fs.readFileSync(filePath, 'utf-8')
       const contentSize = Buffer.byteLength(content, 'utf-8')
       const hash = computeHash(content)
-      const existingDoc = store.findDocument(filePath)
+      const docPath = filePath.startsWith(workspaceRoot + '/') ? filePath.slice(workspaceRoot.length + 1) : filePath
+      const existingDoc = store.findDocument(docPath)
       if (existingDoc && existingDoc.hash === hash) {
         filesSkippedUnchanged++
-        activePaths.push(filePath)
+        activePaths.push(docPath)
         scannedFiles.push({ path: filePath, content })
         continue
       }
@@ -334,7 +335,7 @@ export async function indexCodebase(
       if (currentStorageUsed + netIncrease > effectiveMaxSize) {
         filesSkippedBudget++
         if (existingDoc) {
-          activePaths.push(filePath)
+          activePaths.push(docPath)
         }
         continue
       }
@@ -355,7 +356,7 @@ export async function indexCodebase(
       const now = new Date().toISOString()
       store.insertDocument({
         collection: 'codebase',
-        path: filePath,
+        path: docPath,
         title,
         hash,
         createdAt: existingDoc?.createdAt ?? now,
@@ -391,7 +392,7 @@ export async function indexCodebase(
 
       currentStorageUsed += netIncrease
       filesIndexed++
-      activePaths.push(filePath)
+      activePaths.push(docPath)
       scannedFiles.push({ path: filePath, content })
     } catch {
       continue

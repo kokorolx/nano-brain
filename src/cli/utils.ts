@@ -221,11 +221,8 @@ nano-brain - Memory system with hybrid search
     status          Show container and API health
   qdrant            Manage Qdrant vector store
     up              Start Qdrant via Docker, configure as vector provider
-    down            Stop Qdrant, switch back to sqlite-vec
+    down            Stop Qdrant container
     status          Show Qdrant container and collection health
-    migrate         Migrate vectors from SQLite to Qdrant
-      --workspace=<path>  Migrate specific workspace only
-      --batch-size=<n>    Vectors per batch (default: 500)
       --dry-run           Show counts without migrating
       --activate          Switch to Qdrant provider after migration
     verify          Compare SQLite vector counts against Qdrant

@@ -26,9 +26,24 @@ function formatBytes(bytes: number): string {
   return `${mb.toFixed(1)} MB`;
 }
 
-async function getVectorStoreHealth(config: ReturnType<typeof loadCollectionConfig>): Promise<VectorStoreHealth | null> {
+async function getVectorStoreHealth(
+  config: ReturnType<typeof loadCollectionConfig>,
+  serverRunning: boolean,
+  port: number
+): Promise<VectorStoreHealth | null> {
   const vectorConfig = config?.vector;
   if (!vectorConfig || vectorConfig.provider !== 'qdrant') return null;
+
+  // If server is running, proxy the request through it
+  if (serverRunning) {
+    try {
+      const health = await proxyGet(port, '/api/vector-health');
+      return health as VectorStoreHealth;
+    } catch (err) {
+      log('cli', 'Vector health proxy failed: ' + (err instanceof Error ? err.message : String(err)));
+      // Fall through to direct check
+    }
+  }
 
   try {
     const vectorStore = createVectorStore(vectorConfig);
@@ -48,7 +63,7 @@ async function getVectorStoreHealth(config: ReturnType<typeof loadCollectionConf
   }
 }
 
-function printVectorStoreSection(vectorHealth: VectorStoreHealth | null, sqliteVecCount?: number): void {
+function printVectorStoreSection(vectorHealth: VectorStoreHealth | null): void {
   cliOutput('Vector Store:');
   if (vectorHealth) {
     cliOutput(`  Provider:   ${vectorHealth.provider}`);
@@ -62,8 +77,7 @@ function printVectorStoreSection(vectorHealth: VectorStoreHealth | null, sqliteV
       cliOutput(`  Status:     ❌ unreachable (${vectorHealth.error || 'unknown'})`);
     }
   } else {
-    cliOutput(`  Provider:   sqlite-vec (built-in)`);
-    cliOutput(`  Vectors:    ${(sqliteVecCount ?? 0).toLocaleString()}`);
+    cliOutput(`  Provider:   none configured`);
   }
   cliOutput('');
 }
@@ -110,11 +124,21 @@ async function printEmbeddingServerStatus(config: ReturnType<typeof loadCollecti
 export async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   log('cli', 'status command invoked');
   const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
-  let serverInfo: { uptime: number; ready: boolean } | null = null;
+  let serverInfo: { uptime: number; ready: boolean; index?: { documentCount: number; embeddedCount: number; pendingEmbeddings: number }; models?: { reranker?: string } } | null = null;
   if (serverRunning) {
     try {
-      const data = await proxyGet(DEFAULT_HTTP_PORT, '/api/status') as { uptime?: number; ready?: boolean };
+      const data = await proxyGet(DEFAULT_HTTP_PORT, '/api/status') as { uptime?: number; ready?: boolean; index?: any; models?: any };
       serverInfo = { uptime: data.uptime ?? 0, ready: data.ready ?? false };
+      if (data.index) {
+        serverInfo.index = {
+          documentCount: data.index.documentCount ?? 0,
+          embeddedCount: data.index.embeddedCount ?? 0,
+          pendingEmbeddings: data.index.pendingEmbeddings ?? 0
+        };
+      }
+      if (data.models) {
+        serverInfo.models = { reranker: data.models.reranker };
+      }
     } catch (err) {
       log('cli', 'HTTP proxy failed for server info: ' + (err instanceof Error ? err.message : String(err)));
     }
@@ -207,7 +231,7 @@ export async function handleStatus(globalOpts: GlobalOptions, commandArgs: strin
     await printEmbeddingServerStatus(config);
     cliOutput('');
 
-    const vectorHealth = await getVectorStoreHealth(config);
+    const vectorHealth = await getVectorStoreHealth(config, serverRunning, DEFAULT_HTTP_PORT);
     printVectorStoreSection(vectorHealth);
 
     const allTokenUsage = new Map<string, { totalTokens: number; requestCount: number; lastUpdated: string }>();
@@ -272,9 +296,10 @@ export async function handleStatus(globalOpts: GlobalOptions, commandArgs: strin
   cliOutput('');
 
   cliOutput('Index:');
-  cliOutput(`  Documents:          ${health.documentCount.toLocaleString()}`);
-  cliOutput(`  Embedded:           ${health.embeddedCount.toLocaleString()}`);
-  cliOutput(`  Pending embeddings: ${health.pendingEmbeddings.toLocaleString()}`);
+  const indexData = serverInfo?.index ?? health;
+  cliOutput(`  Documents:          ${indexData.documentCount.toLocaleString()}`);
+  cliOutput(`  Embedded:           ${indexData.embeddedCount.toLocaleString()}`);
+  cliOutput(`  Pending embeddings: ${indexData.pendingEmbeddings.toLocaleString()}`);
   cliOutput('');
 
   if (health.collections.length > 0) {
@@ -319,17 +344,20 @@ export async function handleStatus(globalOpts: GlobalOptions, commandArgs: strin
   await printEmbeddingServerStatus(config);
   cliOutput('');
 
-  const vectorHealth = await getVectorStoreHealth(config);
-  printVectorStoreSection(vectorHealth, vectorHealth ? undefined : store.getSqliteVecCount());
+  const vectorHealth = await getVectorStoreHealth(config, serverRunning, DEFAULT_HTTP_PORT);
+  printVectorStoreSection(vectorHealth);
 
   printTokenUsageSection(store.getTokenUsage());
 
   const embeddingModel = config?.embedding?.model
     ? `${config.embedding.model} (${config.embedding.provider ?? 'ollama'})`
     : 'missing';
-  const rerankerModel = config?.reranker?.model
-    ? `${config.reranker.model} (no endpoint — set reranker.apiKey)`
-    : 'missing';
+  const serverReranker = serverInfo?.models?.reranker;
+  const rerankerModel = serverReranker && serverReranker !== 'disabled'
+    ? `✅ ${serverReranker}`
+    : config?.reranker?.model
+      ? `❌ ${config.reranker.model} (not active — check apiKey/provider)`
+      : 'disabled';
   const expanderModel = config?.search?.expansion?.enabled ? 'enabled' : 'disabled';
 
   cliOutput('Models:');

@@ -1,5 +1,4 @@
 import Database from 'better-sqlite3';
-import * as sqliteVec from 'sqlite-vec';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -440,15 +439,7 @@ export function createStore(dbPath: string): Store {
 
   applyPragmas(db);
 
-  let vecAvailable = false;
   let vectorStore: VectorStore | null = null;
-
-  try {
-    sqliteVec.load(db);
-    vecAvailable = true;
-  } catch {
-    log('store', 'sqlite-vec extension not available, vector search disabled', 'warn');
-  }
 
   applySchema(db);
   runMigrations(db);
@@ -457,7 +448,6 @@ export function createStore(dbPath: string): Store {
 
   const sharedState = {
     workspaceRoot: null as string | null,
-    vecAvailable,
     get vectorStore() { return vectorStore; },
     set vectorStore(vs: VectorStore | null) { vectorStore = vs; },
   };
@@ -511,12 +501,9 @@ export function createStore(dbPath: string): Store {
     insertEmbeddingLocal: vecMethods.insertEmbeddingLocal.bind(vecMethods),
     insertEmbeddingLocalBatch: vecMethods.insertEmbeddingLocalBatch.bind(vecMethods),
     insertEmbedding: vecMethods.insertEmbedding.bind(vecMethods),
-    ensureVecTable: vecMethods.ensureVecTable.bind(vecMethods),
-    searchVec: vecMethods.searchVec.bind(vecMethods),
     searchVecAsync: vecMethods.searchVecAsync.bind(vecMethods),
     cleanupVectorsForHash: vecMethods.cleanupVectorsForHash.bind(vecMethods),
     cleanOrphanedEmbeddings: vecMethods.cleanOrphanedEmbeddings.bind(vecMethods),
-    getSqliteVecCount: vecMethods.getSqliteVecCount.bind(vecMethods),
     getHashesNeedingEmbedding: vecMethods.getHashesNeedingEmbedding.bind(vecMethods),
     getNextHashNeedingEmbedding: vecMethods.getNextHashNeedingEmbedding.bind(vecMethods),
 

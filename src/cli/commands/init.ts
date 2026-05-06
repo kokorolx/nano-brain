@@ -221,7 +221,6 @@ export async function handleInit(globalOpts: GlobalOptions, commandArgs: string[
   const provider = await createEmbeddingProvider({ embeddingConfig });
   const INIT_EMBED_CAP = 50;
   if (provider) {
-    store.ensureVecTable(provider.getDimensions());
     let embedded = 0;
     while (embedded < INIT_EMBED_CAP) {
       const row = store.getNextHashNeedingEmbedding(projectHash);

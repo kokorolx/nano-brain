@@ -140,6 +140,27 @@ export async function handleRequest(
     return;
   }
 
+  if (req.method === 'GET' && pathname === '/api/vector-health') {
+    const vectorStore = store.getVectorStore();
+    if (!vectorStore) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ provider: 'none', ok: false, vectorCount: 0 }));
+      return;
+    }
+    try {
+      const health = await Promise.race([
+        vectorStore.health(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+      ]);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(health));
+    } catch (err) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, provider: 'qdrant', vectorCount: 0, error: err instanceof Error ? err.message : String(err) }));
+    }
+    return;
+  }
+
   if (req.method === 'POST' && pathname === '/api/query') {
     const body = await readBody(req);
     try {

@@ -295,6 +295,13 @@ export class QdrantVecStore implements VectorStore {
     }
   }
 
+  async deleteCollection(): Promise<void> {
+    try {
+      await this.client.deleteCollection(this.collectionName);
+    } catch {
+    }
+  }
+
   async close(): Promise<void> {
   }
 }

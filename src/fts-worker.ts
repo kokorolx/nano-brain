@@ -10,11 +10,10 @@ import type { SearchResult, StoreSearchOptions } from './types.js';
 // Message types
 interface WorkerRequest {
   id: string;
-  method: 'searchFTS' | 'searchVec';
+  method: 'searchFTS';
   args: {
     query: string;
     options: StoreSearchOptions;
-    embedding?: number[];
   };
 }
 
@@ -55,15 +54,6 @@ const enrichByPathStmt = db.prepare(`
   LIMIT 1
 `);
 
-// Try to load sqlite-vec extension for vector search
-let vecAvailable = false;
-try {
-  const sqliteVec = await import('sqlite-vec');
-  sqliteVec.load(db);
-  vecAvailable = true;
-} catch {
-  // sqlite-vec not available, vector search will return empty results
-}
 
 /**
  * searchFTS — queries FTS5 index WITHOUT joining the documents table.
@@ -136,87 +126,6 @@ function searchFTS(query: string, options: StoreSearchOptions = {}): SearchResul
   });
 }
 
-/**
- * searchVec - Replicates store.ts lines 1597-1672
- */
-function searchVec(query: string, embedding: number[], options: StoreSearchOptions = {}): SearchResult[] {
-  const { limit = 10, collection, projectHash, tags, since, until } = options;
-  if (!vecAvailable) {
-    return [];
-  }
-
-  try {
-    let sql = `
-      SELECT v.hash_seq, v.distance, d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
-             d.centrality, d.cluster_id, d.superseded_by,
-             d.created_at as createdAt,
-             d.access_count, d.last_accessed_at as lastAccessedAt,
-             substr(c.body, 1, 700) as snippet,
-             LENGTH(c.body) as char_length
-      FROM vectors_vec v
-      JOIN documents d ON substr(v.hash_seq, 1, instr(v.hash_seq, ':') - 1) = d.hash
-      LEFT JOIN content c ON c.hash = d.hash
-      WHERE v.embedding MATCH ?
-        AND k = ?
-        AND d.active = 1
-    `;
-
-    const params: (Float32Array | string | number)[] = [new Float32Array(embedding), limit];
-    if (collection) {
-      sql += ` AND d.collection = ?`;
-      params.push(collection);
-    }
-    if (projectHash && projectHash !== 'all') {
-      sql += ` AND d.project_hash = ?`;
-      params.push(projectHash);
-    }
-    if (since) {
-      sql += ` AND d.modified_at >= ?`;
-      params.push(since);
-    }
-    if (until) {
-      sql += ` AND d.modified_at <= ?`;
-      params.push(until);
-    }
-    if (tags && tags.length > 0) {
-      sql += ` AND d.id IN (
-        SELECT dt.document_id FROM document_tags dt
-        WHERE dt.tag IN (${tags.map(() => '?').join(',')})
-        GROUP BY dt.document_id
-        HAVING COUNT(DISTINCT dt.tag) = ?
-      )`;
-      params.push(...tags.map(t => t.toLowerCase().trim()));
-      params.push(tags.length);
-    }
-    sql += ` ORDER BY v.distance`;
-
-    const stmt = db.prepare(sql);
-    const rows = stmt.all(...params) as Array<Record<string, unknown>>;
-
-    return rows.map(row => ({
-      id: String(row.id),
-      path: row.path as string,
-      collection: row.collection as string,
-      title: row.title as string,
-      snippet: (row.snippet as string) || '',
-      score: 1 - (row.distance as number),
-      startLine: 0,
-      endLine: 0,
-      docid: (row.hash as string).substring(0, 6),
-      agent: row.agent as string | undefined,
-      projectHash: projectHash === 'all' ? (row.project_hash as string | undefined) : undefined,
-      centrality: row.centrality as number | undefined,
-      clusterId: row.cluster_id as number | undefined,
-      supersededBy: row.superseded_by as number | null | undefined,
-      access_count: row.access_count as number | undefined,
-      lastAccessedAt: row.lastAccessedAt as string | null | undefined,
-      createdAt: row.createdAt as string | undefined,
-      charLength: row.char_length as number | undefined,
-    }));
-  } catch {
-    return [];
-  }
-}
 
 // Handle messages from main thread
 if (parentPort) {
@@ -226,13 +135,8 @@ if (parentPort) {
     try {
       if (msg.method === 'searchFTS') {
         response.result = searchFTS(msg.args.query, msg.args.options);
-      } else if (msg.method === 'searchVec') {
-        if (!msg.args.embedding) {
-          throw new Error('embedding is required for searchVec');
-        }
-        response.result = searchVec(msg.args.query, msg.args.embedding, msg.args.options);
       } else {
-        throw new Error(`Unknown method: ${msg.method}`);
+        throw new Error(`Unknown method: ${(msg as { method: string }).method}`);
       }
     } catch (err) {
       response.error = { message: err instanceof Error ? err.message : String(err) };

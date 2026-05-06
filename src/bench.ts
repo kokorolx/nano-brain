@@ -111,7 +111,7 @@ async function runSearchSuite(
           const result = await embedder.embed('error handling async');
           cachedEmbedding = result.embedding;
         }
-        store.searchVec('error handling async', cachedEmbedding, { limit: 10 });
+        await store.searchVecAsync('error handling async', cachedEmbedding, { limit: 10 });
       }, iterations)
     );
 

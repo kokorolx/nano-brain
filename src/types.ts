@@ -87,7 +87,7 @@ export interface CollectionConfig {
   watcher?: WatcherConfig
   search?: Partial<SearchConfig>
   vector?: {
-    provider: 'sqlite-vec' | 'qdrant'
+    provider: 'qdrant'
     url?: string
     apiKey?: string
     collection?: string
@@ -139,6 +139,7 @@ export interface EmbeddingConfig {
 export interface RerankerConfig {
   model?: string
   apiKey?: string
+  provider?: 'voyageai' | 'cohere'
 }
 
 export interface WatcherConfig {
@@ -662,10 +663,8 @@ export interface Store {
   insertEmbeddingLocal(hash: string, seq: number, pos: number, model: string, filePath?: string): void;
   insertEmbeddingLocalBatch(items: Array<{ hash: string; seq: number; pos: number; model: string }>): Promise<void>;
   insertEmbedding(hash: string, seq: number, pos: number, embedding: number[], model: string, vectorStore?: import('./vector-store.js').VectorStore): void;
-  ensureVecTable(dimensions: number): void;
 
   searchFTS(query: string, options?: StoreSearchOptions): SearchResult[];
-  searchVec(query: string, embedding: number[], options?: StoreSearchOptions): SearchResult[];
   searchVecAsync(query: string, embedding: number[], options?: StoreSearchOptions): Promise<SearchResult[]>;
   setVectorStore(vs: import('./vector-store.js').VectorStore | null): void;
   getVectorStore(): import('./vector-store.js').VectorStore | null;
@@ -760,7 +759,6 @@ export interface Store {
 
   recordTokenUsage(model: string, tokens: number): void;
   getTokenUsage(): Array<{ model: string; totalTokens: number; requestCount: number; lastUpdated: string }>;
-  getSqliteVecCount(): number;
 
   logSearchQuery(queryId: string, queryText: string, tier: string, configVariant: string | null, resultDocids: string[], executionMs: number, sessionId: string | null, cacheKey: string | null, workspaceHash: string): void;
   logSearchExpand(cacheKey: string, expandedIndices: number[]): void;

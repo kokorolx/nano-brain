@@ -7,6 +7,7 @@ import { createStore } from '../store.js';
 import { hybridSearch } from '../search.js';
 import { createEmbeddingProvider } from '../embeddings.js';
 import { generateCorpus, computeCorpusHash } from './generator.js';
+import { QdrantVecStore } from '../providers/qdrant.js';
 import type {
   BenchResult,
   BenchEnvironment,
@@ -134,7 +135,9 @@ function aggregateQuality(
 async function measureQuality(
   dbPath: string,
   groundTruth: GroundTruthQuery[],
-  ollamaUrl: string | null
+  ollamaUrl: string | null,
+  qdrantVecStore: QdrantVecStore | null,
+  hashToPath: Map<string, string>
 ): Promise<{ quality: ScaleQuality; latency: Omit<ScaleLatency, 'insert'> }> {
   const store = createStore(dbPath);
 
@@ -165,12 +168,15 @@ async function measureQuality(
       const ftsIds = ftsResults.map(r => docIdFromPath(r.path));
       ftsPerQuery.push({ query: gt.query, ...computeQueryMetrics(ftsIds, gt.relevant_doc_ids) });
 
-      if (embedder) {
+      if (embedder && qdrantVecStore) {
         const t0vec = Date.now();
         const { embedding } = await embedder.embed(gt.query);
-        const vecResults = await store.searchVecAsync(gt.query, embedding, { limit: 10 });
+        const qdrantResults = await qdrantVecStore.search(embedding, { limit: 10 });
         vecQueryTimes.push(Date.now() - t0vec);
-        const vecIds = vecResults.map(r => docIdFromPath(r.path));
+        const vecIds = qdrantResults
+          .map(r => hashToPath.get(r.hash))
+          .filter((p): p is string => p !== undefined)
+          .map(p => docIdFromPath(p));
         vecPerQuery.push({ query: gt.query, ...computeQueryMetrics(vecIds, gt.relevant_doc_ids) });
 
         const t0hyb = Date.now();
@@ -213,10 +219,10 @@ async function measureQuality(
 async function insertDocs(
   dbPath: string,
   fixturesDir: string,
-  ollamaUrl: string | null
-): Promise<LatencyStats> {
+  ollamaUrl: string | null,
+  qdrantVecStore: QdrantVecStore | null
+): Promise<{ latency: LatencyStats; hashToPath: Map<string, string> }> {
   const store = createStore(dbPath);
-  store.ensureVecTable(768);
 
   let embedder: { embed(text: string): Promise<{ embedding: number[] }>; dispose(): void } | null = null;
   if (ollamaUrl) {
@@ -230,6 +236,7 @@ async function insertDocs(
   const docsDir = path.join(fixturesDir, 'docs');
   const docFiles = fs.readdirSync(docsDir).filter(f => f.endsWith('.md'));
   const insertTimes: number[] = [];
+  const hashToPath = new Map<string, string>();
   const workspaceRoot = process.cwd();
   const projectHash = crypto.createHash('sha256').update(workspaceRoot).digest('hex').substring(0, 12);
 
@@ -252,9 +259,14 @@ async function insertDocs(
         active: true,
         projectHash,
       });
-      if (embedder) {
+      hashToPath.set(hash, docPath);
+      if (embedder && qdrantVecStore) {
         const { embedding } = await embedder.embed(content);
-        store.insertEmbedding(hash, 0, 0, embedding, 'nomic-embed-text');
+        await qdrantVecStore.upsert({
+          id: `${hash}:0`,
+          embedding,
+          metadata: { hash, seq: 0, pos: 0, model: 'nomic-embed-text' },
+        });
       }
       insertTimes.push(Date.now() - t0);
     }
@@ -263,7 +275,7 @@ async function insertDocs(
     store.close();
   }
 
-  return computeLatencyStats(insertTimes);
+  return { latency: computeLatencyStats(insertTimes), hashToPath };
 }
 
 async function runCombinationTests(
@@ -380,6 +392,21 @@ async function detectOllamaUrl(): Promise<string | null> {
   return null;
 }
 
+async function detectQdrantUrl(): Promise<string | null> {
+  const candidates = [
+    process.env['QDRANT_URL'],
+    'http://localhost:6333',
+    'http://host.docker.internal:6333',
+  ].filter(Boolean) as string[];
+  for (const url of candidates) {
+    try {
+      const resp = await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(3000) });
+      if (resp.ok) return url;
+    } catch {}
+  }
+  return null;
+}
+
 export interface RunOptions {
   scales: number[];
   noCleanup: boolean;
@@ -394,6 +421,20 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
   const ollamaUrl = await detectOllamaUrl();
   if (!ollamaUrl) {
     console.warn('Warning: Ollama not reachable — skipping vector and hybrid quality tests');
+  }
+
+  const qdrantUrl = await detectQdrantUrl();
+  if (!qdrantUrl) {
+    console.warn('[bench] Qdrant unreachable — skipping vector and hybrid test suites');
+  }
+
+  const benchCollectionBaseName = `bench-${Date.now()}`;
+  const qdrantVecStore: QdrantVecStore | null = qdrantUrl && ollamaUrl
+    ? new QdrantVecStore({ url: qdrantUrl, collection: benchCollectionBaseName, dimensions: 768 })
+    : null;
+
+  if (qdrantVecStore) {
+    await qdrantVecStore.ensureCollection();
   }
 
   const ollamaInfo = await getOllamaInfo(ollamaUrl);
@@ -444,10 +485,10 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
       }
 
       console.log('  Inserting docs...');
-      const insertLatency = await insertDocs(testDbPath, fixturesDir, ollamaUrl);
+      const { latency: insertLatency, hashToPath } = await insertDocs(testDbPath, fixturesDir, ollamaUrl, qdrantVecStore);
 
       console.log('  Running quality metrics...');
-      const { quality, latency: queryLatency } = await measureQuality(testDbPath, groundTruth, ollamaUrl);
+      const { quality, latency: queryLatency } = await measureQuality(testDbPath, groundTruth, ollamaUrl, qdrantVecStore, hashToPath);
 
       const scaleLatency: ScaleLatency = {
         insert: insertLatency,
@@ -479,6 +520,9 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
       };
     }
   } finally {
+    if (qdrantVecStore) {
+      try { await qdrantVecStore.deleteCollection(); } catch {}
+    }
     if (!noCleanup) {
       try { fs.unlinkSync(testDbPath); } catch {}
       try { fs.unlinkSync(testDbPath + '-wal'); } catch {}

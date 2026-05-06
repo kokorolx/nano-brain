@@ -140,9 +140,6 @@ export async function startServer(options: ServerOptions): Promise<void> {
       log('server', 'vector store creation failed error=' + (err instanceof Error ? err.message : String(err)));
       log('server', `Vector store creation failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
-  } else {
-    log('server', '🗄️  Vector store: sqlite-vec (default)');
-    log('server', '🗄️  Vector store: sqlite-vec (default)');
   }
 
   if (vectorStore) {
@@ -342,7 +339,6 @@ export async function startServer(options: ServerOptions): Promise<void> {
         providers.embedder = loadedEmbedder;
         store.modelStatus.embedding = loadedEmbedder ? loadedEmbedder.getModel() : 'missing';
         if (loadedEmbedder) {
-          store.ensureVecTable(loadedEmbedder.getDimensions());
           if (config?.vector?.provider === 'qdrant' && config.vector.url) {
             const correctStore = createVectorStore({ ...config.vector, dimensions: loadedEmbedder.getDimensions() });
             store.setVectorStore(correctStore);
@@ -362,6 +358,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
     createReranker({
       apiKey: config?.reranker?.apiKey || config?.embedding?.apiKey,
       model: config?.reranker?.model,
+      provider: config?.reranker?.provider as 'voyageai' | 'cohere' | undefined,
       onTokenUsage: (model, tokens) => store.recordTokenUsage(model, tokens),
     })
       .then((loadedReranker) => {
@@ -439,7 +436,6 @@ export async function startServer(options: ServerOptions): Promise<void> {
             const oldProvider = providers.embedder;
             providers.embedder = newProvider;
             store.modelStatus.embedding = newProvider.getModel();
-            store.ensureVecTable(newProvider.getDimensions());
             if (oldProvider && 'dispose' in oldProvider) (oldProvider as { dispose(): void }).dispose();
              log('server', '🦙 Reconnected to Ollama url=' + ollamaUrl + ' model=' + ollamaModel);
              log('server', `🦙 Reconnected to Ollama at ${ollamaUrl} — switched from local GGUF`);

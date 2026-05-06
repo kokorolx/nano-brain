@@ -1,5 +1,3 @@
-import type Database from 'better-sqlite3';
-import { SqliteVecStore } from './sqlite-vec.js';
 import { QdrantVecStore } from './qdrant.js';
 
 export interface VectorSearchOptions {
@@ -50,7 +48,7 @@ export interface VectorStore {
 }
 
 export interface VectorConfig {
-  provider: 'sqlite-vec' | 'qdrant';
+  provider: 'qdrant';
   url?: string;
   apiKey?: string;
   collection?: string;
@@ -59,16 +57,7 @@ export interface VectorConfig {
 
 export function createVectorStore(
   config: VectorConfig,
-  db?: Database.Database,
-  vecAvailable?: boolean
 ): VectorStore {
-  if (config.provider === 'sqlite-vec') {
-    if (!db) {
-      throw new Error('sqlite-vec provider requires a Database instance');
-    }
-    return new SqliteVecStore(db, vecAvailable ?? false);
-  }
-
   if (config.provider === 'qdrant') {
     if (!config.url) {
       throw new Error('Qdrant provider requires a URL (vector.url in config.yml)');

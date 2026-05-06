@@ -1,6 +1,5 @@
 import Database from 'better-sqlite3';
 import type { VectorStore, VectorPoint } from '../vector-store.js';
-import { SqliteVecStore } from '../providers/sqlite-vec.js';
 import { QdrantVecStore, stringToUuid } from '../providers/qdrant.js';
 import type { SearchResult, StoreSearchOptions } from '../types.js';
 import { log } from '../logger.js';
@@ -9,7 +8,7 @@ import type { Stmts } from './schema.js';
 export function makeVectorMethods(
   db: Database.Database,
   stmts: Stmts,
-  state: { vecAvailable: boolean; vectorStore: VectorStore | null }
+  state: { vectorStore: VectorStore | null }
 ) {
   return {
     setVectorStore(vs: VectorStore | null): void {
@@ -56,7 +55,7 @@ export function makeVectorMethods(
       log('store', 'insertEmbedding hash=' + hash.substring(0, 8) + ' seq=' + seq, 'debug');
       stmts.insertEmbedding.run(hash, seq, pos, model);
 
-      const useExternalStore = externalVectorStore && !(externalVectorStore instanceof SqliteVecStore);
+      const useExternalStore = !!externalVectorStore;
 
       if (useExternalStore) {
         let projectHash: string | undefined;
@@ -77,140 +76,6 @@ export function makeVectorMethods(
           log('store', 'insertEmbedding external vector store upsert failed hash=' + hash.substring(0, 8));
           log('store', `External vector store upsert failed for ${hash.substring(0, 8)}:${seq}, will retry on next embedding cycle: ${err instanceof Error ? err.message : String(err)}`, 'warn');
         });
-      } else if (state.vecAvailable) {
-        try {
-          const hashSeq = `${hash}:${seq}`;
-          try {
-            db.prepare(`DELETE FROM vectors_vec WHERE hash_seq = ?`).run(hashSeq);
-          } catch {
-          }
-          const insertVecStmt = db.prepare(`
-            INSERT INTO vectors_vec (hash_seq, embedding) VALUES (?, ?)
-          `);
-          insertVecStmt.run(hashSeq, new Float32Array(embedding));
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (!msg.includes('UNIQUE constraint')) {
-            log('store', 'insertEmbedding vector insert failed hash=' + hash.substring(0, 8));
-            log('store', `Failed to insert vector: ${err instanceof Error ? err.message : String(err)}`, 'warn');
-          }
-        }
-      }
-    },
-
-    ensureVecTable(dimensions: number) {
-      if (!state.vecAvailable) return;
-      try {
-        let needsRebuild = false;
-        try {
-          const testVec = new Float32Array(dimensions);
-          db.prepare('SELECT hash_seq FROM vectors_vec WHERE embedding MATCH ? LIMIT 1').get(testVec);
-          const vecCount = (db.prepare('SELECT COUNT(*) as count FROM vectors_vec').get() as { count: number }).count;
-          const cvCount = (db.prepare('SELECT COUNT(*) as count FROM content_vectors').get() as { count: number }).count;
-          const usingExternalVectorStore = state.vectorStore && !(state.vectorStore instanceof SqliteVecStore);
-          if (vecCount === 0 && cvCount > 0 && !usingExternalVectorStore) {
-            log('store', 'ensureVecTable clearing stale content_vectors count=' + cvCount);
-            log('store', `vectors_vec empty but content_vectors has ${cvCount} stale rows, clearing for re-embedding`, 'error');
-            db.exec(`DELETE FROM content_vectors`);
-          } else if (vecCount === 0 && cvCount > 0 && usingExternalVectorStore) {
-            log('store', `ensureVecTable: vectors_vec empty but external vector store active, skipping content_vectors clear (${cvCount} rows preserved)`);
-          }
-          return;
-        } catch {
-          needsRebuild = true;
-        }
-        if (needsRebuild) {
-          log('store', 'ensureVecTable rebuilding dimensions=' + dimensions);
-          db.exec(`DROP TABLE IF EXISTS vectors_vec`);
-          db.exec(`DELETE FROM content_vectors`);
-          db.exec(`DELETE FROM llm_cache`);
-          db.exec(`
-            CREATE VIRTUAL TABLE vectors_vec USING vec0(
-              hash_seq TEXT PRIMARY KEY,
-              embedding float[${dimensions}] distance_metric=cosine
-            );
-          `);
-          log('store', `Recreated vectors_vec with ${dimensions} dimensions, cleared content_vectors and llm_cache for re-embedding`);
-        }
-      } catch (err) {
-        log('store', `Failed to recreate vector table: ${err instanceof Error ? err.message : String(err)}`, 'warn');
-      }
-    },
-
-    searchVec(query: string, embedding: number[], options: StoreSearchOptions = {}): SearchResult[] {
-      const { limit = 10, collection, projectHash, tags, since, until } = options;
-      if (!state.vecAvailable) {
-        return [];
-      }
-
-      try {
-        let sql = `
-          SELECT v.hash_seq, v.distance, d.id, d.path, d.collection, d.title, d.hash, d.agent, d.project_hash,
-                 d.centrality, d.cluster_id, d.superseded_by,
-                 d.access_count, d.last_accessed_at as lastAccessedAt,
-                 substr(c.body, 1, 700) as snippet
-          FROM vectors_vec v
-          JOIN documents d ON substr(v.hash_seq, 1, instr(v.hash_seq, ':') - 1) = d.hash
-          LEFT JOIN content c ON c.hash = d.hash
-          WHERE v.embedding MATCH ?
-            AND k = ?
-            AND d.active = 1
-        `;
-
-        const params: (Float32Array | string | number)[] = [new Float32Array(embedding), limit];
-        if (collection) {
-          sql += ` AND d.collection = ?`;
-          params.push(collection);
-        }
-        if (projectHash && projectHash !== 'all') {
-          sql += ` AND d.project_hash IN (?, 'global')`;
-          params.push(projectHash);
-        }
-        if (since) {
-          sql += ` AND d.modified_at >= ?`;
-          params.push(since);
-        }
-        if (until) {
-          sql += ` AND d.modified_at <= ?`;
-          params.push(until);
-        }
-        if (tags && tags.length > 0) {
-          sql += ` AND d.id IN (
-            SELECT dt.document_id FROM document_tags dt
-            WHERE dt.tag IN (${tags.map(() => '?').join(',')})
-            GROUP BY dt.document_id
-            HAVING COUNT(DISTINCT dt.tag) = ?
-          )`;
-          params.push(...tags.map(t => t.toLowerCase().trim()));
-          params.push(tags.length);
-        }
-        sql += ` ORDER BY v.distance`;
-
-        const stmt = db.prepare(sql);
-        const rows = stmt.all(...params) as Array<Record<string, unknown>>;
-        log('store', 'searchVec query=' + query + ' results=' + rows.length, 'debug');
-
-        return rows.map(row => ({
-          id: String(row.id),
-          path: row.path as string,
-          collection: row.collection as string,
-          title: row.title as string,
-          snippet: (row.snippet as string) || '',
-          score: 1 - (row.distance as number),
-          startLine: 0,
-          endLine: 0,
-          docid: (row.hash as string).substring(0, 6),
-          agent: row.agent as string | undefined,
-          projectHash: projectHash === 'all' ? (row.project_hash as string | undefined) : undefined,
-          centrality: row.centrality as number | undefined,
-          clusterId: row.cluster_id as number | undefined,
-          supersededBy: row.superseded_by as number | null | undefined,
-          access_count: row.access_count as number | undefined,
-          lastAccessedAt: row.lastAccessedAt as string | null | undefined,
-        }));
-      } catch (err) {
-        log('store', `Vector search failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
-        return [];
       }
     },
 
@@ -277,11 +142,11 @@ export function makeVectorMethods(
           log('store', 'searchVecAsync(qdrant) query=' + query + ' results=' + results.length, 'debug');
           return results;
         } catch (err) {
-          log('store', 'searchVecAsync qdrant failed, falling back to SQLite: ' + (err instanceof Error ? err.message : String(err)));
+          log('store', 'searchVecAsync qdrant failed: ' + (err instanceof Error ? err.message : String(err)));
         }
       }
 
-      return this.searchVec(query, embedding, options);
+      return [];
     },
 
     cleanupVectorsForHash(hash: string): void {
@@ -310,17 +175,6 @@ export function makeVectorMethods(
         const cvResult = deleteContentVectorsStmt.run();
         totalDeleted += cvResult.changes;
 
-        if (state.vecAvailable) {
-          try {
-            const deleteVecStmt = db.prepare(`
-              DELETE FROM vectors_vec WHERE substr(hash_seq, 1, instr(hash_seq, ':') - 1) NOT IN (SELECT DISTINCT hash FROM documents WHERE active = 1)
-            `);
-            const vecResult = deleteVecStmt.run();
-            totalDeleted += vecResult.changes;
-          } catch {
-          }
-        }
-
         return { totalDeleted, orphanedHashes };
       });
 
@@ -338,14 +192,6 @@ export function makeVectorMethods(
 
       log('store', 'cleanOrphanedEmbeddings deleted=' + totalDeleted);
       return totalDeleted;
-    },
-
-    getSqliteVecCount(): number {
-      if (!state.vecAvailable) return 0;
-      try {
-        const row = db.prepare('SELECT COUNT(*) as count FROM vectors_vec').get() as { count: number };
-        return row.count;
-      } catch { return 0; }
     },
 
     getHashesNeedingEmbedding(projectHash?: string, limit?: number): Array<{ hash: string; body: string; path: string }> {

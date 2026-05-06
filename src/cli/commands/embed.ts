@@ -71,7 +71,6 @@ export async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string
     if (qdrantStore) store.setVectorStore(qdrantStore);
     const hashes = store.getHashesNeedingEmbedding();
     if (hashes.length > 0) {
-      store.ensureVecTable(provider.getDimensions());
       cliOutput(`[${path.basename(process.cwd())}] ${hashes.length} chunks pending...`);
       const embedded = await embedPendingCodebase(store, provider, 50);
       totalEmbedded += embedded;
@@ -97,7 +96,6 @@ export async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string
         if (qdrantStore) wsStore.setVectorStore(qdrantStore);
         const wsHashes = wsStore.getHashesNeedingEmbedding();
         if (wsHashes.length > 0) {
-          wsStore.ensureVecTable(provider.getDimensions());
           cliOutput(`[${path.basename(wsPath)}] ${wsHashes.length} chunks pending...`);
           const embedded = await embedPendingCodebase(wsStore, provider, 50);
           totalEmbedded += embedded;

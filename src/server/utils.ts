@@ -246,7 +246,7 @@ export function formatStatus(
   } else if (vectorHealth === null) {
     lines.push(``)
     lines.push(`**Vector Store:**`)
-    lines.push(`  - Provider: sqlite-vec (built-in)`)
+    lines.push(`  - Provider: none configured`)
   }
   if (tokenUsage && tokenUsage.length > 0) {
     lines.push(``)

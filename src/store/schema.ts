@@ -264,7 +264,7 @@ export function runMigrations(db: Database.Database): void {
 
   // Schema versioning
   const currentVersion = (db.pragma('user_version') as Array<{ user_version: number }>)[0].user_version;
-  const TARGET_VERSION = 11;
+  const TARGET_VERSION = 12;
 
   if (currentVersion < 1) {
     db.exec(`
@@ -526,6 +526,12 @@ export function runMigrations(db: Database.Database): void {
     db.exec("CREATE INDEX IF NOT EXISTS idx_consolidation_log_pending ON consolidation_log(action, applied_at)");
     db.pragma(`user_version = 11`);
     log('store', 'Schema migrated to version 11 (consolidation_log applied_at, applied_error columns)');
+  }
+
+  if (currentVersion < 12) {
+    db.exec(`DROP TABLE IF EXISTS vec_content_vectors`);
+    db.pragma(`user_version = 12`);
+    log('store', 'Schema migrated to version 12 (dropped vec_content_vectors)');
   }
 
   void TARGET_VERSION;

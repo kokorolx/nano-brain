@@ -18,7 +18,7 @@ export function sanitizeFTS5Query(query: string): string {
 export function makeDocumentMethods(
   db: Database.Database,
   stmts: Stmts,
-  state: { workspaceRoot: string | null; vectorStore: VectorStore | null; vecAvailable: boolean }
+  state: { workspaceRoot: string | null; vectorStore: VectorStore | null }
 ) {
   function toRelativePath(absolutePath: string, workspaceRoot: string): string {
     if (!absolutePath.startsWith('/')) return absolutePath;
@@ -313,11 +313,6 @@ export function makeDocumentMethods(
           for (const hash of orphanedHashes) {
             const cvResult = db.prepare('DELETE FROM content_vectors WHERE hash = ?').run(hash);
             embeddingsDeleted += cvResult.changes;
-            if (state.vecAvailable) {
-              try {
-                db.prepare("DELETE FROM vectors_vec WHERE hash_seq LIKE ? || ':%'").run(hash);
-              } catch { }
-            }
           }
 
           db.prepare('DELETE FROM documents WHERE project_hash = ?').run(projectHash);
@@ -372,11 +367,6 @@ export function makeDocumentMethods(
         for (const hash of orphanedHashes) {
           const cvResult = db.prepare('DELETE FROM content_vectors WHERE hash = ?').run(hash);
           embeddingsDeleted += cvResult.changes;
-          if (state.vecAvailable) {
-            try {
-              db.prepare("DELETE FROM vectors_vec WHERE hash_seq LIKE ? || ':%'").run(hash);
-            } catch { }
-          }
         }
 
         const deleteResult = db.prepare('DELETE FROM documents WHERE project_hash = ?').run(projectHash);

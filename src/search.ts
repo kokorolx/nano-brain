@@ -143,15 +143,6 @@ export function searchFTS(
   return store.searchFTS(query, options);
 }
 
-export function searchVec(
-  store: Store,
-  query: string,
-  embedding: number[],
-  options?: StoreSearchOptions
-): SearchResult[] {
-  return store.searchVec(query, embedding, options);
-}
-
 export async function searchVecAsync(
   store: Store,
   query: string,
