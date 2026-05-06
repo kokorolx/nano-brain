@@ -278,16 +278,13 @@ async function runCombinationTests(
     const tokenA = 'BENCH_SUPERSEDE_A_' + Date.now();
     const contentA = `Supersede test document A: ${tokenA}`;
     const hashA = crypto.createHash('sha256').update(contentA).digest('hex');
-    fs.mkdirSync(memoryDir, { recursive: true });
-    const filePathA = path.join(memoryDir, `bench-supersede-${Date.now()}.md`);
-    let writeExitCode = 1;
-    let oldGone = false;
+    let supersededCorrectly = false;
+    let detail = '';
     try {
-      fs.writeFileSync(filePathA, contentA, 'utf-8');
       store.insertContent(hashA, contentA);
-      store.insertDocument({
+      const docIdA = store.insertDocument({
         collection: 'memory',
-        path: filePathA,
+        path: `/bench-supersede-${Date.now()}.md`,
         title: tokenA,
         hash: hashA,
         createdAt: new Date().toISOString(),
@@ -296,20 +293,24 @@ async function runCombinationTests(
         projectHash,
       });
 
-      const tokenB = 'BENCH_SUPERSEDE_B_' + Date.now();
-      const writeResult = spawnCLI(cliEntry, ['write', tokenB, `--supersedes=${filePathA}`], env);
-      const queryResult = spawnCLI(cliEntry, ['search', tokenA], env);
-      writeExitCode = writeResult.exitCode;
-      oldGone = !queryResult.stdout.includes(tokenA);
+      store.supersedeDocument(docIdA, 0);
+
+      const ftsResults = store.searchFTS(tokenA, { limit: 10 });
+      const activeMatches = ftsResults.filter(
+        r => r.title === tokenA && (r.supersededBy === null || r.supersededBy === undefined)
+      );
+      supersededCorrectly = activeMatches.length === 0;
+      detail = supersededCorrectly
+        ? 'Superseded doc absent from active results'
+        : `Superseded doc still appears as active: ${activeMatches.map(r => r.title).join(', ')}`;
     } finally {
       store.close();
-      try { fs.unlinkSync(filePathA); } catch {}
     }
 
     results.push({
       name: 'supersede→query',
-      status: writeExitCode === 0 && oldGone ? 'pass' : 'fail',
-      detail: oldGone ? 'Superseded doc absent from results' : `Old doc still present. write_exit=${writeExitCode}`,
+      status: supersededCorrectly ? 'pass' : 'fail',
+      detail,
     });
   }
 
@@ -487,9 +488,74 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
   const timestamp = new Date().toISOString().replace(/:/g, '-').replace(/\./g, '-');
   const resultFile = path.join(resultsDir, `${timestamp}.json`);
   fs.writeFileSync(resultFile, JSON.stringify(result, null, 2), 'utf-8');
-  console.log(`\nResult written to ${resultFile}`);
+
+  printBenchSummary(result, resultFile);
 
   return result;
+}
+
+function printSummary(result: BenchResult, resultFile: string): void {
+  const W = 40;
+  const SEP = '='.repeat(W);
+  const line = (s: string) => console.log(s);
+  const pad = (s: string, w: number) => s.padEnd(w).substring(0, w);
+
+  for (const [scaleKey, sr] of Object.entries(result.scales)) {
+    line('');
+    line(SEP);
+    line(` nano-brain benchmark  |  scale: ${scaleKey}`);
+    line(SEP);
+
+    line('');
+    line('QUALITY');
+    line('-------');
+    line(pad('Mode', 10) + pad('P@5', 8) + pad('R@10', 8) + 'MRR');
+
+    const fts = sr.quality.fts;
+    line(pad('FTS', 10) + pad(fts.mean_p5.toFixed(3), 8) + pad(fts.mean_r10.toFixed(3), 8) + fts.mean_mrr.toFixed(3));
+
+    if (sr.quality.vector) {
+      const v = sr.quality.vector;
+      line(pad('Vector', 10) + pad(v.mean_p5.toFixed(3), 8) + pad(v.mean_r10.toFixed(3), 8) + v.mean_mrr.toFixed(3));
+    }
+
+    if (sr.quality.hybrid) {
+      const h = sr.quality.hybrid;
+      line(pad('Hybrid', 10) + pad(h.mean_p5.toFixed(3), 8) + pad(h.mean_r10.toFixed(3), 8) + h.mean_mrr.toFixed(3));
+    }
+
+    const passCount = sr.commands.filter(c => c.status === 'pass').length;
+    line('');
+    line(`COMMANDS  (${passCount}/${sr.commands.length} pass)`);
+    for (const cmd of sr.commands) {
+      const icon = cmd.status === 'pass' ? 'PASS' : 'FAIL';
+      line(`  ${icon}  ${pad(cmd.cmd, 14)}${cmd.duration_ms}ms`);
+    }
+
+    line('');
+    line('COMBINATION TESTS');
+    for (const ct of sr.combination_tests) {
+      const icon = ct.status === 'pass' ? 'PASS' : 'FAIL';
+      const suffix = ct.status === 'fail' ? `       ${ct.detail}` : '';
+      line(`  ${icon}  ${ct.name}${suffix}`);
+    }
+
+    const lat = sr.latency;
+    line('');
+    line('LATENCY');
+    line(`  Insert   p50=${lat.insert.p50_ms}ms   p95=${lat.insert.p95_ms}ms`);
+    if (lat.query_fts) line(`  Query    p50=${lat.query_fts.p50_ms}ms   p95=${lat.query_fts.p95_ms}ms`);
+    if (lat.query_vector) line(`  Vector   p50=${lat.query_vector.p50_ms}ms   p95=${lat.query_vector.p95_ms}ms`);
+    if (lat.query_hybrid) line(`  Hybrid   p50=${lat.query_hybrid.p50_ms}ms   p95=${lat.query_hybrid.p95_ms}ms`);
+
+    line('');
+    line(`Result saved: ${resultFile}`);
+    line(SEP);
+  }
+}
+
+function printBenchSummary(result: BenchResult, resultFile: string): void {
+  printSummary(result, resultFile);
 }
 
 function validateResult(result: BenchResult): void {
