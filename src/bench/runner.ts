@@ -6,6 +6,8 @@ import { spawnSync } from 'child_process';
 import { createStore } from '../store.js';
 import { hybridSearch } from '../search.js';
 import { createEmbeddingProvider } from '../embeddings.js';
+import { createReranker } from '../providers/reranker.js';
+import type { Reranker } from '../providers/reranker.js';
 import { generateCorpus, computeCorpusHash } from './generator.js';
 import { QdrantVecStore } from '../providers/qdrant.js';
 import type {
@@ -137,9 +139,11 @@ async function measureQuality(
   groundTruth: GroundTruthQuery[],
   ollamaUrl: string | null,
   qdrantVecStore: QdrantVecStore | null,
-  hashToPath: Map<string, string>
+  hashToPath: Map<string, string>,
+  reranker: Reranker | null
 ): Promise<{ quality: ScaleQuality; latency: Omit<ScaleLatency, 'insert'> }> {
   const store = createStore(dbPath);
+  if (qdrantVecStore) store.setVectorStore(qdrantVecStore);
 
   let embedder: { embed(text: string): Promise<{ embedding: number[] }>; dispose(): void } | null = null;
   if (ollamaUrl) {
@@ -180,7 +184,7 @@ async function measureQuality(
         vecPerQuery.push({ query: gt.query, ...computeQueryMetrics(vecIds, gt.relevant_doc_ids) });
 
         const t0hyb = Date.now();
-        const hybResults = await hybridSearch(store, { query: gt.query, limit: 10 }, { embedder });
+        const hybResults = await hybridSearch(store, { query: gt.query, limit: 10 }, { embedder, reranker });
         hybQueryTimes.push(Date.now() - t0hyb);
         const hybIds = hybResults.map((r: { path: string }) => docIdFromPath(r.path));
         hybPerQuery.push({ query: gt.query, ...computeQueryMetrics(hybIds, gt.relevant_doc_ids) });
@@ -437,6 +441,21 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
     await qdrantVecStore.ensureCollection();
   }
 
+  let reranker: Reranker | null = null;
+  try {
+    const cohereKey = process.env['COHERE_API_KEY'];
+    if (cohereKey) {
+      reranker = await createReranker({ provider: 'cohere', apiKey: cohereKey, model: 'rerank-v3.5' });
+      console.log('[bench] ✅ Reranker: Cohere rerank-v3.5');
+    } else {
+      console.log('[bench] ⚠️  Reranker: disabled (no COHERE_API_KEY)');
+    }
+  } catch (err) {
+    console.log(`[bench] ⚠️  Reranker: failed to init — ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  console.log(`[bench] Providers: embedder=${ollamaUrl ? '✅' : '❌'} qdrant=${qdrantVecStore ? '✅' : '❌'} reranker=${reranker ? '✅' : '❌'}`);
+
   const ollamaInfo = await getOllamaInfo(ollamaUrl);
   const env: BenchEnvironment = {
     ollama_model: ollamaInfo?.model ?? 'none',
@@ -488,7 +507,7 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
       const { latency: insertLatency, hashToPath } = await insertDocs(testDbPath, fixturesDir, ollamaUrl, qdrantVecStore);
 
       console.log('  Running quality metrics...');
-      const { quality, latency: queryLatency } = await measureQuality(testDbPath, groundTruth, ollamaUrl, qdrantVecStore, hashToPath);
+      const { quality, latency: queryLatency } = await measureQuality(testDbPath, groundTruth, ollamaUrl, qdrantVecStore, hashToPath, reranker);
 
       const scaleLatency: ScaleLatency = {
         insert: insertLatency,
