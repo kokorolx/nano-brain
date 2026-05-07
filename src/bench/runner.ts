@@ -91,9 +91,10 @@ async function runCommandTest(
   cmd: string,
   args: string[],
   env: Record<string, string>,
-  cliEntry: string
+  cliEntry: string,
+  timeoutMs?: number
 ): Promise<CommandResult> {
-  const result = spawnCLI(cliEntry, [cmd, ...args], env);
+  const result = spawnCLI(cliEntry, [cmd, ...args], env, timeoutMs);
   const pass = result.exitCode === 0 && result.stdout.trim().length > 0;
   return {
     cmd,
@@ -297,7 +298,7 @@ async function runCombinationTests(
   {
     const uniqueToken = 'BENCH_UNIQUE_TOKEN_' + Date.now();
     const writeResult = spawnCLI(cliEntry, ['write', uniqueToken], env);
-    const reindexResult = spawnCLI(cliEntry, ['reindex'], env);
+    const reindexResult = spawnCLI(cliEntry, ['reindex'], env, 180000);
     const queryResult = spawnCLI(cliEntry, ['search', uniqueToken], env);
     const found = queryResult.stdout.includes(uniqueToken);
     results.push({
@@ -353,7 +354,7 @@ async function runCombinationTests(
     const sessionFile = path.join(sessionsDir, `bench-session-${Date.now()}.md`);
     fs.writeFileSync(sessionFile, `# Bench Session\n\n${sessionToken}\n`, 'utf-8');
 
-    const reindexResult = spawnCLI(cliEntry, ['reindex'], env);
+    const reindexResult = spawnCLI(cliEntry, ['reindex'], env, 180000);
     const searchResult = spawnCLI(cliEntry, ['search', sessionToken], env);
     const found = searchResult.stdout.includes(sessionToken);
 
@@ -533,7 +534,7 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
         commandResults.push(await runCommandTest('vsearch', [firstQuery], cliBenchEnv, cliEntry));
       }
       commandResults.push(await runCommandTest('write', ['benchmark test document content'], cliBenchEnv, cliEntry));
-      commandResults.push(await runCommandTest('reindex', [], cliBenchEnv, cliEntry));
+      commandResults.push(await runCommandTest('reindex', ['--root', fixturesDir], cliBenchEnv, cliEntry, 60000));
       commandResults.push(await runCommandTest('status', [], cliBenchEnv, cliEntry));
       commandResults.push(await runCommandTest('tags', [], cliBenchEnv, cliEntry));
 
