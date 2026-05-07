@@ -8,6 +8,7 @@ import { hybridSearch } from '../search.js';
 import { createEmbeddingProvider } from '../embeddings.js';
 import { createReranker } from '../providers/reranker.js';
 import type { Reranker } from '../providers/reranker.js';
+import { loadCollectionConfig } from '../collections.js';
 import { generateCorpus, computeCorpusHash } from './generator.js';
 import { QdrantVecStore } from '../providers/qdrant.js';
 import type {
@@ -443,12 +444,20 @@ export async function runBenchmarkSuite(opts: RunOptions): Promise<BenchResult> 
 
   let reranker: Reranker | null = null;
   try {
-    const cohereKey = process.env['COHERE_API_KEY'];
+    let cohereKey = process.env['COHERE_API_KEY'];
+    let rerankerModel = 'rerank-v3.5';
+    if (!cohereKey) {
+      const nanoBrainHome = path.join(os.homedir(), '.nano-brain');
+      const cfg = loadCollectionConfig(path.join(nanoBrainHome, 'config.yml'))
+        ?? loadCollectionConfig(path.join(nanoBrainHome, 'collections.yaml'));
+      cohereKey = cfg?.reranker?.apiKey ?? cfg?.embedding?.apiKey;
+      if (cfg?.reranker?.model) rerankerModel = cfg.reranker.model;
+    }
     if (cohereKey) {
-      reranker = await createReranker({ provider: 'cohere', apiKey: cohereKey, model: 'rerank-v3.5' });
-      console.log('[bench] ✅ Reranker: Cohere rerank-v3.5');
+      reranker = await createReranker({ provider: 'cohere', apiKey: cohereKey, model: rerankerModel });
+      console.log(`[bench] ✅ Reranker: Cohere ${rerankerModel}`);
     } else {
-      console.log('[bench] ⚠️  Reranker: disabled (no COHERE_API_KEY)');
+      console.log('[bench] ⚠️  Reranker: disabled (no COHERE_API_KEY and no key in config.yml)');
     }
   } catch (err) {
     console.log(`[bench] ⚠️  Reranker: failed to init — ${err instanceof Error ? err.message : String(err)}`);
