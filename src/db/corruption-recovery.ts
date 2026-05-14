@@ -16,6 +16,36 @@ import { applyPragmas } from '../store.js';
 
 const checkedPaths = new Set<string>();
 
+// Cooldown between integrity checks — default 30 minutes.
+// Set NANO_BRAIN_CHECK_COOLDOWN_MS=0 to force check every time.
+const INTEGRITY_CHECK_COOLDOWN_MS = 30 * 60 * 1000;
+
+function getCooldownMs(): number {
+  const env = process.env.NANO_BRAIN_CHECK_COOLDOWN_MS;
+  if (env !== undefined) return Math.max(0, parseInt(env, 10) || 0);
+  return INTEGRITY_CHECK_COOLDOWN_MS;
+}
+
+// WAL mode makes mtime unreliable (checkpoint writes change mtime without corruption).
+// We use timestamp-only cooldown — sufficient since WAL protects against crash corruption.
+function readStamp(dbPath: string): number | null {
+  try {
+    const raw = fs.readFileSync(dbPath + '.checked', 'utf-8').trim();
+    const ts = parseInt(raw, 10);
+    return isFinite(ts) && ts > 0 ? ts : null;
+  } catch { return null; }
+}
+
+function writeStamp(dbPath: string): void {
+  try {
+    fs.writeFileSync(dbPath + '.checked', String(Date.now()), 'utf-8');
+  } catch { /* non-fatal: missing stamp means next call re-checks */ }
+}
+
+export function clearStamp(dbPath: string): void {
+  try { fs.unlinkSync(path.resolve(dbPath) + '.checked'); } catch { /* non-fatal */ }
+}
+
 export function resetCheckedPaths(): void {
   checkedPaths.clear();
 }
@@ -115,12 +145,24 @@ export function checkAndRecoverDB(
     const freshDb = new Database(resolvedPath);
     applyPragmas(freshDb);
     checkedPaths.add(resolvedPath);
+    writeStamp(resolvedPath);
     return { db: freshDb, recovered: false };
   }
 
   // Skip integrity check if already checked this path in this process
   if (checkedPaths.has(resolvedPath)) {
     logger?.log('corruption-recovery', `Skipping integrity check (already verified): ${resolvedPath}`);
+    const db = new Database(resolvedPath);
+    applyPragmas(db);
+    return { db, recovered: false };
+  }
+
+  // Skip integrity check if stamp is within cooldown window
+  const stampTs = readStamp(resolvedPath);
+  const cooldown = getCooldownMs();
+  if (stampTs !== null && cooldown > 0 && (Date.now() - stampTs) < cooldown) {
+    logger?.log('corruption-recovery', `Skipping integrity check (stamp valid, cooldown ${cooldown}ms): ${resolvedPath}`);
+    checkedPaths.add(resolvedPath);
     const db = new Database(resolvedPath);
     applyPragmas(db);
     return { db, recovered: false };
@@ -147,6 +189,7 @@ export function checkAndRecoverDB(
       } else {
         logger?.log('corruption-recovery', 'Quick check PASSED - database is valid');
         checkedPaths.add(resolvedPath);
+        writeStamp(resolvedPath);
       }
     } catch (checkError) {
       // If quick_check itself throws, database is corrupted
@@ -231,6 +274,7 @@ export function checkAndRecoverDB(
     }
 
     checkedPaths.add(resolvedPath);
+    writeStamp(resolvedPath);
     return { db: freshDb, recovered: true, recoveredAt: new Date().toISOString(), corruptedPath };
   }
 
