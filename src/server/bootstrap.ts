@@ -117,6 +117,14 @@ export async function startServer(options: ServerOptions): Promise<void> {
   };
   if (httpPort) {
     httpServer = createHttpServer(httpPort, httpHost, (req, res) => requestHandler(req, res));
+    // Wait for the port to be bound before calling createStore.
+    // createStore runs PRAGMA quick_check synchronously which blocks the event loop,
+    // preventing the async socket binding from completing if we don't wait here first.
+    await new Promise<void>((resolve, reject) => {
+      httpServer!.once('listening', resolve);
+      httpServer!.once('error', reject);
+    });
+    log('server', `Early HTTP binding ready — port ${httpPort} open (status: starting)`);
   }
 
   const store = createStore(effectiveDbPath);
