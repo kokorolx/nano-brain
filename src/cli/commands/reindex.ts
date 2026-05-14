@@ -8,10 +8,8 @@ import type { GlobalOptions } from '../types.js';
 import { isInsideContainer } from '../../host.js';
 import {
   DEFAULT_HTTP_PORT,
-  detectRunningServer,
+  assertContainerServer,
   proxyPost,
-  getHttpHost,
-  getHttpPort,
   resolveDbPath,
 } from '../utils.js';
 
@@ -29,13 +27,8 @@ export async function handleReindex(globalOpts: GlobalOptions, commandArgs: stri
 
   log('cli', 'reindex root=' + root);
 
-  if (isInsideContainer()) {
-    const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
-    if (!serverRunning) {
-      cliError(`Error: nano-brain server not reachable at ${getHttpHost()}:${getHttpPort()}. Ensure the Docker container is running:`);
-      cliError('  docker start nano-brain');
-      process.exit(1);
-    }
+  const serverRunning = await assertContainerServer();
+  if (serverRunning) {
     try {
       const result = await proxyPost(DEFAULT_HTTP_PORT, '/api/reindex', { root });
       if (result.error) {
@@ -45,8 +38,11 @@ export async function handleReindex(globalOpts: GlobalOptions, commandArgs: stri
       cliOutput(`✅ Reindex started in background on daemon for ${result.root}`);
       return;
     } catch (err) {
-      cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
-      process.exit(1);
+      if (isInsideContainer()) {
+        cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+      log('cli', 'HTTP proxy failed for reindex, falling back to local: ' + (err instanceof Error ? err.message : String(err)));
     }
   }
 

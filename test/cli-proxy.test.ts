@@ -49,15 +49,24 @@ function captureOutput(): { lines: () => string[]; restore: () => void } {
   };
 }
 
+function mockServerStarting() {
+  mockFetch.mockImplementation((url: string) => {
+    if (String(url).includes('/health')) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'starting', ready: false }) });
+    }
+    return Promise.resolve({ ok: false, status: 503, statusText: 'Service Unavailable' });
+  });
+}
+
 function mockServerRunning(tagResponse = { tags: [{ tag: 'memory', count: 5 }, { tag: 'code', count: 3 }] }) {
   mockFetch.mockImplementation((url: string) => {
     if (String(url).includes('/health')) {
-      return Promise.resolve({ ok: true });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'ok', ready: true }) });
     }
     if (String(url).includes('/api/v1/tags')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(tagResponse) });
     }
-    if (String(url).includes('/api/update')) {
+    if (String(url).includes('/api/v1/update')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'started', workspace: process.cwd() }) });
     }
     if (String(url).includes('/api/status')) {
@@ -182,9 +191,9 @@ describe('handleUpdate — proxy when server running', () => {
     out.restore();
     cleanup();
 
-    const updateCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('/api/update'));
+    const updateCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('/api/v1/update'));
     expect(updateCalls.length).toBe(1);
-    expect(mockFetch.mock.calls.find(([url]) => String(url).includes('/api/update'))?.[1]?.method).toBe('POST');
+    expect(mockFetch.mock.calls.find(([url]) => String(url).includes('/api/v1/update'))?.[1]?.method).toBe('POST');
   });
 
   it('shows success message after proxy update', async () => {
@@ -235,5 +244,112 @@ describe('handleStatus — container mode, server not running', () => {
 
     exitSpy.mockRestore();
     cleanup();
+  });
+});
+
+// ─── server startup UX ───────────────────────────────────────────────────────
+
+import { assertContainerServer } from '../src/cli/utils.js';
+
+describe('detectRunningServer — ready flag', () => {
+  it('returns true only when /health responds with ready: true', async () => {
+    mockServerRunning();
+    const { detectRunningServer } = await import('../src/cli/utils.js');
+    const result = await detectRunningServer();
+    expect(result).toBe(true);
+  });
+
+  it('returns false when /health responds with ready: false (server starting)', async () => {
+    mockServerStarting();
+    const { detectRunningServer } = await import('../src/cli/utils.js');
+    const result = await detectRunningServer();
+    expect(result).toBe(false);
+  });
+
+  it('returns false when server is completely down', async () => {
+    mockServerDown();
+    const { detectRunningServer } = await import('../src/cli/utils.js');
+    const result = await detectRunningServer();
+    expect(result).toBe(false);
+  });
+});
+
+describe('assertContainerServer — startup hint', () => {
+  it('exits with "starting up" message when server is starting (not "not reachable")', async () => {
+    mockIsInsideContainer.mockReturnValue(true);
+    mockServerStarting();
+
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((data) => {
+      stderrLines.push(String(data));
+      return true;
+    });
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit called');
+    }) as never);
+
+    await expect(assertContainerServer()).rejects.toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    const stderr = stderrLines.join('');
+    expect(stderr).toContain('starting up');
+    expect(stderr).not.toContain('docker start nano-brain');
+
+    exitSpy.mockRestore();
+  });
+
+  it('exits with "not reachable" + docker start hint when server is completely down', async () => {
+    mockIsInsideContainer.mockReturnValue(true);
+    mockServerDown();
+
+    const stderrLines: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((data) => {
+      stderrLines.push(String(data));
+      return true;
+    });
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit called');
+    }) as never);
+
+    await expect(assertContainerServer()).rejects.toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    const stderr = stderrLines.join('');
+    expect(stderr).toContain('docker start nano-brain');
+    expect(stderr).not.toContain('starting up');
+
+    exitSpy.mockRestore();
+  });
+
+  it('returns true and does not exit when server is ready', async () => {
+    mockIsInsideContainer.mockReturnValue(true);
+    mockServerRunning();
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit called');
+    }) as never);
+
+    const result = await assertContainerServer();
+    expect(result).toBe(true);
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
+  });
+
+  it('returns false without exiting when not in container and server is down', async () => {
+    mockIsInsideContainer.mockReturnValue(false);
+    mockServerDown();
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {
+      throw new Error('process.exit called');
+    }) as never);
+
+    const result = await assertContainerServer();
+    expect(result).toBe(false);
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    exitSpy.mockRestore();
   });
 });

@@ -8,27 +8,19 @@ import type { GlobalOptions } from '../types.js';
 import {
   DEFAULT_HTTP_PORT,
   DEFAULT_OUTPUT_DIR,
-  detectRunningServer,
+  assertContainerServer,
   proxyPost,
-  getHttpHost,
-  getHttpPort,
 } from '../utils.js';
 
 export async function handleUpdate(globalOpts: GlobalOptions): Promise<void> {
   log('cli', 'update start');
 
   const inContainer = isInsideContainer();
-  const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
-
-  if (inContainer && !serverRunning) {
-    cliError(`Error: nano-brain server not reachable at ${getHttpHost()}:${getHttpPort()}. Ensure the Docker container is running:`);
-    cliError('  docker start nano-brain');
-    process.exit(1);
-  }
+  const serverRunning = await assertContainerServer();
 
   if (serverRunning) {
     try {
-      await proxyPost(DEFAULT_HTTP_PORT, '/api/update', {});
+      await proxyPost(DEFAULT_HTTP_PORT, '/api/v1/update', {});
       cliOutput('✅ Update triggered');
       return;
     } catch (err) {

@@ -8,10 +8,8 @@ import { isInsideContainer } from '../../host.js';
 import {
   DEFAULT_HTTP_PORT,
   DEFAULT_MEMORY_DIR,
-  detectRunningServer,
+  assertContainerServer,
   proxyPost,
-  getHttpHost,
-  getHttpPort,
 } from '../utils.js';
 
 export async function handleWrite(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
@@ -36,13 +34,7 @@ export async function handleWrite(globalOpts: GlobalOptions, commandArgs: string
   }
 
   const inContainer = isInsideContainer();
-  const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
-
-  if (inContainer && !serverRunning) {
-    cliError(`Error: nano-brain server not reachable at ${getHttpHost()}:${getHttpPort()}. Ensure the Docker container is running:`);
-    cliError('  docker start nano-brain');
-    process.exit(1);
-  }
+  const serverRunning = await assertContainerServer();
 
   if (serverRunning) {
     try {

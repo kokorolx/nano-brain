@@ -60,6 +60,8 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
+let updateInProgress = false;
+
 export async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -357,12 +359,18 @@ export async function handleRequest(
     return;
   }
 
-  if (req.method === 'POST' && pathname === '/api/update') {
+  if (req.method === 'POST' && (pathname === '/api/v1/update' || pathname === '/api/update')) {
+    if (updateInProgress) {
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'already_running', message: 'Update already in progress' }));
+      return;
+    }
     try {
       const config = loadCollectionConfig(finalConfigPath);
       const collections = config ? getCollections(config) : [];
       const sessionsDir = path.join(outputDir, 'sessions');
 
+      updateInProgress = true;
       ;(async () => {
         let indexed = 0;
         let skipped = 0;
@@ -380,12 +388,15 @@ export async function handleRequest(
             } catch { /* skip unreadable files */ }
           }
         }
-        log('server', `[api/update] Complete: ${indexed} indexed, ${skipped} skipped`);
-      })().catch(err => log('server', `[api/update] Error: ${err instanceof Error ? err.message : String(err)}`));
+        log('server', `[api/v1/update] Complete: ${indexed} indexed, ${skipped} skipped`);
+      })()
+        .catch(err => log('server', `[api/v1/update] Error: ${err instanceof Error ? err.message : String(err)}`))
+        .finally(() => { updateInProgress = false; });
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'started', workspace: resolvedWorkspaceRoot, message: 'Update started' }));
     } catch (err) {
+      updateInProgress = false;
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Invalid request' }));
     }

@@ -97,6 +97,10 @@ Thompson Sampling tunes RRF blend weights and reranking thresholds based on sear
 - **CLI entrypoint**: `bin/cli.js` is a thin wrapper that runs `dist/cli/index.js` if it exists, otherwise falls back to `tsx src/cli/index.ts`. Do not require a build step for development.
 - **Incremental updates everywhere**: Hash-based dirty detection prevents redundant re-processing. Preserve this invariant when adding new index types.
 
+## Git & PR Conventions
+
+- **No agent footers in commits or PRs**: Do not add `Co-Authored-By`, `🤖 Generated with`, or any agent attribution lines to commit messages or PR descriptions.
+
 ## Testing Patterns
 
 Integration tests spin up real SQLite databases in temp directories. The `test/fixtures/` directory contains corpora for benchmark evaluation. RRI-T tests follow a 5-phase methodology (PREPARE → DISCOVER → STRUCTURE → EXECUTE → ANALYZE) — see `SKILL.md` for details.

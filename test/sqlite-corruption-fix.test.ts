@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { openDatabase, applyPragmas, createStore, evictCachedStore, getCacheSize, closeAllCachedStores } from '../src/store.js';
-import { checkAndRecoverDB, resetCheckedPaths, getCheckedPaths } from '../src/db/corruption-recovery.js';
+import { checkAndRecoverDB, resetCheckedPaths, getCheckedPaths, clearStamp } from '../src/db/corruption-recovery.js';
 import { createRejectionThreshold } from '../src/server.js';
 
 describe('SQLite Corruption Fix', () => {
@@ -300,6 +300,118 @@ describe('SQLite Corruption Fix', () => {
 
       resetCheckedPaths();
       expect(getCheckedPaths().size).toBe(0);
+    });
+  });
+
+  describe('Stamp file cooldown', () => {
+    beforeEach(() => {
+      resetCheckedPaths();
+      closeAllCachedStores();
+      delete process.env.NANO_BRAIN_CHECK_COOLDOWN_MS;
+    });
+
+    afterEach(() => {
+      resetCheckedPaths();
+      closeAllCachedStores();
+      delete process.env.NANO_BRAIN_CHECK_COOLDOWN_MS;
+    });
+
+    it('stamp file is written after a successful integrity check', () => {
+      const dbPath = path.join(tmpDir, 'stamp-write.db');
+      const result = checkAndRecoverDB(dbPath);
+      result.db.close();
+
+      const stampPath = path.resolve(dbPath) + '.checked';
+      expect(fs.existsSync(stampPath)).toBe(true);
+      const content = fs.readFileSync(stampPath, 'utf-8').trim();
+      expect(Number(content)).toBeGreaterThan(0);
+    });
+
+    it('valid stamp skips PRAGMA quick_check on next process start', () => {
+      const dbPath = path.join(tmpDir, 'stamp-skip.db');
+
+      // First call: creates DB + runs check + writes stamp
+      const r1 = checkAndRecoverDB(dbPath);
+      r1.db.close();
+
+      // Simulate new process: clear in-process dedup set
+      resetCheckedPaths();
+
+      // Spy on logger to detect if check runs again
+      const logMessages: string[] = [];
+      const logger = { log: (_: string, msg: string) => logMessages.push(msg), error: () => {} };
+
+      // Second call: stamp is valid, should skip check
+      const r2 = checkAndRecoverDB(dbPath, { logger });
+      r2.db.close();
+
+      expect(logMessages.some(m => m.includes('Checking database integrity'))).toBe(false);
+      expect(logMessages.some(m => m.includes('stamp') || m.includes('cooldown') || m.includes('Skipping'))).toBe(true);
+    });
+
+    it('stamp is invalidated when cooldown expires', () => {
+      const dbPath = path.join(tmpDir, 'stamp-cooldown.db');
+
+      const r1 = checkAndRecoverDB(dbPath);
+      r1.db.close();
+      resetCheckedPaths();
+
+      // Force zero cooldown: stamp is always expired
+      process.env.NANO_BRAIN_CHECK_COOLDOWN_MS = '0';
+
+      const logMessages: string[] = [];
+      const logger = { log: (_: string, msg: string) => logMessages.push(msg), error: () => {} };
+
+      const r2 = checkAndRecoverDB(dbPath, { logger });
+      r2.db.close();
+
+      expect(logMessages.some(m => m.includes('Checking database integrity'))).toBe(true);
+    });
+
+    it('stamp is written for fresh DB after corruption recovery', () => {
+      const dbPath = path.join(tmpDir, 'stamp-recovery.db');
+
+      // Create a "corrupted" DB (empty file)
+      fs.writeFileSync(dbPath, 'THIS IS NOT SQLITE');
+
+      const result = checkAndRecoverDB(dbPath);
+      result.db.close();
+
+      expect(result.recovered).toBe(true);
+      const stampPath = path.resolve(dbPath) + '.checked';
+      expect(fs.existsSync(stampPath)).toBe(true);
+    });
+
+    it('stamp read failure is non-fatal — falls back to full check', () => {
+      const dbPath = path.join(tmpDir, 'stamp-corrupt.db');
+
+      const r1 = checkAndRecoverDB(dbPath);
+      r1.db.close();
+      resetCheckedPaths();
+
+      // Corrupt the stamp file
+      fs.writeFileSync(path.resolve(dbPath) + '.checked', 'not-a-timestamp\n');
+
+      const logMessages: string[] = [];
+      const logger = { log: (_: string, msg: string) => logMessages.push(msg), error: () => {} };
+
+      // Should not throw, should fall back to full check
+      const r2 = checkAndRecoverDB(dbPath, { logger });
+      r2.db.close();
+
+      expect(logMessages.some(m => m.includes('Checking database integrity'))).toBe(true);
+    });
+
+    it('clearStamp removes the stamp file', () => {
+      const dbPath = path.join(tmpDir, 'stamp-clear.db');
+      const r1 = checkAndRecoverDB(dbPath);
+      r1.db.close();
+
+      const stampPath = path.resolve(dbPath) + '.checked';
+      expect(fs.existsSync(stampPath)).toBe(true);
+
+      clearStamp(dbPath);
+      expect(fs.existsSync(stampPath)).toBe(false);
     });
   });
 });

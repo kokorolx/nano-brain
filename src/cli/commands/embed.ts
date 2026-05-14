@@ -12,10 +12,8 @@ import type { GlobalOptions } from '../types.js';
 import { isInsideContainer } from '../../host.js';
 import {
   DEFAULT_HTTP_PORT,
-  detectRunningServer,
+  assertContainerServer,
   proxyPost,
-  getHttpHost,
-  getHttpPort,
 } from '../utils.js';
 
 export async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
@@ -29,13 +27,8 @@ export async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string
 
   log('cli', 'embed start force=' + force);
 
-  if (isInsideContainer()) {
-    const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
-    if (!serverRunning) {
-      cliError(`Error: nano-brain server not reachable at ${getHttpHost()}:${getHttpPort()}. Ensure the Docker container is running:`);
-      cliError('  docker start nano-brain');
-      process.exit(1);
-    }
+  const serverRunning = await assertContainerServer();
+  if (serverRunning) {
     try {
       const result = await proxyPost(DEFAULT_HTTP_PORT, '/api/embed', {});
       if (result.error) {
@@ -45,8 +38,11 @@ export async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string
       cliOutput('✅ Embedding started in background on daemon');
       return;
     } catch (err) {
-      cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
-      process.exit(1);
+      if (isInsideContainer()) {
+        cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+      log('cli', 'HTTP proxy failed for embed, falling back to local: ' + (err instanceof Error ? err.message : String(err)));
     }
   }
 

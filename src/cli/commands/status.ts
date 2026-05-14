@@ -10,7 +10,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { log, cliOutput, cliError } from '../../logger.js';
 import type { GlobalOptions } from '../types.js';
-import { DEFAULT_HTTP_PORT, detectRunningServer, proxyGet, resolveDbPath, getHttpHost, getHttpPort } from '../utils.js';
+import { DEFAULT_HTTP_PORT, assertContainerServer, proxyGet, resolveDbPath } from '../utils.js';
 import { isInsideContainer } from '../../host.js';
 
 function extractWorkspaceName(dbFilename: string): string {
@@ -25,6 +25,13 @@ function extractWorkspaceName(dbFilename: string): string {
 function formatBytes(bytes: number): string {
   const mb = bytes / 1024 / 1024;
   return `${mb.toFixed(1)} MB`;
+}
+
+function formatUptime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
 async function getVectorStoreHealth(
@@ -125,13 +132,7 @@ async function printEmbeddingServerStatus(config: ReturnType<typeof loadCollecti
 export async function handleStatus(globalOpts: GlobalOptions, commandArgs: string[]): Promise<void> {
   log('cli', 'status command invoked');
   const inContainer = isInsideContainer();
-  const serverRunning = await detectRunningServer(DEFAULT_HTTP_PORT);
-
-  if (inContainer && !serverRunning) {
-    cliError(`Error: nano-brain server not reachable at ${getHttpHost()}:${getHttpPort()}. Ensure the Docker container is running:`);
-    cliError('  docker start nano-brain');
-    process.exit(1);
-  }
+  const serverRunning = await assertContainerServer();
   let serverInfo: { uptime: number; ready: boolean; index?: { documentCount: number; embeddedCount: number; pendingEmbeddings: number }; models?: { reranker?: string } } | null = null;
   if (serverRunning) {
     try {
@@ -156,11 +157,7 @@ export async function handleStatus(globalOpts: GlobalOptions, commandArgs: strin
     cliOutput('═══════════════════════════════════════════════════');
     cliOutput('');
     if (serverInfo) {
-      const uptimeSec = Math.floor(serverInfo.uptime);
-      const hours = Math.floor(uptimeSec / 3600);
-      const mins = Math.floor((uptimeSec % 3600) / 60);
-      const secs = uptimeSec % 60;
-      const uptimeStr = hours > 0 ? `${hours}h ${mins}m ${secs}s` : mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      const uptimeStr = formatUptime(Math.floor(serverInfo.uptime));
       cliOutput('Server:');
       cliOutput(`  Status:   running (port ${DEFAULT_HTTP_PORT})`);
       cliOutput(`  Uptime:   ${uptimeStr}`);
@@ -208,11 +205,7 @@ export async function handleStatus(globalOpts: GlobalOptions, commandArgs: strin
     cliOutput('');
 
     if (serverInfo) {
-      const uptimeSec = Math.floor(serverInfo.uptime);
-      const hours = Math.floor(uptimeSec / 3600);
-      const mins = Math.floor((uptimeSec % 3600) / 60);
-      const secs = uptimeSec % 60;
-      const uptimeStr = hours > 0 ? `${hours}h ${mins}m ${secs}s` : mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      const uptimeStr = formatUptime(Math.floor(serverInfo.uptime));
       cliOutput('Server:');
       cliOutput(`  Status:   running (port ${DEFAULT_HTTP_PORT})`);
       cliOutput(`  Uptime:   ${uptimeStr}`);

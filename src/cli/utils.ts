@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { setProjectLabelDataDir } from '../store.js';
 import type { SearchResult } from '../types.js';
-import { cliOutput } from '../logger.js';
+import { cliOutput, cliError } from '../logger.js';
 import { isInsideContainer } from '../host.js';
 
 export const DEFAULT_HTTP_PORT = 3100;
@@ -16,10 +16,42 @@ export async function detectRunningServer(port: number = getHttpPort()): Promise
     const timeout = setTimeout(() => controller.abort(), 2000);
     const resp = await fetch(`http://${host}:${port}/health`, { signal: controller.signal });
     clearTimeout(timeout);
-    return resp.ok;
+    if (!resp.ok) return false;
+    const data = await resp.json() as { ready?: boolean };
+    return data.ready === true;
   } catch {
     return false;
   }
+}
+
+async function isServerStarting(port: number = getHttpPort()): Promise<boolean> {
+  const host = getHttpHost();
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    const resp = await fetch(`http://${host}:${port}/health`, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!resp.ok) return false;
+    const data = await resp.json() as { ready?: boolean };
+    return data.ready === false;
+  } catch {
+    return false;
+  }
+}
+
+export async function assertContainerServer(port: number = DEFAULT_HTTP_PORT): Promise<boolean> {
+  const serverRunning = await detectRunningServer(port);
+  if (serverRunning || !isInsideContainer()) return serverRunning;
+
+  const starting = await isServerStarting(port);
+  if (starting) {
+    cliError(`Server is starting up at ${getHttpHost()}:${port} — please retry in a moment.`);
+    cliError(`  Monitor: docker logs nano-brain`);
+  } else {
+    cliError(`Error: nano-brain server not reachable at ${getHttpHost()}:${port}. Ensure the Docker container is running:`);
+    cliError(`  docker start nano-brain`);
+  }
+  process.exit(1);
 }
 
 export async function proxyGet(port: number, path: string, timeoutMs = 30_000): Promise<any> {
