@@ -20,7 +20,7 @@ export async function handleUpdate(globalOpts: GlobalOptions): Promise<void> {
 
   if (serverRunning) {
     try {
-      await proxyPost(DEFAULT_HTTP_PORT, '/api/update', {});
+      await proxyPost(DEFAULT_HTTP_PORT, '/api/v1/update', {});
       cliOutput('✅ Update triggered');
       return;
     } catch (err) {

@@ -27,8 +27,8 @@ export async function handleReindex(globalOpts: GlobalOptions, commandArgs: stri
 
   log('cli', 'reindex root=' + root);
 
-  await assertContainerServer();
-  if (isInsideContainer()) {
+  const serverRunning = await assertContainerServer();
+  if (serverRunning) {
     try {
       const result = await proxyPost(DEFAULT_HTTP_PORT, '/api/reindex', { root });
       if (result.error) {
@@ -38,8 +38,11 @@ export async function handleReindex(globalOpts: GlobalOptions, commandArgs: stri
       cliOutput(`✅ Reindex started in background on daemon for ${result.root}`);
       return;
     } catch (err) {
-      cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
-      process.exit(1);
+      if (isInsideContainer()) {
+        cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+      log('cli', 'HTTP proxy failed for reindex, falling back to local: ' + (err instanceof Error ? err.message : String(err)));
     }
   }
 

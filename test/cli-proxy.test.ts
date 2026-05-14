@@ -66,7 +66,7 @@ function mockServerRunning(tagResponse = { tags: [{ tag: 'memory', count: 5 }, {
     if (String(url).includes('/api/v1/tags')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(tagResponse) });
     }
-    if (String(url).includes('/api/update')) {
+    if (String(url).includes('/api/v1/update')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'started', workspace: process.cwd() }) });
     }
     if (String(url).includes('/api/status')) {
@@ -191,9 +191,9 @@ describe('handleUpdate — proxy when server running', () => {
     out.restore();
     cleanup();
 
-    const updateCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('/api/update'));
+    const updateCalls = mockFetch.mock.calls.filter(([url]) => String(url).includes('/api/v1/update'));
     expect(updateCalls.length).toBe(1);
-    expect(mockFetch.mock.calls.find(([url]) => String(url).includes('/api/update'))?.[1]?.method).toBe('POST');
+    expect(mockFetch.mock.calls.find(([url]) => String(url).includes('/api/v1/update'))?.[1]?.method).toBe('POST');
   });
 
   it('shows success message after proxy update', async () => {

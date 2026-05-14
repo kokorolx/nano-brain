@@ -27,6 +27,13 @@ function formatBytes(bytes: number): string {
   return `${mb.toFixed(1)} MB`;
 }
 
+function formatUptime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return h > 0 ? `${h}h ${m}m ${s}s` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
 async function getVectorStoreHealth(
   config: ReturnType<typeof loadCollectionConfig>,
   serverRunning: boolean,
@@ -150,11 +157,7 @@ export async function handleStatus(globalOpts: GlobalOptions, commandArgs: strin
     cliOutput('═══════════════════════════════════════════════════');
     cliOutput('');
     if (serverInfo) {
-      const uptimeSec = Math.floor(serverInfo.uptime);
-      const hours = Math.floor(uptimeSec / 3600);
-      const mins = Math.floor((uptimeSec % 3600) / 60);
-      const secs = uptimeSec % 60;
-      const uptimeStr = hours > 0 ? `${hours}h ${mins}m ${secs}s` : mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      const uptimeStr = formatUptime(Math.floor(serverInfo.uptime));
       cliOutput('Server:');
       cliOutput(`  Status:   running (port ${DEFAULT_HTTP_PORT})`);
       cliOutput(`  Uptime:   ${uptimeStr}`);
@@ -202,11 +205,7 @@ export async function handleStatus(globalOpts: GlobalOptions, commandArgs: strin
     cliOutput('');
 
     if (serverInfo) {
-      const uptimeSec = Math.floor(serverInfo.uptime);
-      const hours = Math.floor(uptimeSec / 3600);
-      const mins = Math.floor((uptimeSec % 3600) / 60);
-      const secs = uptimeSec % 60;
-      const uptimeStr = hours > 0 ? `${hours}h ${mins}m ${secs}s` : mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+      const uptimeStr = formatUptime(Math.floor(serverInfo.uptime));
       cliOutput('Server:');
       cliOutput(`  Status:   running (port ${DEFAULT_HTTP_PORT})`);
       cliOutput(`  Uptime:   ${uptimeStr}`);

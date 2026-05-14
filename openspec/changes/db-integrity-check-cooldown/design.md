@@ -20,6 +20,14 @@
 
 **Alternative considered:** `~/.nano-brain/cache/integrity/` central directory. Rejected — cross-mount risk, requires extra cleanup logic on DB removal.
 
+### Decision 2b: Mtime dropped in favour of cooldown-only
+
+**Choice:** Stamp stores only a timestamp — no DB mtime.
+
+**Rationale:** WAL mode checkpoint writes update the main DB file's mtime on every normal `db.close()` call. A mtime-based comparison would invalidate the stamp on every routine close, defeating the optimization entirely. Since WAL mode itself provides crash safety, the cooldown window is sufficient protection. Corruption outside a crash scenario (e.g. external tool corruption) is an acceptable risk given the 30-minute window.
+
+**Alternative considered:** mtime comparison (initial design). Rejected after observing that `db.close()` + WAL checkpoint changes mtime, causing false "DB was modified" signals on every CLI invocation.
+
 ### Decision 3: Cooldown duration
 
 **Choice:** 30 minutes, overridable via `NANO_BRAIN_CHECK_COOLDOWN_MS` env var.

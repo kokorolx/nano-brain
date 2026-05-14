@@ -27,8 +27,8 @@ export async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string
 
   log('cli', 'embed start force=' + force);
 
-  await assertContainerServer();
-  if (isInsideContainer()) {
+  const serverRunning = await assertContainerServer();
+  if (serverRunning) {
     try {
       const result = await proxyPost(DEFAULT_HTTP_PORT, '/api/embed', {});
       if (result.error) {
@@ -38,8 +38,11 @@ export async function handleEmbed(globalOpts: GlobalOptions, commandArgs: string
       cliOutput('✅ Embedding started in background on daemon');
       return;
     } catch (err) {
-      cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
-      process.exit(1);
+      if (isInsideContainer()) {
+        cliError('Error: Failed to communicate with daemon:', err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+      log('cli', 'HTTP proxy failed for embed, falling back to local: ' + (err instanceof Error ? err.message : String(err)));
     }
   }
 
