@@ -101,6 +101,8 @@ export async function startServer(options: ServerOptions): Promise<void> {
   log('server', `Database: ${effectiveDbPath}`);
   log('server', 'Config path=' + finalConfigPath);
 
+  let httpServer: ReturnType<typeof createHttpServer> | null = null;
+
   // Bind HTTP port early so container CLIs can detect "starting" vs "not running"
   // during the (potentially long) DB integrity check that follows.
   let requestHandler: http.RequestListener = (_req, res) => {
@@ -272,7 +274,6 @@ export async function startServer(options: ServerOptions): Promise<void> {
   };
 
   const streamableSessions = new Map<string, { transport: StreamableHTTPServerTransport; server: McpServer }>();
-  let httpServer: ReturnType<typeof createHttpServer> | null = null;
   let consolidationWorker: ConsolidationWorker | null = null;
 
   const cleanup = async () => {
