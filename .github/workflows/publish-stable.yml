@@ -30,7 +30,16 @@ jobs:
           echo "Version: $VERSION"
 
       - name: Publish to npm @latest
-        run: npm publish --tag latest --access public
+        id: publish
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "nano-brain@${VERSION}" version &>/dev/null; then
+            echo "Version ${VERSION} already on npm — skipping publish"
+            echo "skipped=true" >> $GITHUB_OUTPUT
+          else
+            npm publish --tag latest --access public
+            echo "skipped=false" >> $GITHUB_OUTPUT
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
