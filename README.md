@@ -1,5 +1,12 @@
 # nano-brain
 
+[![npm version](https://img.shields.io/npm/v/nano-brain?color=blue&label=npm)](https://www.npmjs.com/package/nano-brain)
+[![npm downloads](https://img.shields.io/npm/dm/nano-brain?color=blue)](https://www.npmjs.com/package/nano-brain)
+[![Publish Stable](https://github.com/nano-step/nano-brain/actions/workflows/publish-stable.yml/badge.svg?branch=master)](https://github.com/nano-step/nano-brain/actions/workflows/publish-stable.yml)
+[![Publish Beta](https://github.com/nano-step/nano-brain/actions/workflows/publish-beta.yml/badge.svg?branch=develop)](https://github.com/nano-step/nano-brain/actions/workflows/publish-beta.yml)
+[![Node.js](https://img.shields.io/node/v/nano-brain)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Persistent memory and code intelligence for AI coding agents.
 
 ## What It Does
