@@ -1,0 +1,83 @@
+name: Publish Stable
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Publish to npm @latest
+        run: npm publish --tag latest --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Generate changelog since last stable tag
+        id: changelog
+        run: |
+          # Find last stable tag (exclude beta tags)
+          LAST_TAG=$(git tag --list 'v*' --sort=-version:refname \
+            | grep -v 'beta' | head -1 || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${LAST_TAG}..HEAD"
+          fi
+
+          feat=$(git log $RANGE --pretty=format:"%s" --no-merges \
+            | grep "^feat" | sed 's/^/- /' || true)
+          fix=$(git log $RANGE --pretty=format:"%s" --no-merges \
+            | grep "^fix" | sed 's/^/- /' || true)
+          docs=$(git log $RANGE --pretty=format:"%s" --no-merges \
+            | grep "^docs" | sed 's/^/- /' || true)
+          chore=$(git log $RANGE --pretty=format:"%s" --no-merges \
+            | grep "^chore" | grep -v "bump version" | sed 's/^/- /' || true)
+
+          body=""
+          [ -n "$feat" ]  && body+=$'### Features\n'"$feat"$'\n\n'
+          [ -n "$fix" ]   && body+=$'### Bug Fixes\n'"$fix"$'\n\n'
+          [ -n "$docs" ]  && body+=$'### Documentation\n'"$docs"$'\n\n'
+          [ -n "$chore" ] && body+=$'### Other\n'"$chore"$'\n\n'
+          [ -z "$body" ]  && body="_No notable changes_"
+
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$body" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = '${{ steps.version.outputs.version }}';
+            const body = `${{ steps.changelog.outputs.body }}`;
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${version}`,
+              name: `nano-brain v${version}`,
+              body: `${body}\n---\n\n**Install:** \`npm install nano-brain@latest\`\n**npx:** \`npx nano-brain@latest\``,
+              prerelease: false,
+              target_commitish: context.sha,
+            });
