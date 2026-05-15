@@ -318,7 +318,7 @@
 <span class="c-green">✔</span> MCP server ready on stdio
 
 <span class="c-comment"># Check index health</span>
-<span class="c-prompt">$</span> <span class="c-cmd">nano-brain status</span>
+<span class="c-prompt">$</span> <span class="c-cmd">npx nano-brain status</span>
 <span class="c-muted">  documents   </span><span class="c-green">4,821</span>  <span class="c-muted">chunks     </span><span class="c-orange">12,440</span>
 <span class="c-muted">  symbols     </span><span class="c-green">1,247</span>  <span class="c-muted">entities   </span><span class="c-green">892</span>
 <span class="c-muted">  collections </span><span class="c-green">4</span>      <span class="c-muted">embed      </span><span class="c-green">nomic-embed-text</span></pre>
@@ -491,13 +491,13 @@
 npm install -g nano-brain
 
 <span class="c-comment"># Initialize in your workspace</span>
-nano-brain init
+npx nano-brain init
 
 <span class="c-comment"># Start MCP server (stdio)</span>
-nano-brain mcp
+npx nano-brain mcp
 
 <span class="c-comment"># Or HTTP mode for containers</span>
-nano-brain mcp --http --port 8282</pre>
+npx nano-brain mcp --http --port 8282</pre>
       </div>
 
       <div id="tab-opencode" class="tab-content">

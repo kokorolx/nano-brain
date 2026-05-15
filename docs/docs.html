@@ -181,15 +181,15 @@ npx nano-brain --version</pre>
         <!-- INIT -->
         <div class="doc-section" id="init">
           <h2>Initialize a workspace</h2>
-          <p>Run <code>nano-brain init</code> from your project root. This creates <code>~/.nano-brain/config.yml</code>, indexes your codebase, and generates embeddings.</p>
+          <p>Run <code>npx nano-brain init</code> from your project root. This creates <code>~/.nano-brain/config.yml</code>, indexes your codebase, and generates embeddings.</p>
           <pre><span style="color:#64748b"># Run from your project directory</span>
 cd /your/project
-nano-brain init</pre>
+npx nano-brain init</pre>
           <div class="callout">
             <strong>What init does:</strong> Creates config, scans codebase with Tree-sitter, extracts symbols, generates embeddings, and starts a local Qdrant instance (via Docker if available).
           </div>
           <p>After init, check everything is healthy:</p>
-          <pre>nano-brain status</pre>
+          <pre>npx nano-brain status</pre>
         </div>
 
         <!-- MCP CONNECT -->
@@ -237,10 +237,10 @@ npx nano-brain docker start</pre>
 
           <h3>HTTP / SSE (Docker or remote)</h3>
           <pre><span style="color:#64748b"># Start HTTP server</span>
-nano-brain mcp --http --port 8282
+npx nano-brain mcp --http --port 8282
 
 <span style="color:#64748b"># Connect via SSE</span>
-nano-brain mcp --http --port 8282
+npx nano-brain mcp --http --port 8282
 <span style="color:#64748b"># MCP endpoint: http://localhost:8282/mcp</span>
 <span style="color:#64748b"># SSE endpoint:  http://localhost:8282/sse</span></pre>
         </div>
@@ -326,7 +326,7 @@ collections:
   url: http://localhost:6333
   collection: nano-brain-768  <span style="color:#64748b"># must match dimensions</span></pre>
           <pre><span style="color:#64748b"># Start Qdrant via nano-brain Docker helper</span>
-nano-brain docker start
+npx nano-brain docker start
 
 <span style="color:#64748b"># Or run directly</span>
 docker run -d -p 6333:6333 qdrant/qdrant</pre>
@@ -416,16 +416,16 @@ docker run -d -p 6333:6333 qdrant/qdrant</pre>
 
           <h3>Server</h3>
           <div class="cmd-list">
-            <div class="cmd-item"><code>nano-brain mcp</code><span>Start MCP server (stdio)</span></div>
-            <div class="cmd-item"><code>nano-brain mcp --http --port 8282</code><span>Start MCP server (HTTP/SSE)</span></div>
-            <div class="cmd-item"><code>nano-brain mcp --daemon</code><span>Start as background daemon</span></div>
+            <div class="cmd-item"><code>npx nano-brain mcp</code><span>Start MCP server (stdio)</span></div>
+            <div class="cmd-item"><code>npx nano-brain mcp --http --port 8282</code><span>Start MCP server (HTTP/SSE)</span></div>
+            <div class="cmd-item"><code>npx nano-brain mcp --daemon</code><span>Start as background daemon</span></div>
           </div>
 
           <h3 style="margin-top:24px">Index & Search</h3>
           <div class="cmd-list">
-            <div class="cmd-item"><code>nano-brain init</code><span>Initialize workspace</span></div>
-            <div class="cmd-item"><code>nano-brain status</code><span>Show index health and stats</span></div>
-            <div class="cmd-item"><code>nano-brain query "&lt;text&gt;"</code><span>Hybrid search</span></div>
+            <div class="cmd-item"><code>npx nano-brain init</code><span>Initialize workspace</span></div>
+            <div class="cmd-item"><code>npx nano-brain status</code><span>Show index health and stats</span></div>
+            <div class="cmd-item"><code>npx nano-brain query "&lt;text&gt;"</code><span>Hybrid search</span></div>
             <div class="cmd-item"><code>nano-brain search "&lt;text&gt;"</code><span>BM25 search</span></div>
             <div class="cmd-item"><code>nano-brain vsearch "&lt;text&gt;"</code><span>Vector search</span></div>
             <div class="cmd-item"><code>nano-brain embed</code><span>Generate embeddings for un-embedded chunks</span></div>
@@ -442,9 +442,9 @@ docker run -d -p 6333:6333 qdrant/qdrant</pre>
 
           <h3 style="margin-top:24px">Docker</h3>
           <div class="cmd-list">
-            <div class="cmd-item"><code>nano-brain docker start</code><span>Start nano-brain + Qdrant containers</span></div>
-            <div class="cmd-item"><code>nano-brain docker status</code><span>Container health status</span></div>
-            <div class="cmd-item"><code>nano-brain docker stop</code><span>Stop containers</span></div>
+            <div class="cmd-item"><code>npx nano-brain docker start</code><span>Start nano-brain + Qdrant containers</span></div>
+            <div class="cmd-item"><code>npx nano-brain docker status</code><span>Container health status</span></div>
+            <div class="cmd-item"><code>npx nano-brain docker stop</code><span>Stop containers</span></div>
           </div>
         </div>
 

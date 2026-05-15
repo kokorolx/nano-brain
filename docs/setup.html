@@ -186,6 +186,7 @@
         <div class="sidebar-section">
           <div class="sidebar-title">Alternatives</div>
           <div class="sidebar-links">
+            <a href="#ai-sandbox">ai-sandbox-wrapper</a>
             <a href="#local-mode">Local (no Docker)</a>
             <a href="#claude-code">Claude Code</a>
           </div>
@@ -444,6 +445,112 @@ docker ps | grep nano-brain</pre>
 
         <hr class="divider">
 
+        <!-- AI-SANDBOX-WRAPPER -->
+        <div class="setup-section" id="ai-sandbox">
+          <h2>Container setup with ai-sandbox-wrapper</h2>
+
+          <p>This is the recommended production setup. All AI tools — OpenCode, nano-brain, and others — run inside secure Docker containers via <a href="https://github.com/kokorolee/ai-sandbox-wrapper" target="_blank">ai-sandbox-wrapper</a>. Your SSH keys and system files stay protected on the host.</p>
+
+          <div class="callout callout-info">
+            <strong>How it works:</strong>
+            <code>ai-run</code> launches a container from the <code>ai-sandbox:latest</code> image. nano-brain is pre-installed inside. The container mounts your workspace read-only and runs OpenCode (or any AI tool) with nano-brain available as an MCP server via stdio.
+          </div>
+
+          <h3>Install ai-sandbox-wrapper</h3>
+          <div class="file-block">
+            <div class="file-header"><span class="file-header-icon">$</span> terminal</div>
+            <pre><span style="color:#64748b"># Install globally</span>
+npm install -g @kokorolx/ai-sandbox-wrapper
+
+<span style="color:#64748b"># Or run directly</span>
+npx @kokorolx/ai-sandbox-wrapper</pre>
+          </div>
+
+          <h3>Run OpenCode with nano-brain inside the sandbox</h3>
+          <div class="file-block">
+            <div class="file-header"><span class="file-header-icon">$</span> terminal</div>
+            <pre><span style="color:#64748b"># Start OpenCode in sandbox — nano-brain is pre-installed</span>
+ai-run opencode
+
+<span style="color:#64748b"># Run nano-brain commands directly via ai-run</span>
+ai-run npx nano-brain status
+ai-run npx nano-brain query "your search"
+
+<span style="color:#64748b"># Debug mode — show suppressed tree-sitter warnings</span>
+AI_RUN_DEBUG=1 ai-run npx nano-brain query "hello"</pre>
+          </div>
+
+          <div class="callout callout-tip">
+            <strong>Auto-repair built in:</strong>
+            When nano-brain detects a native module failure (e.g. tree-sitter compiled for wrong arch), <code>ai-run</code> automatically rebuilds the bindings and retries once. Non-fatal symbol-graph warnings are suppressed by default — use <code>AI_RUN_DEBUG=1</code> to see them.
+          </div>
+
+          <h3>nano-brain MCP config inside the container</h3>
+          <p>OpenCode reads MCP config from <code>~/.config/opencode/opencode.json</code> (mounted from host). Add nano-brain in stdio local mode:</p>
+
+          <div class="file-block">
+            <div class="file-header"><span class="file-header-icon">📄</span> ~/.config/opencode/opencode.json</div>
+            <pre>{
+  "mcp": {
+    "nano-brain": {
+      "type": "local",
+      "command": ["npx", "nano-brain", "mcp"],
+      "enabled": true
+    }
+  }
+}</pre>
+          </div>
+
+          <p>Or, if running from source (e.g. development):</p>
+          <div class="file-block">
+            <div class="file-header"><span class="file-header-icon">📄</span> ~/.config/opencode/opencode.json — from source</div>
+            <pre>{
+  "mcp": {
+    "nano-brain": {
+      "type": "local",
+      "command": ["bun", "run", "/path/to/nano-brain/src/index.ts", "mcp"],
+      "enabled": true
+    }
+  }
+}</pre>
+          </div>
+
+          <h3>Workspace config inside the container</h3>
+          <p>The container mounts your workspace at the same absolute path as the host. Your <code>~/.nano-brain/config.yml</code> (mounted from host) should reference that same path:</p>
+
+          <div class="file-block">
+            <div class="file-header"><span class="file-header-icon">📄</span> ~/.nano-brain/config.yml</div>
+            <pre>workspaces:
+  <span class="editable">/Users/you/projects/my-app</span>:    <span style="color:#64748b"># same path as host</span>
+    codebase:
+      enabled: true
+
+<span style="color:#64748b"># Sessions from OpenCode are harvested automatically</span>
+harvester:
+  opencode:
+    enabled: true
+  claudeCode:
+    enabled: true</pre>
+          </div>
+
+          <h3>Available tools in ai-sandbox:latest</h3>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <span class="badge badge-accent">opencode</span>
+            <span class="badge badge-accent">nano-brain</span>
+            <span class="badge">claude</span>
+            <span class="badge">gemini</span>
+            <span class="badge">aider</span>
+            <span class="badge">codex</span>
+            <span class="badge">kilo</span>
+            <span class="badge">amp</span>
+            <span class="badge">bun</span>
+            <span class="badge">npx</span>
+          </div>
+        </div>
+
+
+        <hr class="divider">
+
         <!-- LOCAL MODE -->
         <div class="setup-section" id="local-mode">
           <h2>Alternative: Local stdio (no Docker)</h2>
@@ -463,10 +570,10 @@ docker run -d -p 6333:6333 qdrant/qdrant:latest
 
 <span style="color:#64748b"># Initialize workspace</span>
 cd <span class="editable">/path/to/your/project</span>
-nano-brain init
+npx nano-brain init
 
 <span style="color:#64748b"># Start MCP server (stdio — for OpenCode/Claude Code)</span>
-nano-brain mcp</pre>
+npx nano-brain mcp</pre>
           </div>
 
           <div class="file-block">
@@ -475,7 +582,7 @@ nano-brain mcp</pre>
   "mcp": {
     "nano-brain": {
       "type": "local",
-      "command": ["nano-brain", "mcp"],
+      "command": ["npx", "nano-brain", "mcp"],
       "enabled": true
     }
   }
@@ -503,7 +610,7 @@ nano-brain mcp</pre>
                      <span style="color:#64748b"># override if your sessions are elsewhere</span></pre>
           </div>
 
-          <p>Sessions are auto-indexed every 2 minutes. After enabling, run <code>nano-brain status</code> to confirm sessions are being picked up.</p>
+          <p>Sessions are auto-indexed every 2 minutes. After enabling, run <code>npx nano-brain status</code> to confirm sessions are being picked up.</p>
 
           <div class="callout callout-tip">
             <strong>Session format:</strong> Claude Code stores sessions as JSONL in <code>~/.claude/projects/</code>. nano-brain's <code>ClaudeCodeAdapter</code> converts them to markdown observations and indexes them with your workspace's project hash.
