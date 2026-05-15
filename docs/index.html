@@ -245,6 +245,56 @@
     }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
+
+    /* ── TOOLTIPS ────────────────────────────────── */
+    .tool-item { position: relative; cursor: default; }
+    .tool-tip {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: #1e1e2a;
+      border: 1px solid var(--border-hover);
+      border-radius: 8px;
+      padding: 10px 13px;
+      font-size: 12px;
+      font-family: var(--font);
+      color: var(--text-muted);
+      line-height: 1.5;
+      white-space: normal;
+      width: 220px;
+      text-align: left;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.15s, visibility 0.15s;
+      z-index: 200;
+    }
+    .tool-tip::after {
+      content: '';
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      border: 5px solid transparent;
+      border-top-color: var(--border-hover);
+    }
+    .tool-tip::before {
+      content: '';
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      border: 5px solid transparent;
+      border-top-color: #1e1e2a;
+      z-index: 1;
+      margin-top: -1px;
+    }
+    .tool-item:hover .tool-tip {
+      opacity: 1;
+      visibility: visible;
+    }
   </style>
 </head>
 <body>
@@ -553,47 +603,47 @@ npx nano-brain mcp --http --port 8282</pre>
     <div style="margin-top:32px">
       <h3 style="font-size:14px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px">Search & Retrieval</h3>
       <div class="tools-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr));margin-bottom:24px">
-        <div class="tool-item">memory_search<div class="tool-item-cat">BM25 keyword</div></div>
-        <div class="tool-item">memory_vsearch<div class="tool-item-cat">Semantic vector</div></div>
-        <div class="tool-item">memory_query<div class="tool-item-cat">Hybrid search</div></div>
-        <div class="tool-item">memory_get<div class="tool-item-cat">By path / docid</div></div>
-        <div class="tool-item">memory_multi_get<div class="tool-item-cat">Batch / glob</div></div>
+        <div class="tool-item">memory_search<div class="tool-item-cat">BM25 keyword</div><div class="tool-tip">BM25 full-text search via SQLite FTS5. Fast, exact-match keyword lookup across all indexed documents.</div></div>
+        <div class="tool-item">memory_vsearch<div class="tool-item-cat">Semantic vector</div><div class="tool-tip">Semantic vector search via Qdrant. Finds documents by meaning, not just keywords.</div></div>
+        <div class="tool-item">memory_query<div class="tool-item-cat">Hybrid search</div><div class="tool-tip">Full hybrid search: BM25 + vector + RRF fusion + 11 ranking stages. Best results, slightly slower.</div></div>
+        <div class="tool-item">memory_get<div class="tool-item-cat">By path / docid</div><div class="tool-tip">Retrieve a single document by file path or short docid (e.g. #abc123).</div></div>
+        <div class="tool-item">memory_multi_get<div class="tool-item-cat">Batch / glob</div><div class="tool-tip">Batch-retrieve multiple documents matching a glob pattern.</div></div>
       </div>
 
       <h3 style="font-size:14px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px">Memory Management</h3>
       <div class="tools-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr));margin-bottom:24px">
-        <div class="tool-item">memory_write<div class="tool-item-cat">Write to daily log</div></div>
-        <div class="tool-item">memory_status<div class="tool-item-cat">Index health</div></div>
-        <div class="tool-item">memory_update<div class="tool-item-cat">Trigger reindex</div></div>
-        <div class="tool-item">memory_tags<div class="tool-item-cat">List all tags</div></div>
-        <div class="tool-item">memory_consolidate<div class="tool-item-cat">LLM consolidation</div></div>
-        <div class="tool-item">memory_suggestions<div class="tool-item-cat">Proactive next queries</div></div>
+        <div class="tool-item">memory_write<div class="tool-item-cat">Write to daily log</div><div class="tool-tip">Write an observation to the daily log. Supports --tags and --supersedes for replacing stale entries.</div></div>
+        <div class="tool-item">memory_status<div class="tool-item-cat">Index health</div><div class="tool-tip">Show index health: document counts, embedding status, graph stats, model info.</div></div>
+        <div class="tool-item">memory_update<div class="tool-item-cat">Trigger reindex</div><div class="tool-tip">Trigger a full reindex of all configured collections.</div></div>
+        <div class="tool-item">memory_tags<div class="tool-item-cat">List all tags</div><div class="tool-tip">List all tags in the index with document counts per tag.</div></div>
+        <div class="tool-item">memory_consolidate<div class="tool-item-cat">LLM consolidation</div><div class="tool-tip">Trigger LLM-based memory consolidation — merges, deduplicates, and distills entries.</div></div>
+        <div class="tool-item">memory_suggestions<div class="tool-item-cat">Proactive next queries</div><div class="tool-tip">Returns proactive next-query predictions based on detected retrieval patterns.</div></div>
       </div>
 
       <h3 style="font-size:14px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px">Code Intelligence</h3>
       <div class="tools-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr));margin-bottom:24px">
-        <div class="tool-item">code_context<div class="tool-item-cat">Symbol 360° view</div></div>
-        <div class="tool-item">code_impact<div class="tool-item-cat">Change impact BFS</div></div>
-        <div class="tool-item">code_detect_changes<div class="tool-item-cat">Git diff → symbols</div></div>
-        <div class="tool-item">memory_index_codebase<div class="tool-item-cat">AST index workspace</div></div>
+        <div class="tool-item">code_context<div class="tool-item-cat">Symbol 360° view</div><div class="tool-tip">360° view of a code symbol: callers, callees, call flows, PageRank centrality, cluster.</div></div>
+        <div class="tool-item">code_impact<div class="tool-item-cat">Change impact BFS</div><div class="tool-tip">BFS traversal to find all upstream and downstream symbols affected by a change.</div></div>
+        <div class="tool-item">code_detect_changes<div class="tool-item-cat">Git diff → symbols</div><div class="tool-tip">Maps a git diff (staged/unstaged/all) to the set of affected symbols.</div></div>
+        <div class="tool-item">memory_index_codebase<div class="tool-item-cat">AST index workspace</div><div class="tool-tip">Index codebase files in the current workspace using Tree-sitter AST parsing.</div></div>
       </div>
 
       <h3 style="font-size:14px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px">Graph & Intelligence</h3>
       <div class="tools-grid" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
-        <div class="tool-item">memory_focus<div class="tool-item-cat">File dependency</div></div>
-        <div class="tool-item">memory_graph_stats<div class="tool-item-cat">Graph overview</div></div>
-        <div class="tool-item">memory_graph_query<div class="tool-item-cat">BFS traversal</div></div>
-        <div class="tool-item">memory_connect<div class="tool-item-cat">Connect entities</div></div>
-        <div class="tool-item">memory_connections<div class="tool-item-cat">List connections</div></div>
-        <div class="tool-item">memory_related<div class="tool-item-cat">Related via graph</div></div>
-        <div class="tool-item">memory_timeline<div class="tool-item-cat">Temporal view</div></div>
-        <div class="tool-item">memory_traverse<div class="tool-item-cat">Graph traversal</div></div>
-        <div class="tool-item">memory_expand<div class="tool-item-cat">Expand context</div></div>
-        <div class="tool-item">memory_symbols<div class="tool-item-cat">Cross-repo symbols</div></div>
-        <div class="tool-item">memory_impact<div class="tool-item-cat">Cross-repo impact</div></div>
-        <div class="tool-item">memory_importance<div class="tool-item-cat">Importance scores</div></div>
-        <div class="tool-item">memory_learning_status<div class="tool-item-cat">Learning stats</div></div>
-        <div class="tool-item">memory_wake_up<div class="tool-item-cat">Session context</div></div>
+        <div class="tool-item">memory_focus<div class="tool-item-cat">File dependency</div><div class="tool-tip">File dependency context: what this file imports, what imports it, centrality score.</div></div>
+        <div class="tool-item">memory_graph_stats<div class="tool-item-cat">Graph overview</div><div class="tool-tip">Dependency graph overview: total files, symbols, edges, detected cycles.</div></div>
+        <div class="tool-item">memory_graph_query<div class="tool-item-cat">BFS traversal</div><div class="tool-tip">BFS traversal from an entity node through the knowledge graph.</div></div>
+        <div class="tool-item">memory_connect<div class="tool-item-cat">Connect entities</div><div class="tool-tip">Create a relationship edge between two entities in the knowledge graph.</div></div>
+        <div class="tool-item">memory_connections<div class="tool-item-cat">List connections</div><div class="tool-tip">List all relationship edges for a given entity.</div></div>
+        <div class="tool-item">memory_related<div class="tool-item-cat">Related via graph</div><div class="tool-tip">Find memories related to a topic via entity graph connections.</div></div>
+        <div class="tool-item">memory_timeline<div class="tool-item-cat">Temporal view</div><div class="tool-tip">Temporal view of how an entity or topic has changed over time.</div></div>
+        <div class="tool-item">memory_traverse<div class="tool-item-cat">Graph traversal</div><div class="tool-tip">Configurable graph traversal with depth limit and edge-type filters.</div></div>
+        <div class="tool-item">memory_expand<div class="tool-item-cat">Expand context</div><div class="tool-tip">Expand context around a retrieved document (surrounding chunks, linked entities).</div></div>
+        <div class="tool-item">memory_symbols<div class="tool-item-cat">Cross-repo symbols</div><div class="tool-tip">Cross-repo symbol query — find Redis keys, MySQL tables, API endpoints, queues.</div></div>
+        <div class="tool-item">memory_impact<div class="tool-item-cat">Cross-repo impact</div><div class="tool-tip">Cross-repo impact analysis — find all writers and readers of a symbol.</div></div>
+        <div class="tool-item">memory_importance<div class="tool-item-cat">Importance scores</div><div class="tool-tip">View importance scores for documents (based on retrieval frequency and recency).</div></div>
+        <div class="tool-item">memory_learning_status<div class="tool-item-cat">Learning stats</div><div class="tool-tip">View learning system status: telemetry record count, bandit variants, config version.</div></div>
+        <div class="tool-item">memory_wake_up<div class="tool-item-cat">Session context</div><div class="tool-tip">Load session context on agent startup — returns recent memories and active focus.</div></div>
       </div>
     </div>
 
