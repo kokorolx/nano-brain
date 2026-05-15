@@ -7,94 +7,117 @@
   <meta name="description" content="Release history and changelog for nano-brain.">
   <link rel="stylesheet" href="assets/style.css">
   <link rel="icon" href="assets/nano-step-logo.png">
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
   <style>
     .page-hero { padding: 64px 0 48px; }
-    .timeline { position: relative; padding-left: 28px; }
-    .timeline::before {
-      content: '';
-      position: absolute;
-      left: 0; top: 0; bottom: 0;
-      width: 1px;
-      background: var(--border);
+
+    /* Rendered markdown styles */
+    #changelog-content { max-width: 760px; }
+    #changelog-content h1 { display: none; } /* hide top-level title, we have page-hero */
+    #changelog-content h2 {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin-top: 56px;
+      margin-bottom: 20px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 12px;
     }
-    .release {
-      position: relative;
-      margin-bottom: 48px;
-    }
-    .release::before {
+    #changelog-content h2::before {
       content: '';
-      position: absolute;
-      left: -32px;
-      top: 8px;
-      width: 8px; height: 8px;
+      display: inline-block;
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
       background: var(--accent);
       border: 2px solid var(--bg);
       box-shadow: 0 0 0 1px var(--accent);
+      flex-shrink: 0;
     }
-    .release-header {
-      display: flex;
-      align-items: baseline;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-bottom: 16px;
-    }
-    .release-version {
-      font-family: var(--mono);
-      font-size: 18px;
-      font-weight: 600;
-      color: var(--text);
-    }
-    .release-date {
+    #changelog-content h3 {
       font-size: 13px;
-      color: var(--text-muted);
-    }
-    .release-body {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 20px 24px;
-    }
-    .change-group { margin-bottom: 20px; }
-    .change-group:last-child { margin-bottom: 0; }
-    .change-group-title {
-      font-size: 12px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.07em;
       color: var(--text-muted);
+      margin-top: 24px;
       margin-bottom: 10px;
     }
-    .change-group-title.feat { color: var(--accent); }
-    .change-group-title.fix { color: var(--green); }
-    .change-group-title.break { color: var(--red); }
-    .change-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
-    .change-list li {
+    #changelog-content ul {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+    #changelog-content li {
       font-size: 14px;
       color: var(--text-muted);
       padding-left: 16px;
       position: relative;
-      line-height: 1.5;
+      line-height: 1.6;
     }
-    .change-list li::before {
+    #changelog-content li::before {
       content: '—';
       position: absolute;
       left: 0;
       color: var(--text-subtle);
     }
-    .change-list li code { font-size: 12px; }
-    .install-box {
+    #changelog-content li strong { color: var(--text); font-weight: 600; }
+    #changelog-content code {
+      font-family: var(--mono);
+      font-size: 12px;
       background: var(--surface-2);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 12px 16px;
-      margin-top: 16px;
-      font-family: var(--mono);
-      font-size: 13px;
-      color: var(--text-muted);
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: var(--accent);
     }
-    .install-box strong { color: var(--text); }
-    .old-release::before { background: var(--text-subtle); box-shadow: none; }
+    #changelog-content a { color: var(--accent); }
+    #changelog-content a:hover { text-decoration: underline; }
+    #changelog-content p {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.7;
+      margin-bottom: 12px;
+    }
+    #changelog-content p strong {
+      color: var(--text);
+    }
+    #changelog-content hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 0;
+    }
+
+    /* Loading state */
+    .loading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text-muted);
+      font-size: 14px;
+      font-family: var(--mono);
+      padding: 40px 0;
+    }
+    .loading-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 1s infinite;
+    }
+    .error-msg {
+      background: rgba(248,113,113,0.08);
+      border: 1px solid rgba(248,113,113,0.2);
+      border-radius: 8px;
+      padding: 16px 20px;
+      color: #f87171;
+      font-size: 14px;
+    }
   </style>
 </head>
 <body>
@@ -110,6 +133,7 @@
       <a href="index.html">Home</a>
       <a href="features.html">Features</a>
       <a href="docs.html">Docs</a>
+      <a href="setup.html">Setup</a>
       <a href="changelog.html" class="active">Changelog</a>
     </div>
     <div class="nav-actions">
@@ -125,133 +149,21 @@
   <div class="container">
     <p class="eyebrow">Release history</p>
     <h1 style="font-size:clamp(28px,4vw,44px);margin-bottom:12px">Changelog</h1>
-    <p class="lead">All notable changes to nano-brain. Follows <a href="https://semver.org" target="_blank">semantic versioning</a>.</p>
+    <p class="lead">All notable changes to nano-brain. Follows <a href="https://keepachangelog.com" target="_blank">Keep a Changelog</a>.</p>
     <div style="display:flex;gap:8px;margin-top:20px;flex-wrap:wrap">
       <a href="https://github.com/nano-step/nano-brain/releases" target="_blank" class="btn btn-secondary" style="font-size:14px;padding:8px 16px">All releases on GitHub ↗</a>
-      <a href="https://github.com/nano-step/nano-brain/releases/latest" target="_blank" class="btn btn-primary" style="font-size:14px;padding:8px 16px">Latest release</a>
+      <a href="https://github.com/nano-step/nano-brain/blob/master/CHANGELOG.md" target="_blank" class="btn btn-secondary" style="font-size:14px;padding:8px 16px">View CHANGELOG.md ↗</a>
     </div>
   </div>
 </div>
 
 <div class="section" style="padding-top:0">
   <div class="container">
-    <div class="timeline">
-
-      <!-- v2026.8.19 -->
-      <div class="release">
-        <div class="release-header">
-          <span class="release-version">v2026.8.19</span>
-          <span class="badge badge-green">Latest stable</span>
-          <span class="release-date">May 15, 2026</span>
-        </div>
-        <div class="release-body">
-          <div class="change-group">
-            <div class="change-group-title fix">Bug Fixes</div>
-            <ul class="change-list">
-              <li><strong>Workspace guard</strong> — server no longer creates a database for <code>--root</code> paths not declared in <code>config.workspaces</code>. Falls back to closest configured workspace (longest-prefix match, then first). Prevents orphaned DB accumulation (~2.5GB observed in the wild). Closes <a href="https://github.com/nano-step/nano-brain/issues/19" target="_blank">#19</a>.</li>
-              <li><strong>CLI pre-resolution</strong> — <code>cli/index.ts</code> no longer pre-resolves the DB path from <code>process.cwd()</code> for the <code>mcp</code> command. This was bypassing the workspace guard entirely.</li>
-              <li><strong>CI stability</strong> — Publish Stable workflow no longer fails when the GitHub release tag already exists (same version, multiple pushes to master).</li>
-              <li><strong>CI deps</strong> — use <code>--legacy-peer-deps</code> in GitHub Actions to resolve <code>tree-sitter</code> peer conflict.</li>
-            </ul>
-          </div>
-          <div class="change-group">
-            <div class="change-group-title feat">CI / Infrastructure</div>
-            <ul class="change-list">
-              <li>Added <code>develop</code> branch → <code>npm publish --tag beta</code> + GitHub pre-release on every push</li>
-              <li>Added <code>master</code> branch → <code>npm publish --tag latest</code> + GitHub release with auto-generated changelog</li>
-              <li>Added npm, CI, and license badges to README</li>
-              <li>Updated CLAUDE.md: every npm publish must have a changelog; create GitHub issue before starting any task</li>
-            </ul>
-          </div>
-          <div class="install-box">
-            <strong>npm install nano-brain@2026.8.19</strong>
-            &nbsp;·&nbsp; npx nano-brain@latest
-          </div>
-        </div>
-      </div>
-
-      <!-- v2026.8.19-beta.3 -->
-      <div class="release">
-        <div class="release-header">
-          <span class="release-version">v2026.8.19-beta.3</span>
-          <span class="badge">Pre-release</span>
-          <span class="release-date">May 15, 2026</span>
-        </div>
-        <div class="release-body">
-          <div class="change-group">
-            <div class="change-group-title feat">Beta</div>
-            <ul class="change-list">
-              <li>First automated beta release via develop → Publish Beta workflow</li>
-              <li>CI workflow validation run (npm org secret integration)</li>
-            </ul>
-          </div>
-          <div class="install-box">
-            <strong>npm install nano-brain@beta</strong>
-          </div>
-        </div>
-      </div>
-
-      <!-- v2026.6.2 -->
-      <div class="release old-release">
-        <div class="release-header">
-          <span class="release-version">v2026.6.2</span>
-          <span class="release-date">March 17, 2026</span>
-        </div>
-        <div class="release-body">
-          <div class="change-group">
-            <div class="change-group-title feat">Features — Memory Intelligence v2</div>
-            <ul class="change-list">
-              <li><strong>Entity Pruning</strong> — background job (6h interval) soft-deletes contradicted entities after 30 days and orphan entities after 90 days; hard-deletes after 30d retention</li>
-              <li><strong>LLM Categorization</strong> — async fire-and-forget assigns <code>llm:</code> category tags after every <code>memory_write</code></li>
-              <li><strong>Preference Learning</strong> — tracks which content types the agent retrieves most; adapts RRF blend weights via Thompson Sampling</li>
-            </ul>
-          </div>
-          <div class="change-group">
-            <div class="change-group-title feat">Features — Search Quality</div>
-            <ul class="change-list">
-              <li>Wave 7: recency boost for sessions/memory collections</li>
-              <li>Wave 6: length normalization penalty using <code>charLength</code></li>
-              <li>Wave 5: temporal metadata (<code>createdAt</code>) in <code>SearchResult</code></li>
-              <li>Wave 4: Qdrant <code>project_hash</code> payload filter + backfill</li>
-              <li>Wave 3: FTS workspace isolation (strict filter)</li>
-              <li>Wave 2: fix <code>supersedeDocument</code> bug</li>
-              <li>Wave 1: <code>domain_type</code> and <code>last_reinforced_at</code> schema columns</li>
-            </ul>
-          </div>
-          <div class="change-group">
-            <div class="change-group-title feat">Features — Token Reduction</div>
-            <ul class="change-list">
-              <li>Compact search results format — up to 60% fewer tokens per search response</li>
-              <li>Heading-aware chunking (900 tokens, 15% overlap)</li>
-            </ul>
-          </div>
-          <div class="change-group">
-            <div class="change-group-title feat">Infrastructure</div>
-            <ul class="change-list">
-              <li>Replaced sqlite-vec with Qdrant as sole vector store</li>
-              <li>Added benchmark suite — data generator, runner, compare CLI</li>
-              <li>Consolidation decisions now reconciled automatically in background</li>
-            </ul>
-          </div>
-          <div class="install-box">
-            <strong>npm install nano-brain@2026.6.2</strong>
-          </div>
-        </div>
-      </div>
-
-      <!-- older -->
-      <div class="release old-release">
-        <div class="release-header">
-          <span class="release-version">Earlier releases</span>
-        </div>
-        <div class="release-body">
-          <p style="font-size:14px;color:var(--text-muted)">
-            Full release history available on <a href="https://github.com/nano-step/nano-brain/releases" target="_blank">GitHub Releases ↗</a>.
-          </p>
-        </div>
-      </div>
-
+    <div id="changelog-loading" class="loading">
+      <span class="loading-dot"></span>
+      Loading CHANGELOG.md...
     </div>
+    <div id="changelog-content"></div>
   </div>
 </div>
 
@@ -270,5 +182,25 @@
   </div>
 </footer>
 
+<script>
+  // Resolve CHANGELOG.md path relative to the page
+  const changelogUrl = new URL('../CHANGELOG.md', window.location.href).href;
+
+  fetch(changelogUrl)
+    .then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.text();
+    })
+    .then(md => {
+      document.getElementById('changelog-loading').style.display = 'none';
+      document.getElementById('changelog-content').innerHTML = marked.parse(md);
+    })
+    .catch(err => {
+      document.getElementById('changelog-loading').style.display = 'none';
+      document.getElementById('changelog-content').innerHTML =
+        `<div class="error-msg">Failed to load CHANGELOG.md: ${err.message}<br>
+        <a href="https://github.com/nano-step/nano-brain/blob/master/CHANGELOG.md" target="_blank" style="color:#f87171">View on GitHub ↗</a></div>`;
+    });
+</script>
 </body>
 </html>
