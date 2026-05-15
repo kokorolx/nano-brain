@@ -15,13 +15,13 @@ function computeForceLayout(
   opts: { width?: number; height?: number; linkDistance?: number; chargeStrength?: number } = {}
 ): Node[] {
   if (nodes.length === 0) return nodes;
-  const w = opts.width ?? 600;
-  const h = opts.height ?? 400;
+  const w = opts.width ?? 1400;
+  const h = opts.height ?? 900;
   const n = nodes.length;
-  const linkDist = opts.linkDistance ?? (n > 60 ? 200 : n > 30 ? 160 : 120);
-  const charge = opts.chargeStrength ?? (n > 60 ? -250 : n > 30 ? -180 : -120);
-  const centerPull = n > 60 ? 0.03 : n > 30 ? 0.05 : 0.08;
-  const collideBase = n > 60 ? 50 : n > 30 ? 40 : 35;
+  const linkDist = opts.linkDistance ?? (n > 100 ? 220 : n > 50 ? 180 : n > 20 ? 160 : 140);
+  const charge = opts.chargeStrength ?? (n > 100 ? -500 : n > 50 ? -400 : n > 20 ? -320 : -260);
+  const centerPull = n > 100 ? 0.02 : n > 50 ? 0.03 : 0.04;
+  const collideBase = n > 100 ? 70 : n > 50 ? 65 : n > 20 ? 60 : 55;
 
   const simNodes: SimNode[] = nodes.map((nd) => ({
     id: nd.id,
@@ -157,7 +157,7 @@ export function buildCodeGraph(
     });
   }
 
-  const positioned = computeForceLayout(nodes, edges, { width: 900, height: 600 });
+  const positioned = computeForceLayout(nodes, edges, { width: 1600, height: 1000 });
   return { nodes: positioned, edges };
 }
 
@@ -262,7 +262,7 @@ export function buildSymbolGraph(
     }
   }
 
-  const positioned = computeForceLayout(nodes, edges, { width: 1000, height: 600 });
+  const positioned = computeForceLayout(nodes, edges, { width: 1800, height: 1200 });
   return { nodes: positioned, edges };
 }
 

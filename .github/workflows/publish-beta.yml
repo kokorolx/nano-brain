@@ -22,6 +22,9 @@ jobs:
 
       - run: npm ci --legacy-peer-deps
 
+      - name: Install web dependencies
+        run: cd src/web && npm ci --legacy-peer-deps
+
       - name: Build web UI
         run: npm run build:web
 
