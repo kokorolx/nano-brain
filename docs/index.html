@@ -7,6 +7,7 @@
   <meta name="description" content="A persistent memory MCP server for AI coding agents. Hybrid search (BM25 + vector + RRF), code intelligence, 30 MCP tools, TypeScript/JavaScript/Python/Ruby/Vue.">
   <link rel="stylesheet" href="assets/style.css">
   <link rel="icon" href="assets/nano-step-logo.png">
+  <script src="https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.min.js"></script>
   <style>
     /* ── HERO ─────────────────────────────────────── */
     .hero {
@@ -23,7 +24,18 @@
       background: radial-gradient(ellipse at center, rgba(56,189,248,0.06) 0%, transparent 70%);
       pointer-events: none;
     }
-    .hero-inner { position: relative; }
+
+    /* ── THREE.JS CANVAS ─────────────────────────── */
+    #brain-canvas {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.55;
+    }
+    .hero-inner { position: relative; z-index: 1; }
+    /* .hero-inner { position: relative; } */
     .hero-pills {
       display: flex;
       align-items: center;
@@ -328,6 +340,7 @@
 
 <!-- HERO -->
 <div class="hero">
+  <canvas id="brain-canvas"></canvas>
   <div class="container hero-inner">
     <div class="hero-pills">
       <span class="badge badge-accent">MCP Server</span>
@@ -681,5 +694,146 @@ function switchTab(el, id) {
   document.getElementById(id).classList.add('active');
 }
 </script>
+
+<script>
+(function() {
+  if (!window.THREE) return;
+  const canvas = document.getElementById('brain-canvas');
+  const hero = canvas.parentElement;
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setClearColor(0x000000, 0);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
+  camera.position.z = 28;
+
+  // ── Nodes ─────────────────────────────────────────
+  const NODE_COUNT = 80;
+  const CONNECT_DIST = 7;
+  const ACCENT = new THREE.Color(0x38bdf8);
+  const ACCENT_DIM = new THREE.Color(0x0e5f82);
+
+  const positions = [];
+  const velocities = [];
+  for (let i = 0; i < NODE_COUNT; i++) {
+    positions.push(new THREE.Vector3(
+      (Math.random() - 0.5) * 40,
+      (Math.random() - 0.5) * 22,
+      (Math.random() - 0.5) * 18
+    ));
+    velocities.push(new THREE.Vector3(
+      (Math.random() - 0.5) * 0.012,
+      (Math.random() - 0.5) * 0.008,
+      (Math.random() - 0.5) * 0.006
+    ));
+  }
+
+  // Node spheres
+  const nodeGeo = new THREE.SphereGeometry(0.18, 6, 6);
+  const nodeMat = new THREE.MeshBasicMaterial({ color: ACCENT });
+  const nodes = positions.map(pos => {
+    const mesh = new THREE.Mesh(nodeGeo, nodeMat.clone());
+    mesh.position.copy(pos);
+    mesh.userData.pulse = Math.random() * Math.PI * 2;
+    mesh.userData.pulseSpeed = 0.4 + Math.random() * 1.2;
+    mesh.userData.isActive = Math.random() < 0.15;
+    scene.add(mesh);
+    return mesh;
+  });
+
+  // Edge lines
+  const MAX_EDGES = 200;
+  const edgePositions = new Float32Array(MAX_EDGES * 6);
+  const edgeGeo = new THREE.BufferGeometry();
+  edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgePositions, 3));
+  const edgeMat = new THREE.LineSegments(
+    edgeGeo,
+    new THREE.LineBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.18, linewidth: 1 })
+  );
+  scene.add(edgeMat);
+
+  // Resize
+  function resize() {
+    const w = hero.clientWidth, h = hero.clientHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // Mouse parallax
+  let mx = 0, my = 0;
+  document.addEventListener('mousemove', e => {
+    mx = (e.clientX / window.innerWidth - 0.5) * 2;
+    my = (e.clientY / window.innerHeight - 0.5) * 2;
+  });
+
+  let t = 0;
+  function animate() {
+    requestAnimationFrame(animate);
+    t += 0.008;
+
+    // Move nodes
+    nodes.forEach((node, i) => {
+      node.position.addScaledVector(velocities[i], 1);
+      // Bounce
+      ['x','y','z'].forEach((ax, j) => {
+        const limit = [20, 11, 9][j];
+        if (Math.abs(node.position[ax]) > limit) {
+          velocities[i][ax] *= -1;
+          node.position[ax] = Math.sign(node.position[ax]) * limit;
+        }
+      });
+
+      // Pulse brightness
+      node.userData.pulse += node.userData.pulseSpeed * 0.016;
+      const brightness = 0.6 + 0.4 * Math.sin(node.userData.pulse);
+      if (node.userData.isActive) {
+        node.material.color.lerpColors(ACCENT_DIM, ACCENT, brightness);
+        node.scale.setScalar(0.8 + 0.6 * brightness);
+      } else {
+        node.material.color.lerpColors(ACCENT_DIM, ACCENT, brightness * 0.5);
+        node.scale.setScalar(0.6 + 0.2 * brightness);
+      }
+    });
+
+    // Update edges
+    let edgeIdx = 0;
+    for (let i = 0; i < NODE_COUNT && edgeIdx < MAX_EDGES; i++) {
+      for (let j = i + 1; j < NODE_COUNT && edgeIdx < MAX_EDGES; j++) {
+        const d = nodes[i].position.distanceTo(nodes[j].position);
+        if (d < CONNECT_DIST) {
+          const base = edgeIdx * 6;
+          edgePositions[base]     = nodes[i].position.x;
+          edgePositions[base + 1] = nodes[i].position.y;
+          edgePositions[base + 2] = nodes[i].position.z;
+          edgePositions[base + 3] = nodes[j].position.x;
+          edgePositions[base + 4] = nodes[j].position.y;
+          edgePositions[base + 5] = nodes[j].position.z;
+          edgeIdx++;
+        }
+      }
+    }
+    // Clear unused
+    for (let k = edgeIdx; k < MAX_EDGES; k++) {
+      edgePositions.fill(0, k * 6, k * 6 + 6);
+    }
+    edgeGeo.attributes.position.needsUpdate = true;
+    edgeGeo.setDrawRange(0, edgeIdx * 2);
+
+    // Camera: slow rotation + mouse parallax
+    camera.position.x = Math.sin(t * 0.12) * 3 + mx * 2;
+    camera.position.y = Math.cos(t * 0.08) * 1.5 - my * 1.5;
+    camera.lookAt(0, 0, 0);
+
+    renderer.render(scene, camera);
+  }
+  animate();
+})();
+</script>
+
 </body>
 </html>
