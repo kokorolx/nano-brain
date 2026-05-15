@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Setup Guide — nano-brain</title>
+  <meta name="description" content="Step-by-step setup guide for nano-brain: Docker, config, Ollama, and MCP connection.">
+  <link rel="stylesheet" href="assets/style.css">
+  <link rel="icon" href="assets/nano-step-logo.png">
+  <style>
+    .page-hero { padding: 64px 0 48px; }
+
+    .setup-layout {
+      display: grid;
+      grid-template-columns: 200px 1fr;
+      gap: 48px;
+      align-items: start;
+    }
+    @media (max-width: 768px) {
+      .setup-layout { grid-template-columns: 1fr; }
+      .setup-sidebar { display: none; }
+    }
+    .setup-sidebar { position: sticky; top: 80px; }
+    .sidebar-section { margin-bottom: 20px; }
+    .sidebar-title {
+      font-size: 11px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-subtle);
+      margin-bottom: 8px; padding-left: 8px;
+    }
+    .sidebar-links { display: flex; flex-direction: column; gap: 2px; }
+    .sidebar-links a {
+      font-size: 13px; color: var(--text-muted);
+      padding: 5px 8px; border-radius: 5px;
+      text-decoration: none; transition: color 0.15s, background 0.15s;
+    }
+    .sidebar-links a:hover { color: var(--text); background: var(--surface); }
+    .sidebar-links a.active { color: var(--accent); background: var(--accent-dim); }
+
+    .setup-section { margin-bottom: 56px; scroll-margin-top: 80px; }
+    .setup-section h2 {
+      font-size: 22px; margin-bottom: 16px;
+      padding-bottom: 12px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px;
+    }
+    .step-num {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: 50%;
+      background: var(--accent-dim); border: 1px solid rgba(56,189,248,0.3);
+      font-family: var(--mono); font-size: 13px; color: var(--accent);
+      flex-shrink: 0;
+    }
+    .setup-section h3 { font-size: 15px; margin-bottom: 10px; margin-top: 24px; color: var(--text-muted); font-weight: 500; }
+    .setup-section p { font-size: 14px; color: var(--text-muted); line-height: 1.7; margin-bottom: 12px; }
+
+    .callout {
+      border-radius: 8px; padding: 14px 18px;
+      margin: 16px 0; font-size: 14px; line-height: 1.6;
+    }
+    .callout-info {
+      background: var(--accent-glow); border: 1px solid rgba(56,189,248,0.2);
+      color: var(--text-muted);
+    }
+    .callout-warn {
+      background: rgba(251,191,36,0.06); border: 1px solid rgba(251,191,36,0.2);
+      color: var(--text-muted);
+    }
+    .callout-tip {
+      background: rgba(52,211,153,0.06); border: 1px solid rgba(52,211,153,0.2);
+      color: var(--text-muted);
+    }
+    .callout strong { display: block; margin-bottom: 4px; }
+    .callout-info strong { color: var(--accent); }
+    .callout-warn strong { color: #fbbf24; }
+    .callout-tip strong { color: #34d399; }
+
+    .editable {
+      background: rgba(251,191,36,0.15);
+      border-radius: 3px;
+      padding: 0 3px;
+      color: #fbbf24;
+      font-weight: 600;
+    }
+
+    .file-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 16px 0;
+    }
+    .file-header {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 16px;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+      font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+    }
+    .file-header-icon { opacity: 0.5; }
+    .file-block pre {
+      border: none; border-radius: 0; background: transparent;
+      margin: 0; font-size: 13px; padding: 18px 20px;
+    }
+
+    .option-tabs {
+      display: flex; gap: 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0;
+    }
+    .option-tab {
+      padding: 8px 16px; font-size: 13px; font-weight: 500;
+      color: var(--text-muted); cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s;
+    }
+    .option-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .option-content { display: none; }
+    .option-content.active { display: block; }
+
+    .checklist { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+    .checklist li {
+      display: flex; gap: 10px; align-items: baseline;
+      font-size: 14px; color: var(--text-muted);
+    }
+    .checklist li::before {
+      content: '□';
+      font-family: var(--mono); color: var(--text-subtle); flex-shrink: 0;
+    }
+    .checklist li.done::before { content: '✓'; color: #34d399; }
+  </style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html">
+      <img src="assets/nano-step-logo.png" alt="nano-step">
+      <span class="nav-brand-name">nano-brain</span>
+      <span class="nav-brand-version">v2026.8.19</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="features.html">Features</a>
+      <a href="docs.html">Docs</a>
+      <a href="setup.html" class="active">Setup</a>
+      <a href="changelog.html">Changelog</a>
+    </div>
+    <div class="nav-actions">
+      <a class="nav-badge" href="https://www.npmjs.com/package/nano-brain" target="_blank">
+        <span class="nav-badge-dot"></span>npm v2026.8.19
+      </a>
+      <a class="nav-badge" href="https://github.com/nano-step/nano-brain" target="_blank">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<div class="page-hero">
+  <div class="container">
+    <p class="eyebrow">Recommended setup</p>
+    <h1 style="font-size:clamp(28px,4vw,44px);margin-bottom:12px">Get nano-brain running</h1>
+    <p class="lead">Docker + Ollama on the host (for GPU). Swap highlighted values for your project.</p>
+
+    <div style="display:flex;gap:8px;margin-top:20px;flex-wrap:wrap">
+      <span class="badge badge-accent">Docker required</span>
+      <span class="badge">Ollama on host (recommended)</span>
+      <span class="badge">macOS · Linux</span>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="padding-top:0">
+  <div class="container">
+    <div class="setup-layout">
+
+      <!-- SIDEBAR -->
+      <aside class="setup-sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-title">Steps</div>
+          <div class="sidebar-links">
+            <a href="#prereqs" class="active">Prerequisites</a>
+            <a href="#config">Config file</a>
+            <a href="#docker-start">Start with Docker</a>
+            <a href="#mcp-connect">Connect MCP</a>
+            <a href="#verify">Verify</a>
+          </div>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-title">Alternatives</div>
+          <div class="sidebar-links">
+            <a href="#local-mode">Local (no Docker)</a>
+            <a href="#claude-code">Claude Code</a>
+          </div>
+        </div>
+      </aside>
+
+      <!-- CONTENT -->
+      <main>
+
+        <!-- PREREQS -->
+        <div class="setup-section" id="prereqs">
+          <h2><span class="step-num">1</span> Prerequisites</h2>
+
+          <ul class="checklist">
+            <li>Docker Desktop running (<a href="https://docs.docker.com/get-docker/" target="_blank">install</a>)</li>
+            <li>Node.js 18+ (<code>node --version</code>)</li>
+            <li>Ollama running on the host — for GPU embedding</li>
+            <li>Embedding model pulled: <code>nomic-embed-text</code></li>
+          </ul>
+
+          <h3>Install Ollama + pull embedding model</h3>
+          <div class="file-block">
+            <div class="file-header">
+              <span class="file-header-icon">$</span> terminal
+            </div>
+            <pre><span style="color:#64748b"># macOS</span>
+brew install ollama
+
+<span style="color:#64748b"># Start with GPU support + keep model in memory</span>
+OLLAMA_KEEP_ALIVE=30m OLLAMA_NUM_PARALLEL=4 ollama serve
+
+<span style="color:#64748b"># Pull the embedding model (768-dim, fast)</span>
+ollama pull nomic-embed-text</pre>
+          </div>
+
+          <div class="callout callout-info">
+            <strong>Why Ollama on the host?</strong>
+            Running Ollama natively uses Metal GPU on Apple Silicon → ~50–200ms per embed. Inside Docker = ~15s per embed. nano-brain talks to it via <code>host.docker.internal:11434</code>.
+          </div>
+        </div>
+
+        <!-- CONFIG -->
+        <div class="setup-section" id="config">
+          <h2><span class="step-num">2</span> Create config file</h2>
+
+          <p>Create <code>~/.nano-brain/config.yml</code>. Replace the <span class="editable">highlighted</span> values with your project info.</p>
+
+          <div class="file-block">
+            <div class="file-header">
+              <span class="file-header-icon">📄</span> ~/.nano-brain/config.yml
+            </div>
+            <pre>logging:
+  enabled: true
+  level: info
+
+collections:
+  memory:
+    path: ~/.nano-brain/memory
+    pattern: "**/*.md"
+    update: auto
+  sessions:
+    path: ~/.nano-brain/sessions
+    pattern: "**/*.md"
+    update: auto
+
+embedding:
+  provider: ollama
+  url: http://host.docker.internal:11434
+  model: nomic-embed-text
+  dimensions: 768
+  maxChars: 16000
+  rpmLimit: 100
+
+vector:
+  provider: qdrant
+  url: http://qdrant:6333          <span style="color:#64748b"># internal Docker network</span>
+  collection: nano-brain-768
+
+workspaces:
+  <span class="editable">/path/to/your/project</span>:       <span style="color:#64748b"># ← change this</span>
+    codebase:
+      enabled: true
+      maxFileSize: 300KB
+      extensions:
+        - .ts
+        - .tsx
+        - .js
+        - .py
+      exclude:
+        - "**/node_modules/**"
+        - "**/dist/**"
+        - "**/.git/**"
+
+harvester:
+  opencode:
+    enabled: true
+  claudeCode:
+    enabled: true               <span style="color:#64748b"># set false if not using Claude Code</span>
+
+reranker:
+  provider: cohere             <span style="color:#64748b"># optional — remove if no API key</span>
+  model: rerank-v3.5
+  apiKey: <span class="editable">YOUR_COHERE_KEY</span>        <span style="color:#64748b"># ← or remove reranker section entirely</span></pre>
+          </div>
+
+          <div class="callout callout-warn">
+            <strong>Change before starting:</strong>
+            Replace <code>/path/to/your/project</code> with the absolute path to your project (e.g. <code>/Users/you/projects/my-app</code>). This controls which workspace is indexed and which DB is created.
+          </div>
+
+          <div class="callout callout-tip">
+            <strong>No Cohere key?</strong>
+            Remove the <code>reranker:</code> section entirely. nano-brain runs fine without it — reranking is optional. Search still uses BM25 + vector + 9 other ranking stages.
+          </div>
+        </div>
+
+        <!-- DOCKER START -->
+        <div class="setup-section" id="docker-start">
+          <h2><span class="step-num">3</span> Start with Docker</h2>
+
+          <p>The <code>docker</code> command handles everything — starts Qdrant + nano-brain server, waits for health check, migrates config if needed.</p>
+
+          <div class="file-block">
+            <div class="file-header">
+              <span class="file-header-icon">$</span> terminal
+            </div>
+            <pre><span style="color:#64748b"># Start nano-brain + Qdrant</span>
+npx nano-brain docker start
+
+<span style="color:#64748b"># Check status</span>
+npx nano-brain docker status
+
+<span style="color:#64748b"># View logs if something's wrong</span>
+docker logs nano-brain-server -f
+
+<span style="color:#64748b"># Stop</span>
+npx nano-brain docker stop</pre>
+          </div>
+
+          <div class="callout callout-info">
+            <strong>What docker start does:</strong>
+            Copies <code>config.default.yml</code> → <code>~/.nano-brain/config.yml</code> if not present, creates data/memory/sessions/logs dirs, runs <code>docker compose up -d</code>, polls <code>http://localhost:3100/health</code> until ready (up to 20 retries × 3s).
+          </div>
+
+          <h3>docker-compose.yml environment variables</h3>
+          <p>Set these before running <code>docker start</code> to override defaults:</p>
+          <div class="file-block">
+            <div class="file-header">
+              <span class="file-header-icon">📄</span> .env (or export in shell)
+            </div>
+            <pre><span style="color:#64748b"># Path to your workspace (mounted read-only into container)</span>
+NANO_BRAIN_WORKSPACE=<span class="editable">/path/to/your/project</span>
+
+<span style="color:#64748b"># nano-brain home dir (default: ~/.nano-brain)</span>
+NANO_BRAIN_HOME=~/.nano-brain
+
+<span style="color:#64748b"># OpenCode session storage (default: ~/.local/share/opencode)</span>
+OPENCODE_DATA_DIR=~/.local/share/opencode</pre>
+          </div>
+
+          <div class="callout callout-warn">
+            <strong>Important:</strong> <code>NANO_BRAIN_WORKSPACE</code> must match the path in <code>config.yml → workspaces:</code>. If they differ, nano-brain will fall back to the first configured workspace and log a warning.
+          </div>
+        </div>
+
+        <!-- MCP CONNECT -->
+        <div class="setup-section" id="mcp-connect">
+          <h2><span class="step-num">4</span> Connect MCP agent</h2>
+
+          <p>Once the server is running at <code>http://localhost:3100</code>, connect your AI agent:</p>
+
+          <div class="option-tabs" id="agent-tabs">
+            <div class="option-tab active" onclick="switchAgent(this,'agent-opencode')">OpenCode</div>
+            <div class="option-tab" onclick="switchAgent(this,'agent-claude')">Claude Code</div>
+          </div>
+
+          <div id="agent-opencode" class="option-content active">
+            <div class="file-block" style="border-top-left-radius:0;border-top-right-radius:0;border-top:none;margin-top:0">
+              <div class="file-header">
+                <span class="file-header-icon">📄</span> ~/.config/opencode/opencode.json
+              </div>
+              <pre>{
+  "mcp": {
+    "nano-brain": {
+      "type": "remote",
+      "url": "http://localhost:3100/mcp",
+      "enabled": true
+    }
+  }
+}</pre>
+            </div>
+            <p style="margin-top:8px">Restart OpenCode after editing this file. Use <code>"type": "local"</code> with <code>"command": ["npx", "nano-brain", "mcp"]</code> for stdio mode without Docker.</p>
+          </div>
+
+          <div id="agent-claude" class="option-content">
+            <div class="file-block" style="border-top-left-radius:0;border-top-right-radius:0;border-top:none;margin-top:0">
+              <div class="file-header">
+                <span class="file-header-icon">📄</span> .mcp.json (project root)
+              </div>
+              <pre>{
+  "mcpServers": {
+    "nano-brain": {
+      "command": "npx",
+      "args": ["mcp-remote", "http://localhost:3100/sse"]
+    }
+  }
+}</pre>
+            </div>
+            <p style="margin-top:8px">Claude Code connects via SSE. The server must be running before starting Claude Code.</p>
+          </div>
+        </div>
+
+        <!-- VERIFY -->
+        <div class="setup-section" id="verify">
+          <h2><span class="step-num">5</span> Verify it's working</h2>
+
+          <div class="file-block">
+            <div class="file-header">
+              <span class="file-header-icon">$</span> terminal
+            </div>
+            <pre><span style="color:#64748b"># Check health endpoint</span>
+curl http://localhost:3100/health
+
+<span style="color:#64748b"># Expected: {"status":"ok","ready":true}</span>
+
+<span style="color:#64748b"># Check index status</span>
+npx nano-brain status
+
+<span style="color:#64748b"># Run a test search</span>
+npx nano-brain query "your search query"</pre>
+          </div>
+
+          <div class="callout callout-tip">
+            <strong>First startup takes 1–3 minutes.</strong>
+            nano-brain installs deps inside Docker, rebuilds native modules for Linux, then starts the server. Subsequent restarts are ~10s.
+          </div>
+
+          <h3>Troubleshooting</h3>
+          <div class="file-block">
+            <div class="file-header">
+              <span class="file-header-icon">$</span> diagnostics
+            </div>
+            <pre><span style="color:#64748b"># Container not starting?</span>
+docker logs nano-brain-server
+
+<span style="color:#64748b"># Qdrant not connecting?</span>
+curl http://localhost:6333/healthz
+
+<span style="color:#64748b"># Ollama not reachable?</span>
+curl http://localhost:11434/api/tags
+
+<span style="color:#64748b"># Check all containers</span>
+docker ps | grep nano-brain</pre>
+          </div>
+        </div>
+
+        <hr class="divider">
+
+        <!-- LOCAL MODE -->
+        <div class="setup-section" id="local-mode">
+          <h2>Alternative: Local stdio (no Docker)</h2>
+
+          <p>If you don't want Docker, run nano-brain directly as a local MCP server. You still need Qdrant — easiest via <code>docker run</code> for just Qdrant.</p>
+
+          <div class="file-block">
+            <div class="file-header"><span class="file-header-icon">$</span> terminal</div>
+            <pre><span style="color:#64748b"># Install globally</span>
+npm install -g nano-brain
+
+<span style="color:#64748b"># Start just Qdrant</span>
+docker run -d -p 6333:6333 qdrant/qdrant:latest
+
+<span style="color:#64748b"># Update config.yml vector URL for local Qdrant</span>
+<span style="color:#64748b"># vector.url: http://localhost:6333</span>
+
+<span style="color:#64748b"># Initialize workspace</span>
+cd <span class="editable">/path/to/your/project</span>
+nano-brain init
+
+<span style="color:#64748b"># Start MCP server (stdio — for OpenCode/Claude Code)</span>
+nano-brain mcp</pre>
+          </div>
+
+          <div class="file-block">
+            <div class="file-header"><span class="file-header-icon">📄</span> OpenCode config (stdio mode)</div>
+            <pre>{
+  "mcp": {
+    "nano-brain": {
+      "type": "local",
+      "command": ["nano-brain", "mcp"],
+      "enabled": true
+    }
+  }
+}</pre>
+          </div>
+
+          <div class="callout callout-warn">
+            <strong>Local mode caveat:</strong>
+            In stdio mode, nano-brain starts a new process per agent session. Docker mode keeps one persistent server process — better for performance and shared state across multiple agent sessions.
+          </div>
+        </div>
+
+        <!-- CLAUDE CODE NOTE -->
+        <div class="setup-section" id="claude-code">
+          <h2>Claude Code harvesting</h2>
+
+          <p>nano-brain can automatically harvest Claude Code sessions. Enable in config:</p>
+
+          <div class="file-block">
+            <div class="file-header"><span class="file-header-icon">📄</span> ~/.nano-brain/config.yml — harvester section</div>
+            <pre>harvester:
+  claudeCode:
+    enabled: true
+    sessionDir: ""   <span style="color:#64748b"># default: ~/.claude/projects</span>
+                     <span style="color:#64748b"># override if your sessions are elsewhere</span></pre>
+          </div>
+
+          <p>Sessions are auto-indexed every 2 minutes. After enabling, run <code>nano-brain status</code> to confirm sessions are being picked up.</p>
+
+          <div class="callout callout-tip">
+            <strong>Session format:</strong> Claude Code stores sessions as JSONL in <code>~/.claude/projects/</code>. nano-brain's <code>ClaudeCodeAdapter</code> converts them to markdown observations and indexes them with your workspace's project hash.
+          </div>
+        </div>
+
+      </main>
+    </div>
+  </div>
+</div>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <img src="assets/nano-step-logo.png" alt="nano-step">
+      <span>nano-brain by <a href="https://github.com/nano-step" target="_blank" style="color:var(--text-muted)">nano-step</a> · MIT License</span>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/nano-step/nano-brain" target="_blank">GitHub</a>
+      <a href="https://www.npmjs.com/package/nano-brain" target="_blank">npm</a>
+      <a href="docs.html">Docs</a>
+      <a href="changelog.html">Changelog</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+function switchAgent(el, id) {
+  document.querySelectorAll('.option-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.option-content').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById(id).classList.add('active');
+}
+</script>
+</body>
+</html>
