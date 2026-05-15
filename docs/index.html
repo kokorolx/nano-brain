@@ -7,13 +7,13 @@
   <meta name="description" content="A persistent memory MCP server for AI coding agents. Hybrid search (BM25 + vector + RRF), code intelligence, 30 MCP tools, TypeScript/JavaScript/Python/Ruby/Vue.">
   <link rel="stylesheet" href="assets/style.css">
   <link rel="icon" href="assets/nano-step-logo.png">
-  <script src="https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <style>
     /* ── HERO ─────────────────────────────────────── */
     .hero {
       padding: 96px 0 80px;
       position: relative;
-      overflow: hidden;
+      overflow: visible;
     }
     .hero::before {
       content: '';
@@ -696,7 +696,7 @@ function switchTab(el, id) {
 </script>
 
 <script>
-(function() {
+window.addEventListener('load', function() {
   if (!window.THREE) return;
   const canvas = document.getElementById('brain-canvas');
   const hero = canvas.parentElement;
@@ -832,7 +832,7 @@ function switchTab(el, id) {
     renderer.render(scene, camera);
   }
   animate();
-})();
+});
 </script>
 
 </body>
