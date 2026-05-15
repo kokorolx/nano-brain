@@ -1,11 +1,11 @@
 // src/harvesters/claude-code.ts
-import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
-import { join, dirname } from 'path';
+import { existsSync, readdirSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { homedir } from 'os';
 import { createHash } from 'crypto';
 import type { SessionSourceAdapter, AdapterResult } from './types.js';
 import type { HarvestState } from './shared.js';
-import { getOutputPath, sessionToMarkdown, saveHarvestState } from './shared.js';
+import { writeSession, sessionToMarkdown, saveHarvestState } from './shared.js';
 import type { ExtractionConfig, Store, HarvestedSession, ConsolidationConfig } from '../types.js';
 import { log } from '../logger.js';
 import { extractFactsFromSession, storeExtractedFact } from '../extraction.js';
@@ -59,6 +59,21 @@ export class ClaudeCodeAdapter implements SessionSourceAdapter {
     const stats = { processed: 0, skipped: 0, incremental: 0, errors: 0 };
     const extractionStats = { factsExtracted: 0, duplicatesSkipped: 0, errors: 0 };
     const projectNames = new Map<string, string>();
+
+    // Build LLM provider once, outside all loops (Fix: was created per-session)
+    const provider = (extractionConfig?.enabled && store) ? (() => {
+      const llmConfig: ConsolidationConfig = {
+        enabled: true,
+        interval_ms: 0,
+        model: extractionConfig.model,
+        endpoint: extractionConfig.endpoint,
+        apiKey: extractionConfig.apiKey,
+        max_memories_per_cycle: 0,
+        min_memories_threshold: 0,
+        confidence_threshold: 0,
+      };
+      return createLLMProvider(llmConfig);
+    })() : null;
 
     let projectDirs: string[];
     try {
@@ -181,42 +196,27 @@ export class ClaudeCodeAdapter implements SessionSourceAdapter {
             messages,
           };
 
-          const outputPath = getOutputPath(outputDir, projectPath, dateStr, slug, title, projectNames);
-          mkdirSync(dirname(outputPath), { recursive: true });
-          writeFileSync(outputPath, sessionToMarkdown(harvestedSession), 'utf-8');
+          writeSession(harvestedSession, outputDir, projectNames);
 
           sessions.push(harvestedSession);
           state[sessionId] = { mtime: fileMtime, messageCount: messages.length };
           stateChanged = true;
           stats.processed++;
 
-          // Optional LLM extraction
-          if (extractionConfig?.enabled && store) {
+          // Optional LLM extraction (provider created once before loops)
+          if (provider && store) {
             try {
-              const llmConfig: ConsolidationConfig = {
-                enabled: true,
-                interval_ms: 0,
-                model: extractionConfig.model,
-                endpoint: extractionConfig.endpoint,
-                apiKey: extractionConfig.apiKey,
-                max_memories_per_cycle: 0,
-                min_memories_threshold: 0,
-                confidence_threshold: 0,
-              };
-              const provider = createLLMProvider(llmConfig);
-              if (provider) {
-                const health = store.getIndexHealth();
-                if ((health.extractedFacts ?? 0) < MAX_EXTRACTED_FACTS) {
-                  const result = await extractFactsFromSession(
-                    sessionToMarkdown(harvestedSession),
-                    provider,
-                    extractionConfig,
-                  );
-                  for (const fact of result.facts) {
-                    const stored = storeExtractedFact(store, fact, sessionId, projectHash);
-                    if (stored) extractionStats.factsExtracted++;
-                    else extractionStats.duplicatesSkipped++;
-                  }
+              const health = store.getIndexHealth();
+              if ((health.extractedFacts ?? 0) < MAX_EXTRACTED_FACTS) {
+                const result = await extractFactsFromSession(
+                  sessionToMarkdown(harvestedSession),
+                  provider,
+                  extractionConfig!,
+                );
+                for (const fact of result.facts) {
+                  const stored = storeExtractedFact(store, fact, sessionId, projectHash);
+                  if (stored) extractionStats.factsExtracted++;
+                  else extractionStats.duplicatesSkipped++;
                 }
               }
             } catch (err) {

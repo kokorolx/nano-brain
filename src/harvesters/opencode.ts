@@ -4,7 +4,6 @@ import { homedir } from 'os';
 import type { SessionSourceAdapter, AdapterResult } from './types.js';
 import type { HarvestState } from './shared.js';
 import type { ExtractionConfig, Store } from '../types.js';
-import { log } from '../logger.js';
 import { harvestSessions } from '../harvester.js';
 
 const DEFAULT_SESSION_DIR = join(homedir(), '.local/share/opencode/storage');
@@ -24,16 +23,20 @@ export class OpenCodeAdapter implements SessionSourceAdapter {
     extractionConfig?: ExtractionConfig,
     store?: Store,
   ): Promise<AdapterResult> {
+    // Point harvestSessions at the orchestrator's state file to avoid dual tracking.
+    // Return stateChanged: false — harvestSessions writes the file itself.
+    const stateFile = join(outputDir, `.harvest-state-${this.name}.json`);
     const sessions = await harvestSessions({
       sessionDir: this.sessionDir,
       outputDir,
       extractionConfig,
       store,
+      stateFile,
     });
 
     return {
       sessions,
-      stateChanged: sessions.length > 0,
+      stateChanged: false,
       stats: {
         processed: sessions.length,
         skipped: 0,

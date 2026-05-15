@@ -116,3 +116,25 @@ export function getOutputPath(
   const filename = `${date}-${sanitizedSlug}.md`;
   return join(outputDir, sanitizedName, filename);
 }
+
+/**
+ * Writes a harvested session as markdown to the output directory.
+ * Shared by all adapters to keep write logic in one place.
+ */
+export function writeSession(
+  session: HarvestedSession,
+  outputDir: string,
+  projectNames?: Map<string, string>,
+): string {
+  const outputPath = getOutputPath(
+    outputDir,
+    session.project,
+    session.date,
+    session.slug,
+    session.title,
+    projectNames,
+  );
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, sessionToMarkdown(session), 'utf-8');
+  return outputPath;
+}
