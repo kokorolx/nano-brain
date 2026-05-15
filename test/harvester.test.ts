@@ -101,7 +101,7 @@ describe('getOutputPath', () => {
 
     const path = getOutputPath(outputDir, projectPath, date, slug);
 
-    expect(path).toMatch(/^\/output\/[a-f0-9]{12}\/2026-02-16-test-session\.md$/);
+    expect(path).toMatch(/^\/output\/project\/2026-02-16-test-session\.md$/);
   });
 
   it('handles special characters in slug', () => {
@@ -112,7 +112,7 @@ describe('getOutputPath', () => {
 
     const path = getOutputPath(outputDir, projectPath, date, slug);
 
-    expect(path).toMatch(/^\/output\/[a-f0-9]{12}\/2026-02-16-test-session-with-spaces\.md$/);
+    expect(path).toMatch(/^\/output\/project\/2026-02-16-test-session-with-spaces\.md$/);
   });
 
   it('collapses multiple hyphens', () => {
@@ -123,7 +123,7 @@ describe('getOutputPath', () => {
 
     const path = getOutputPath(outputDir, projectPath, date, slug);
 
-    expect(path).toMatch(/^\/output\/[a-f0-9]{12}\/2026-02-16-test-multiple-hyphens\.md$/);
+    expect(path).toMatch(/^\/output\/project\/2026-02-16-test-multiple-hyphens\.md$/);
   });
 
   it('removes leading and trailing hyphens', () => {
@@ -134,7 +134,7 @@ describe('getOutputPath', () => {
 
     const path = getOutputPath(outputDir, projectPath, date, slug);
 
-    expect(path).toMatch(/^\/output\/[a-f0-9]{12}\/2026-02-16-test-slug\.md$/);
+    expect(path).toMatch(/^\/output\/project\/2026-02-16-test-slug\.md$/);
   });
 });
 
@@ -427,9 +427,10 @@ describe('loadHarvestState and saveHarvestState', () => {
 
     const loaded = loadHarvestState(stateFile);
 
+    // shared.ts loadHarvestState returns the raw parsed JSON without number->object migration
     expect(loaded).toEqual({
-      'ses_abc123': { mtime: 1770106366269 },
-      'ses_xyz789': { mtime: 1770223889563 }
+      'ses_abc123': 1770106366269,
+      'ses_xyz789': 1770223889563
     });
   });
 

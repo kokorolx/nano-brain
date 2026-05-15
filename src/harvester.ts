@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, appendFileSync, statSync, renameSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, writeFileSync, appendFileSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { createHash } from 'crypto';
 import type { HarvestedSession, ExtractionConfig, Store } from './types.js';
@@ -7,6 +7,26 @@ import { openDatabase } from './store.js';
 import { createLLMProvider } from './llm-provider.js';
 import { extractFactsFromSession, storeExtractedFact } from './extraction.js';
 import type { ConsolidationConfig } from './types.js';
+import {
+  loadHarvestState,
+  saveHarvestState,
+  getOutputPath,
+  sessionToMarkdown,
+  messagesToMarkdown,
+  type HarvestState,
+  type HarvestStateEntry,
+} from './harvesters/shared.js';
+
+export {
+  sessionToMarkdown,
+  messagesToMarkdown,
+  loadHarvestState,
+  saveHarvestState,
+  getOutputPath,
+  type HarvestState,
+  type HarvestStateEntry,
+};
+
 
 const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
 
@@ -42,15 +62,6 @@ interface ParsedMessage {
   agent?: string;
   created: number;
 }
-
-interface HarvestStateEntry {
-  mtime: number;
-  retries?: number;
-  skipped?: boolean;
-  messageCount?: number;
-}
-
-type HarvestState = Record<string, HarvestStateEntry>;
 
 interface DbSession {
   id: string;
@@ -168,102 +179,6 @@ export async function parseParts(messageId: string, storageDir: string): Promise
   }
   
   return textParts.join('\n');
-}
-
-export function sessionToMarkdown(session: HarvestedSession): string {
-  const lines: string[] = [];
-  
-  lines.push('---');
-  lines.push(`session: ${session.sessionId}`);
-  lines.push(`agent: ${session.agent}`);
-  lines.push(`date: "${session.date}"`);
-  lines.push(`title: "${session.title}"`);
-  lines.push(`project: ${session.project}`);
-  lines.push(`projectHash: ${session.projectHash}`);
-  lines.push('---');
-  lines.push('');
-  
-  for (const message of session.messages) {
-    if (message.role === 'user') {
-      lines.push('## User');
-    } else {
-      const agentName = message.agent || 'assistant';
-      lines.push(`## Assistant (${agentName})`);
-    }
-    lines.push('');
-    lines.push(message.text);
-    lines.push('');
-  }
-  
-  return lines.join('\n');
-}
-
-export function messagesToMarkdown(messages: Array<{ role: string; agent?: string; text: string }>): string {
-  const lines: string[] = [];
-  
-  for (const message of messages) {
-    if (message.role === 'user') {
-      lines.push('## User');
-    } else {
-      const agentName = message.agent || 'assistant';
-      lines.push(`## Assistant (${agentName})`);
-    }
-    lines.push('');
-    lines.push(message.text);
-    lines.push('');
-  }
-  
-  return lines.join('\n');
-}
-
-export function getOutputPath(outputDir: string, projectPath: string, date: string, slug: string, title?: string): string {
-  const hash = createHash('sha256').update(projectPath).digest('hex');
-  const projectHash = hash.substring(0, 12);
-
-  const raw = (title && title.trim()) ? title : (slug || 'untitled');
-  const sanitizedSlug = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .replace(/-+/g, '-')
-    .substring(0, 60);
-
-  return join(outputDir, projectHash, `${date}-${sanitizedSlug}.md`);
-}
-
-export function loadHarvestState(stateFile: string): HarvestState {
-  try {
-    if (!existsSync(stateFile)) {
-      return {};
-    }
-    
-    const content = readFileSync(stateFile, 'utf-8');
-    const raw = JSON.parse(content);
-    const state: HarvestState = {};
-    for (const [key, value] of Object.entries(raw)) {
-      if (typeof value === 'number') {
-        state[key] = { mtime: value };
-      } else {
-        state[key] = value as HarvestStateEntry;
-      }
-    }
-    return state;
-  } catch {
-    return {};
-  }
-}
-
-export function saveHarvestState(stateFile: string, state: HarvestState): void {
-  const dir = dirname(stateFile);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-
-  // Atomic write: write to temp file then rename to prevent partial reads
-  // from concurrent harvester instances
-  const tmpFile = stateFile + '.tmp.' + process.pid;
-  writeFileSync(tmpFile, JSON.stringify(state, null, 2), 'utf-8');
-  renameSync(tmpFile, stateFile);
 }
 
 export function getMessageDirMtime(sessionId: string, storageDir: string): number | null {
