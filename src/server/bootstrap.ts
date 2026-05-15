@@ -277,6 +277,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
       workspaceRoot: resolvedWorkspaceRoot,
       projectHash: currentProjectHash,
       vectorStore,
+      harvesterConfig: config?.harvester,
     });
     watcher = watcherRef.value;
   };

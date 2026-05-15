@@ -102,6 +102,7 @@ export interface CollectionConfig {
   learning?: Partial<LearningConfig>
   consolidation?: Partial<ConsolidationConfig>
   extraction?: Partial<ExtractionConfig>
+  harvester?: HarvesterConfig
   importance?: Partial<ImportanceConfig>
   intents?: Partial<IntentConfig>
   proactive?: Partial<ProactiveConfig>
@@ -350,6 +351,16 @@ export const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
   endpoint: 'https://ai-proxy.thnkandgrow.com',
   maxFactsPerSession: 20,
 };
+
+export interface HarvesterSourceConfig {
+  enabled?: boolean;
+  sessionDir?: string;
+}
+
+export interface HarvesterConfig {
+  opencode?: HarvesterSourceConfig & { enabled?: boolean };
+  claudeCode?: HarvesterSourceConfig;
+}
 
 export interface ImportanceConfig {
   enabled: boolean;

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "sessionId": "aaaa1111-0000-0000-0000-000000000001",
+      "fullPath": "aaaa1111-0000-0000-0000-000000000001.jsonl",
+      "fileMtime": 1747267200000,
+      "firstPrompt": "Fix the authentication bug",
+      "messageCount": 4,
+      "created": "2026-05-15T01:00:00.000Z",
+      "modified": "2026-05-15T01:30:00.000Z",
+      "gitBranch": "main",
+      "projectPath": "/Users/test/projects/my-project",
+      "isSidechain": false
+    },
+    {
+      "sessionId": "bbbb2222-0000-0000-0000-000000000002",
+      "fullPath": "bbbb2222-0000-0000-0000-000000000002.jsonl",
+      "fileMtime": 1747270800000,
+      "firstPrompt": "Add new feature",
+      "messageCount": 2,
+      "created": "2026-05-15T02:00:00.000Z",
+      "modified": "2026-05-15T02:10:00.000Z",
+      "gitBranch": "feat/new-feature",
+      "projectPath": "/Users/test/projects/my-project",
+      "isSidechain": false
+    }
+  ]
+}

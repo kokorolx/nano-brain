@@ -32,3 +32,12 @@ vector:
 #   /path/to/your/project:
 #     codebase:
 #       enabled: true
+
+# Session harvesting configuration
+# harvester:
+#   opencode:
+#     enabled: true
+#     sessionDir: ""    # default: ~/.local/share/opencode/storage
+#   claudeCode:
+#     enabled: false    # opt-in; set to true to harvest Claude Code sessions
+#     sessionDir: ""    # default: ~/.claude/projects

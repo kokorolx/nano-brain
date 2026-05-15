@@ -3,7 +3,8 @@ import type { Store, Collection, StorageConfig, CodebaseConfig, PruningConfig, M
 import type { VectorStore } from '../providers/vector-store.js'
 import { scanCollectionFiles } from '../collections.js';
 import { indexDocument, computeHash, extractProjectHashFromPath, openWorkspaceStore } from '../store.js';
-import { harvestSessions } from '../harvester.js';
+import { runHarvestCycle, OpenCodeAdapter, ClaudeCodeAdapter } from '../harvesters/index.js';
+import type { HarvesterConfig } from '../types.js';
 import { checkDiskSpace, evictExpiredSessions, evictBySize } from '../storage.js';
 import { indexCodebase, resolveExtensions, embedPendingCodebase, BUILTIN_EXCLUDE_PATTERNS } from '../codebase.js'
 import { runPruningCycle, hardDeletePrunedEntities } from '../pruning.js';
@@ -53,6 +54,10 @@ export interface WatcherOptions {
   vectorStore?: VectorStore | null
   /** Chokidar file polling interval in ms (default: 5000). Lower values detect changes faster but use more CPU. */
   chokidarIntervalMs?: number
+  /** Per-source harvester configuration (opencode, claudeCode flags and dirs) */
+  harvesterConfig?: HarvesterConfig
+  /** Entity/fact extraction config passed to harvest cycle */
+  extractionConfig?: import('../types.js').ExtractionConfig
 }
 
 export interface Watcher {
@@ -143,6 +148,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
     learningConfig,
     sampler,
     vectorStore = null,
+    harvesterConfig,
   } = options
 
   const codebaseExtensions = codebaseConfig?.enabled
@@ -417,9 +423,21 @@ export function startWatcher(options: WatcherOptions): Watcher {
       }
 
       try {
-        const sessions = await harvestSessions({
-          sessionDir: sessionStorageDir,
-          outputDir,
+        // Build adapters from config
+        const adapters = [];
+        const ocEnabled = harvesterConfig?.opencode?.enabled !== false; // default: true
+        if (ocEnabled) {
+          const ocDir = harvesterConfig?.opencode?.sessionDir || sessionStorageDir;
+          adapters.push(new OpenCodeAdapter(ocDir));
+        }
+        if (harvesterConfig?.claudeCode?.enabled) {
+          const ccDir = harvesterConfig?.claudeCode?.sessionDir;
+          adapters.push(new ClaudeCodeAdapter(ccDir));
+        }
+
+        const sessions = await runHarvestCycle(adapters, outputDir, {
+          extractionConfig: options.extractionConfig,
+          store,
         });
 
         if (sessions.length > 0) {
