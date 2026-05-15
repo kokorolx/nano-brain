@@ -100,6 +100,7 @@ Thompson Sampling tunes RRF blend weights and reranking thresholds based on sear
 ## Git & PR Conventions
 
 - **No agent footers in commits or PRs**: Do not add `Co-Authored-By`, `🤖 Generated with`, or any agent attribution lines to commit messages or PR descriptions.
+- **Every npm publish must have a changelog**: Whether beta or latest, always create a GitHub release with release notes before or immediately after publishing. Release notes must describe what changed, which files, and why.
 
 ## Testing Patterns
 

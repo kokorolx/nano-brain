@@ -1,0 +1,71 @@
+name: Publish Beta
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci --legacy-peer-deps
+
+      - name: Compute beta version
+        id: version
+        run: |
+          BASE=$(node -p "require('./package.json').version")
+          BETA="${BASE}-beta.${{ github.run_number }}"
+          echo "beta=$BETA" >> $GITHUB_OUTPUT
+          echo "Beta version: $BETA"
+
+      - name: Set beta version (no git tag)
+        run: npm version ${{ steps.version.outputs.beta }} --no-git-tag-version
+
+      - name: Publish to npm @beta
+        run: npm publish --tag beta --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Generate changelog since last tag
+        id: changelog
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${LAST_TAG}..HEAD"
+          fi
+          COMMITS=$(git log $RANGE --pretty=format:"- %s" \
+            --no-merges \
+            | grep -v "^- chore: bump version" || true)
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMITS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub pre-release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const version = '${{ steps.version.outputs.beta }}';
+            const changelog = `${{ steps.changelog.outputs.changelog }}`;
+            await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${version}`,
+              name: `nano-brain v${version} (beta)`,
+              body: `## Changes\n\n${changelog || '_No notable changes_'}\n\n---\n\n**Install:** \`npm install nano-brain@beta\``,
+              prerelease: true,
+              target_commitish: context.sha,
+            });
