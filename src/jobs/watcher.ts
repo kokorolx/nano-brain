@@ -20,7 +20,7 @@ const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve
 
 // ── Obsidian helpers ──────────────────────────────────────────────────────────
 
-function parseWikiLinks(content: string): string[] {
+export function parseWikiLinks(content: string): string[] {
   const seen = new Set<string>();
   const re = /\[\[([^\]|#\n]+?)(?:[|#][^\]]*?)?\]\]/g;
   let m;
