@@ -76,7 +76,12 @@ export default function SymbolGraph() {
         {isLoading ? (
           <SkeletonGraph />
         ) : (
-          <div className="card graph-shell overflow-hidden">
+          <div className="card graph-shell overflow-hidden relative">
+            {graphData?.truncated && (
+              <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-[#1c1c27]/90 border border-[#3a3a5c] text-[11px] text-[#8888a0]">
+                Showing top {graphData.truncated.shown} of {graphData.truncated.total.toLocaleString()} symbols by call degree
+              </div>
+            )}
             {graphData && (data?.symbols.length ?? 0) > 0 ? (
               <ReactFlowGraph
                 nodes={graphData.nodes}

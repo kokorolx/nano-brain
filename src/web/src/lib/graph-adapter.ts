@@ -41,11 +41,12 @@ function computeForceLayout(
     .force('collide', forceCollide().radius(collideBase).strength(1.0).iterations(4))
     .stop();
 
-  // Run enough ticks to reach equilibrium; add extra passes for dense graphs
-  // where collision resolution needs more iterations to stabilise.
+  // Cap ticks at 200 — beyond that, layout quality improvement is marginal
+  // vs the synchronous blocking cost (~0.3ms/tick × 359 = 108ms for n=500).
   const baseTicks = Math.ceil(Math.log(simulation.alphaMin()) / Math.log(1 - simulation.alphaDecay()));
-  const extraTicks = n > 100 ? 60 : n > 50 ? 40 : 20;
-  for (let i = 0; i < baseTicks + extraTicks; i++) simulation.tick();
+  const extraTicks = n > 100 ? 40 : n > 50 ? 20 : 10;
+  const totalTicks = Math.min(baseTicks + extraTicks, 200);
+  for (let i = 0; i < totalTicks; i++) simulation.tick();
 
   return nodes.map((nd, i) => ({
     ...nd,
@@ -168,10 +169,12 @@ export function buildCodeGraph(
 
 // ---------- Symbol call graph ----------
 
+const SYMBOL_NODE_LIMIT = 300;
+
 export function buildSymbolGraph(
   data: SymbolsResponse,
   clusterMode: boolean
-): { nodes: Node[]; edges: Edge[] } {
+): { nodes: Node[]; edges: Edge[]; truncated?: { shown: number; total: number } } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
@@ -267,7 +270,18 @@ export function buildSymbolGraph(
       });
     }
   } else {
-    for (const sym of data.symbols) {
+    // Cap at SYMBOL_NODE_LIMIT — sort by call degree (most-connected first)
+    const degreeMap = new Map<number, number>();
+    for (const e of data.edges) {
+      degreeMap.set(e.sourceId, (degreeMap.get(e.sourceId) || 0) + 1);
+      degreeMap.set(e.targetId, (degreeMap.get(e.targetId) || 0) + 1);
+    }
+    const sortedSymbols = [...data.symbols]
+      .sort((a, b) => (degreeMap.get(b.id) || 0) - (degreeMap.get(a.id) || 0))
+      .slice(0, SYMBOL_NODE_LIMIT);
+    const visibleIds = new Set(sortedSymbols.map(s => s.id));
+
+    for (const sym of sortedSymbols) {
       nodes.push({
         id: String(sym.id),
         type: 'symbol',
@@ -285,6 +299,7 @@ export function buildSymbolGraph(
 
     const seenEdges = new Set<string>();
     for (const edge of data.edges) {
+      if (!visibleIds.has(edge.sourceId) || !visibleIds.has(edge.targetId)) continue;
       const src = String(edge.sourceId);
       const tgt = String(edge.targetId);
       const key = `${src}->${tgt}`;
@@ -294,7 +309,7 @@ export function buildSymbolGraph(
         id: `e-${edge.id}`,
         source: src,
         target: tgt,
-        label: edge.edgeType,
+        label: '', // hidden by default; shown in focus mode via ReactFlowGraph
         data: { edgeType: edge.edgeType },
         animated: false,
         style: {
@@ -304,6 +319,12 @@ export function buildSymbolGraph(
         },
       });
     }
+
+    const truncated = data.symbols.length > SYMBOL_NODE_LIMIT
+      ? { shown: SYMBOL_NODE_LIMIT, total: data.symbols.length }
+      : undefined;
+    const positioned = computeForceLayout(nodes, edges, { width: 1800, height: 1200 });
+    return { nodes: positioned, edges, truncated };
   }
 
   const positioned = computeForceLayout(nodes, edges, { width: 1800, height: 1200 });

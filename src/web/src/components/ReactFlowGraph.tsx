@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -19,7 +19,7 @@ type ReactFlowGraphProps = {
   nodeTypes?: NodeTypes;
 };
 
-function ReactFlowGraphInner({ nodes: inputNodes, edges: inputEdges, onNodeClick, nodeTypes }: ReactFlowGraphProps) {
+const ReactFlowGraphInner = memo(function ReactFlowGraphInner({ nodes: inputNodes, edges: inputEdges, onNodeClick, nodeTypes }: ReactFlowGraphProps) {
   const { fitView } = useReactFlow();
   const [nodes, setNodes, onNodesChange] = useNodesState(inputNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(inputEdges);
@@ -49,6 +49,8 @@ function ReactFlowGraphInner({ nodes: inputNodes, edges: inputEdges, onNodeClick
         data: { ...n.data, dimmed: !neighbors.has(n.id), focused: n.id === selectedNodeId },
       })));
     }
+    // Only fit view on fresh data load — skip when user has a node selected
+    // to avoid jarring viewport reset mid-focus-mode.
     if (!selectedNodeId) {
       requestAnimationFrame(() => fitView({ padding: 0.15, duration: 300 }));
     }
@@ -123,13 +125,14 @@ function ReactFlowGraphInner({ nodes: inputNodes, edges: inputEdges, onNodeClick
       nodesConnectable={false}
       nodesDraggable={true}
       elementsSelectable={true}
+      onlyRenderVisibleElements={true}
       proOptions={{ hideAttribution: true }}
     >
       <Background gap={20} size={1} />
       <Controls showInteractive={false} />
     </ReactFlow>
   );
-}
+});
 
 export default function ReactFlowGraph(props: ReactFlowGraphProps) {
   return (
