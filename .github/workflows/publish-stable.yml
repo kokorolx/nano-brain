@@ -77,9 +77,59 @@ jobs:
           [ -n "$chore" ] && body+=$'### Other\n'"$chore"$'\n\n'
           [ -z "$body" ]  && body="_No notable changes_"
 
+          # Write body to file so downstream steps can read it without quoting issues
+          echo "$body" > /tmp/changelog_body.md
+
           echo "body<<EOF" >> $GITHUB_OUTPUT
           echo "$body" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Update CHANGELOG.md
+        run: |
+          python3 << 'PYEOF'
+          import os
+          from datetime import date
+
+          version = os.environ['VERSION']
+          today = date.today().strftime('%Y-%m-%d')
+
+          with open('/tmp/changelog_body.md') as f:
+              body = f.read().strip()
+
+          install_line = f"**Install:** `npm install nano-brain@{version}` · `npx nano-brain@latest`"
+          new_entry = f"## [{version}] — {today}\n\n{body}\n\n{install_line}\n\n---\n\n"
+
+          with open('CHANGELOG.md') as f:
+              content = f.read()
+
+          # Insert after the first "---" separator (after the header block)
+          sep = '\n---\n'
+          idx = content.find(sep)
+          if idx != -1:
+              insert_pos = idx + len(sep) + 1  # after the blank line following ---
+              content = content[:insert_pos] + new_entry + content[insert_pos:]
+          else:
+              content += '\n' + new_entry
+
+          with open('CHANGELOG.md', 'w') as f:
+              f.write(content)
+
+          print(f"CHANGELOG.md updated for v{version}")
+          PYEOF
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Commit and push CHANGELOG.md
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          if git diff --staged --quiet; then
+            echo "CHANGELOG.md already up to date — nothing to commit"
+          else
+            git commit -m "chore: update CHANGELOG.md for v${{ steps.version.outputs.version }} [skip ci]"
+            git push origin master
+          fi
 
       - name: Create GitHub release
         uses: actions/github-script@v7

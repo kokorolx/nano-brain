@@ -18,10 +18,12 @@ function computeForceLayout(
   const w = opts.width ?? 1400;
   const h = opts.height ?? 900;
   const n = nodes.length;
-  const linkDist = opts.linkDistance ?? (n > 100 ? 220 : n > 50 ? 180 : n > 20 ? 160 : 140);
-  const charge = opts.chargeStrength ?? (n > 100 ? -500 : n > 50 ? -400 : n > 20 ? -320 : -260);
+  const linkDist = opts.linkDistance ?? (n > 100 ? 260 : n > 50 ? 220 : n > 20 ? 190 : 160);
+  const charge = opts.chargeStrength ?? (n > 100 ? -700 : n > 50 ? -550 : n > 20 ? -420 : -320);
   const centerPull = n > 100 ? 0.02 : n > 50 ? 0.03 : 0.04;
-  const collideBase = n > 100 ? 70 : n > 50 ? 65 : n > 20 ? 60 : 55;
+  // Collision radius must be large enough to cover node circle + label text.
+  // Strength=1.0 enforces hard exclusion — no two nodes can overlap at rest.
+  const collideBase = n > 100 ? 110 : n > 50 ? 100 : n > 20 ? 90 : 80;
 
   const simNodes: SimNode[] = nodes.map((nd) => ({
     id: nd.id,
@@ -36,11 +38,15 @@ function computeForceLayout(
     .force('center', forceCenter(w / 2, h / 2))
     .force('x', forceX(w / 2).strength(centerPull))
     .force('y', forceY(h / 2).strength(centerPull))
-    .force('collide', forceCollide().radius(collideBase).strength(0.7))
+    .force('collide', forceCollide().radius(collideBase).strength(1.0).iterations(4))
     .stop();
 
-  const ticks = Math.ceil(Math.log(simulation.alphaMin()) / Math.log(1 - simulation.alphaDecay()));
-  for (let i = 0; i < ticks; i++) simulation.tick();
+  // Cap ticks at 200 — beyond that, layout quality improvement is marginal
+  // vs the synchronous blocking cost (~0.3ms/tick × 359 = 108ms for n=500).
+  const baseTicks = Math.ceil(Math.log(simulation.alphaMin()) / Math.log(1 - simulation.alphaDecay()));
+  const extraTicks = n > 100 ? 40 : n > 50 ? 20 : 10;
+  const totalTicks = Math.min(baseTicks + extraTicks, 200);
+  for (let i = 0; i < totalTicks; i++) simulation.tick();
 
   return nodes.map((nd, i) => ({
     ...nd,
@@ -52,8 +58,8 @@ function computeForceLayout(
 
 export function buildEntityGraph(
   data: GraphEntitiesResponse,
-  nodeLimit = 500
-): { nodes: Node[]; edges: Edge[] } {
+  nodeLimit = 300
+): { nodes: Node[]; edges: Edge[]; truncated?: { shown: number; total: number } } {
   const edgeCounts = new Map<number, number>();
   for (const edge of data.edges) {
     edgeCounts.set(edge.sourceId, (edgeCounts.get(edge.sourceId) || 0) + 1);
@@ -113,17 +119,28 @@ export function buildEntityGraph(
   const edges: Edge[] = Array.from(seenPairs.values());
 
   const positioned = computeForceLayout(nodes, edges);
-  return { nodes: positioned, edges };
+  const truncated = data.nodes.length > nodeLimit
+    ? { shown: sortedNodes.length, total: data.nodes.length }
+    : undefined;
+  return { nodes: positioned, edges, truncated };
 }
 
 // ---------- Code dependency graph ----------
+
+const CODE_NODE_LIMIT = 300;
 
 export function buildCodeGraph(
   files: Array<{ path: string; centrality: number; clusterId: number | null }>,
   rawEdges: Array<{ source: string; target: string }>,
   clusterColors: Record<number, string>
-): { nodes: Node[]; edges: Edge[] } {
-  const nodes: Node[] = files.map((file) => {
+): { nodes: Node[]; edges: Edge[]; truncated?: { shown: number; total: number } } {
+  // Sort by centrality DESC, cap to avoid browser freeze on large codebases
+  const sortedFiles = [...files].sort((a, b) => b.centrality - a.centrality).slice(0, CODE_NODE_LIMIT);
+  const truncated = files.length > CODE_NODE_LIMIT
+    ? { shown: sortedFiles.length, total: files.length }
+    : undefined;
+
+  const nodes: Node[] = sortedFiles.map((file) => {
     const clusterColor = file.clusterId !== null ? clusterColors[file.clusterId] : '#64748b';
     return {
       id: file.path,
@@ -139,7 +156,7 @@ export function buildCodeGraph(
     };
   });
 
-  const nodeIds = new Set(files.map((f) => f.path));
+  const nodeIds = new Set(sortedFiles.map((f) => f.path));
   const seenEdges = new Set<string>();
   const edges: Edge[] = [];
   for (const edge of rawEdges) {
@@ -158,32 +175,51 @@ export function buildCodeGraph(
   }
 
   const positioned = computeForceLayout(nodes, edges, { width: 1600, height: 1000 });
-  return { nodes: positioned, edges };
+  return { nodes: positioned, edges, truncated };
 }
 
 // ---------- Symbol call graph ----------
 
+const SYMBOL_NODE_LIMIT = 300;
+
 export function buildSymbolGraph(
   data: SymbolsResponse,
   clusterMode: boolean
-): { nodes: Node[]; edges: Edge[] } {
+): { nodes: Node[]; edges: Edge[]; truncated?: { shown: number; total: number } } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
   if (clusterMode && data.clusters.length > 0) {
+    // Derive a human-readable label for each cluster from the most common file basename
+    const clusterFileCount = new Map<number, Map<string, number>>();
+    for (const sym of data.symbols) {
+      if (sym.clusterId == null || !sym.filePath) continue;
+      const base = sym.filePath.split('/').pop() ?? sym.filePath;
+      const m = clusterFileCount.get(sym.clusterId) ?? new Map<string, number>();
+      m.set(base, (m.get(base) ?? 0) + 1);
+      clusterFileCount.set(sym.clusterId, m);
+    }
+    const clusterLabel = (id: number, memberCount: number) => {
+      const m = clusterFileCount.get(id);
+      if (!m) return `Group ${id} (${memberCount})`;
+      const topFile = [...m.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
+      return `${topFile} group (${memberCount})`;
+    };
+
     for (const cluster of data.clusters) {
       nodes.push({
         id: `cluster-${cluster.clusterId}`,
         type: 'symbol',
         position: { x: 0, y: 0 },
         data: {
-          label: `Cluster ${cluster.clusterId} (${cluster.memberCount})`,
+          label: clusterLabel(cluster.clusterId, cluster.memberCount),
           entityType: 'cluster',
           color: fallbackColors[cluster.clusterId % fallbackColors.length],
         },
       });
     }
 
+    // Symbols without a cluster show as individual nodes
     for (const sym of data.symbols) {
       if (sym.clusterId === null) {
         nodes.push({
@@ -201,15 +237,37 @@ export function buildSymbolGraph(
       }
     }
 
-    const clusterEdges = new Map<string, number>();
     const symbolById = new Map(data.symbols.map((sym) => [sym.id, sym]));
+    const clusterEdges = new Map<string, number>();
+    const seenSymEdges = new Set<string>();
+
     for (const edge of data.edges) {
       const src = symbolById.get(edge.sourceId);
       const tgt = symbolById.get(edge.targetId);
-      if (!src || !tgt || src.clusterId == null || tgt.clusterId == null) continue;
-      if (src.clusterId === tgt.clusterId) continue;
-      const key = `cluster-${src.clusterId}||cluster-${tgt.clusterId}`;
-      clusterEdges.set(key, (clusterEdges.get(key) || 0) + 1);
+      if (!src || !tgt) continue;
+
+      const srcNode = src.clusterId != null ? `cluster-${src.clusterId}` : String(src.id);
+      const tgtNode = tgt.clusterId != null ? `cluster-${tgt.clusterId}` : String(tgt.id);
+      if (srcNode === tgtNode) continue; // skip intra-cluster / self
+
+      if (src.clusterId != null || tgt.clusterId != null) {
+        // At least one side is clustered → aggregate as cluster edge
+        const key = `${srcNode}||${tgtNode}`;
+        clusterEdges.set(key, (clusterEdges.get(key) || 0) + 1);
+      } else {
+        // Both unclustered → draw individual symbol edge
+        const key = `${srcNode}->${tgtNode}`;
+        if (seenSymEdges.has(key)) continue;
+        seenSymEdges.add(key);
+        edges.push({
+          id: `e-${edge.id}`,
+          source: srcNode,
+          target: tgtNode,
+          label: edge.edgeType,
+          animated: false,
+          style: { stroke: edgeTypeColorMap[edge.edgeType] || 'rgba(148,163,184,0.3)', strokeWidth: 1, opacity: 0.5 },
+        });
+      }
     }
     for (const [key, count] of clusterEdges) {
       const [srcNode, tgtNode] = key.split('||');
@@ -223,7 +281,18 @@ export function buildSymbolGraph(
       });
     }
   } else {
-    for (const sym of data.symbols) {
+    // Cap at SYMBOL_NODE_LIMIT — sort by call degree (most-connected first)
+    const degreeMap = new Map<number, number>();
+    for (const e of data.edges) {
+      degreeMap.set(e.sourceId, (degreeMap.get(e.sourceId) || 0) + 1);
+      degreeMap.set(e.targetId, (degreeMap.get(e.targetId) || 0) + 1);
+    }
+    const sortedSymbols = [...data.symbols]
+      .sort((a, b) => (degreeMap.get(b.id) || 0) - (degreeMap.get(a.id) || 0))
+      .slice(0, SYMBOL_NODE_LIMIT);
+    const visibleIds = new Set(sortedSymbols.map(s => s.id));
+
+    for (const sym of sortedSymbols) {
       nodes.push({
         id: String(sym.id),
         type: 'symbol',
@@ -241,6 +310,7 @@ export function buildSymbolGraph(
 
     const seenEdges = new Set<string>();
     for (const edge of data.edges) {
+      if (!visibleIds.has(edge.sourceId) || !visibleIds.has(edge.targetId)) continue;
       const src = String(edge.sourceId);
       const tgt = String(edge.targetId);
       const key = `${src}->${tgt}`;
@@ -250,7 +320,7 @@ export function buildSymbolGraph(
         id: `e-${edge.id}`,
         source: src,
         target: tgt,
-        label: edge.edgeType,
+        label: '', // hidden by default; shown in focus mode via ReactFlowGraph
         data: { edgeType: edge.edgeType },
         animated: false,
         style: {
@@ -260,6 +330,12 @@ export function buildSymbolGraph(
         },
       });
     }
+
+    const truncated = data.symbols.length > SYMBOL_NODE_LIMIT
+      ? { shown: SYMBOL_NODE_LIMIT, total: data.symbols.length }
+      : undefined;
+    const positioned = computeForceLayout(nodes, edges, { width: 1800, height: 1200 });
+    return { nodes: positioned, edges, truncated };
   }
 
   const positioned = computeForceLayout(nodes, edges, { width: 1800, height: 1200 });
@@ -268,13 +344,36 @@ export function buildSymbolGraph(
 
 // ---------- Connection graph ----------
 
+const CONNECTION_NODE_LIMIT = 300;
+
 export function buildConnectionGraph(
-  data: ConnectionsResponse
-): { nodes: Node[]; edges: Edge[] } {
+  data: ConnectionsResponse,
+  nodeLimit = CONNECTION_NODE_LIMIT
+): { nodes: Node[]; edges: Edge[]; truncated?: { shown: number; total: number } } {
+  // Count connections per document to sort most-connected first
+  const connCount = new Map<string, number>();
+  for (const conn of data.connections) {
+    const f = String(conn.from_doc_id);
+    const t = String(conn.to_doc_id);
+    connCount.set(f, (connCount.get(f) || 0) + 1);
+    connCount.set(t, (connCount.get(t) || 0) + 1);
+  }
+
+  // Keep only top-N document IDs by connection count
+  const allDocIds = [...connCount.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+  const totalDocs = allDocIds.length;
+  const visibleIds = new Set(allDocIds.slice(0, nodeLimit));
+  const truncated = totalDocs > nodeLimit ? { shown: visibleIds.size, total: totalDocs } : undefined;
+
+  // Only use connections where both endpoints are in the visible set
+  const visibleConns = data.connections.filter(
+    c => visibleIds.has(String(c.from_doc_id)) && visibleIds.has(String(c.to_doc_id))
+  );
+
   const docNodes = new Map<string, Node>();
   const seenPairs = new Map<string, Edge>();
 
-  for (const conn of data.connections) {
+  for (const conn of visibleConns) {
     const fromId = String(conn.from_doc_id);
     const toId = String(conn.to_doc_id);
 
@@ -330,7 +429,7 @@ export function buildConnectionGraph(
   const nodes = Array.from(docNodes.values());
   const edges = Array.from(seenPairs.values());
   const positioned = computeForceLayout(nodes, edges, { width: 800, height: 500 });
-  return { nodes: positioned, edges };
+  return { nodes: positioned, edges, truncated };
 }
 
 // ---------- Utility ----------

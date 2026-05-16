@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -19,45 +19,57 @@ type ReactFlowGraphProps = {
   nodeTypes?: NodeTypes;
 };
 
-function ReactFlowGraphInner({ nodes: inputNodes, edges: inputEdges, onNodeClick, nodeTypes }: ReactFlowGraphProps) {
+const ReactFlowGraphInner = memo(function ReactFlowGraphInner({ nodes: inputNodes, edges: inputEdges, onNodeClick, nodeTypes }: ReactFlowGraphProps) {
   const { fitView } = useReactFlow();
   const [nodes, setNodes, onNodesChange] = useNodesState(inputNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(inputEdges);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
-  // Sync nodes from props (data or layout changed)
+  // Single unified effect — handles data sync + focus mode + viewport in one pass.
+  // Previously split across 3 effects that all fired on selectedNodeId change,
+  // causing redundant double-setNodes and jarring viewport adjustments.
   useEffect(() => {
-    setNodes(inputNodes);
-    requestAnimationFrame(() => fitView({ padding: 0.15, duration: 300 }));
-  }, [inputNodes, setNodes, fitView]);
+    const neighbors = selectedNodeId
+      ? (() => {
+          const s = new Set<string>([selectedNodeId]);
+          for (const e of inputEdges) {
+            if (e.source === selectedNodeId) s.add(e.target);
+            if (e.target === selectedNodeId) s.add(e.source);
+          }
+          return s;
+        })()
+      : null;
 
-  // Sync edges from props
-  useEffect(() => {
-    setEdges(inputEdges);
-  }, [inputEdges, setEdges]);
+    // 1. Sync nodes + apply focus state in one pass
+    const newNodes = inputNodes.map((n) => ({
+      ...n,
+      data: neighbors
+        ? { ...n.data, dimmed: !neighbors.has(n.id), focused: n.id === selectedNodeId }
+        : { ...n.data, dimmed: false, focused: false },
+    }));
+    setNodes(newNodes);
 
-  // Edge highlighting on node selection
-  useEffect(() => {
-    if (!selectedNodeId) {
-      setEdges((eds) =>
-        eds.map((e) => ({
-          ...e,
-          animated: false,
-          style: { ...e.style, opacity: 0.6, strokeWidth: 2 },
-        }))
-      );
-      return;
-    }
-    setEdges((eds) =>
-      eds.map((e) => {
-        const connected = e.source === selectedNodeId || e.target === selectedNodeId;
-        if (connected) {
-          return { ...e, animated: true, style: { ...e.style, opacity: 0.9, strokeWidth: 3 } };
-        }
-        return { ...e, animated: false, style: { ...e.style, opacity: 0.15, strokeWidth: 1 } };
-      })
-    );
-  }, [selectedNodeId, setEdges]);
+    // 2. Sync edges + apply focus highlighting in one pass
+    const edgeType = (e: Edge) => ((e.data as any)?.edgeType as string | undefined) ?? e.label;
+    setEdges(inputEdges.map((e) => {
+      if (!neighbors) {
+        return { ...e, animated: false, label: edgeType(e), style: { ...e.style, opacity: 0.6, strokeWidth: 2 }, labelStyle: { opacity: 1 } };
+      }
+      const connected = e.source === selectedNodeId || e.target === selectedNodeId;
+      return connected
+        ? { ...e, animated: true, label: edgeType(e), style: { ...e.style, opacity: 0.9, strokeWidth: 3 }, labelStyle: { opacity: 1 } }
+        : { ...e, animated: false, label: '', style: { ...e.style, opacity: 0.04, strokeWidth: 1 }, labelStyle: { opacity: 0 } };
+    }));
+
+    // 3. Viewport: fit to selection or fit full graph on data load
+    requestAnimationFrame(() => {
+      if (!neighbors) {
+        fitView({ padding: 0.15, duration: 300 });
+      } else {
+        fitView({ nodes: newNodes.filter(n => neighbors.has(n.id)), padding: 0.4, duration: 400, maxZoom: 2 });
+      }
+    });
+  }, [inputNodes, inputEdges, selectedNodeId, setNodes, setEdges, fitView]);
 
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
@@ -95,13 +107,14 @@ function ReactFlowGraphInner({ nodes: inputNodes, edges: inputEdges, onNodeClick
       nodesConnectable={false}
       nodesDraggable={true}
       elementsSelectable={true}
+      onlyRenderVisibleElements={true}
       proOptions={{ hideAttribution: true }}
     >
       <Background gap={20} size={1} />
       <Controls showInteractive={false} />
     </ReactFlow>
   );
-}
+});
 
 export default function ReactFlowGraph(props: ReactFlowGraphProps) {
   return (

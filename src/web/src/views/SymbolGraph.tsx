@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { type NodeTypes } from '@xyflow/react';
 import ReactFlowGraph from '../components/ReactFlowGraph';
+import GraphShell from '../components/GraphShell';
 import NodeDetail from '../components/NodeDetail';
 import QueryStatus from '../components/QueryStatus';
 import { SkeletonGraph } from '../components/Skeleton';
@@ -20,7 +21,7 @@ export default function SymbolGraph() {
     queryFn: () => fetchSymbols(workspace),
   });
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [clusterMode, setClusterMode] = useState(true);
+  const [clusterMode, setClusterMode] = useState(false);
 
   const autoCluster = (data?.symbols.length ?? 0) > 500;
   const useCluster = clusterMode && autoCluster;
@@ -76,7 +77,7 @@ export default function SymbolGraph() {
         {isLoading ? (
           <SkeletonGraph />
         ) : (
-          <div className="card graph-shell overflow-hidden">
+          <GraphShell truncated={graphData?.truncated} unit="symbols">
             {graphData && (data?.symbols.length ?? 0) > 0 ? (
               <ReactFlowGraph
                 nodes={graphData.nodes}
@@ -92,7 +93,7 @@ export default function SymbolGraph() {
                 emptyText="No symbol data available. Run 'npx nano-brain index-codebase' to index symbols, or the code_symbols table may need repair (check DB integrity)."
               />
             )}
-          </div>
+          </GraphShell>
         )}
         <div className="space-y-4">
           {selectedSymbol ? (

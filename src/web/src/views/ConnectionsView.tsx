@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { type NodeTypes } from '@xyflow/react';
 import ReactFlowGraph from '../components/ReactFlowGraph';
+import GraphShell from '../components/GraphShell';
 import NodeDetail from '../components/NodeDetail';
 import QueryStatus from '../components/QueryStatus';
 import { SkeletonGraph } from '../components/Skeleton';
@@ -22,42 +23,22 @@ export default function ConnectionsView() {
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
 
   const allConnections = data?.connections ?? [];
-  const nodeLimit = 500;
 
-  const limitedConnections = useMemo(() => {
-    if (!allConnections.length) return [];
-    const nodes = new Set<string>();
-    const limited: typeof allConnections = [];
-    for (const conn of allConnections) {
-      const fromId = String(conn.from_doc_id);
-      const toId = String(conn.to_doc_id);
-      const hasFrom = nodes.has(fromId);
-      const hasTo = nodes.has(toId);
-      const nextSize = nodes.size + (hasFrom ? 0 : 1) + (hasTo ? 0 : 1);
-      const allowNewNodes = nodes.size < nodeLimit && nextSize <= nodeLimit;
-      if ((hasFrom && hasTo) || allowNewNodes) {
-        nodes.add(fromId);
-        nodes.add(toId);
-        limited.push(conn);
-      }
-    }
-    return limited;
+  // buildConnectionGraph handles capping + sorting — pass all connections
+  const graphData = useMemo(() => {
+    if (!allConnections.length) return null;
+    return buildConnectionGraph({ connections: allConnections });
   }, [allConnections]);
 
-  const graphData = useMemo(() => {
-    if (!limitedConnections.length) return null;
-    return buildConnectionGraph({ connections: limitedConnections });
-  }, [limitedConnections]);
-
   const selectedConnections = selectedNode
-    ? limitedConnections.filter(
+    ? allConnections.filter(
         (conn) => String(conn.from_doc_id) === selectedNode || String(conn.to_doc_id) === selectedNode
       )
     : [];
 
   const selectedMeta = useMemo(() => {
-    if (!selectedNode || !limitedConnections.length) return null;
-    const match = limitedConnections.find(
+    if (!selectedNode || !allConnections.length) return null;
+    const match = allConnections.find(
       (conn) => String(conn.from_doc_id) === selectedNode || String(conn.to_doc_id) === selectedNode
     );
     if (!match) return null;
@@ -65,15 +46,15 @@ export default function ConnectionsView() {
       return { title: match.from_title, path: match.from_path };
     }
     return { title: match.to_title, path: match.to_path };
-  }, [selectedNode, limitedConnections]);
+  }, [selectedNode, allConnections]);
 
   const relationshipStats = useMemo(() => {
     const counts = new Map<string, number>();
-    limitedConnections.forEach((conn) => counts.set(conn.relationship_type, (counts.get(conn.relationship_type) || 0) + 1));
+    allConnections.forEach((conn) => counts.set(conn.relationship_type, (counts.get(conn.relationship_type) || 0) + 1));
     return Object.fromEntries(counts.entries());
-  }, [limitedConnections]);
+  }, [allConnections]);
 
-  const displayedConnections = useMemo(() => {
+  const displayedConnections = useMemo<Array<{id: number|string; type: string; strength: number; target: string|number; targetPath: string; direction: string}>>(() => {
     if (!selectedNode) return [];
     return selectedConnections.map((conn) => {
       const isFrom = String(conn.from_doc_id) === selectedNode;
@@ -97,13 +78,11 @@ export default function ConnectionsView() {
     []
   );
 
-  const nodeIds = new Set<string>();
-  allConnections.forEach((conn) => {
-    nodeIds.add(String(conn.from_doc_id));
-    nodeIds.add(String(conn.to_doc_id));
-  });
-  const nodeCount = nodeIds.size;
-  const isLimited = nodeCount > nodeLimit;
+  const nodeCount = useMemo(() => {
+    const ids = new Set<string>();
+    allConnections.forEach(c => { ids.add(String(c.from_doc_id)); ids.add(String(c.to_doc_id)); });
+    return ids.size;
+  }, [allConnections]);
 
   const handleNodeClick = (nodeId: string) => {
     setSelectedNode(nodeId || null);
@@ -119,7 +98,6 @@ export default function ConnectionsView() {
         <div className="text-right text-xs text-[#8888a0]">
           <p>Connections: {allConnections.length || 0}</p>
           <p>Documents: {nodeCount || 0}</p>
-          {isLimited && <p className="text-[#f97316]">Showing first {nodeLimit} documents</p>}
         </div>
       </div>
 
@@ -129,7 +107,7 @@ export default function ConnectionsView() {
         {isLoading ? (
           <SkeletonGraph />
         ) : (
-          <div className="card graph-shell overflow-hidden">
+          <GraphShell truncated={graphData?.truncated} unit="documents">
             {graphData ? (
               <ReactFlowGraph
                 nodes={graphData.nodes}
@@ -140,7 +118,7 @@ export default function ConnectionsView() {
             ) : (
               <QueryStatus isLoading={false} isError={false} isEmpty={true} emptyText="No document connections found. Use the 'memory_connect' tool or MCP 'connect' command to create relationships between memory documents." />
             )}
-          </div>
+          </GraphShell>
         )}
         <div className="space-y-4">
           {selectedMeta ? (
