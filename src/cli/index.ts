@@ -33,6 +33,7 @@ import { handleCategorizeBackfill } from './commands/categorize-backfill.js';
 import { handleConsolidate } from './commands/consolidate.js';
 import { handleLearning } from './commands/learning.js';
 import { handleDocker } from './commands/docker.js';
+import { handleDbClean } from './commands/db-clean.js';
 
 export { parseGlobalOptions, resolveDbPath, showHelp, showVersion, formatSearchOutput };
 export { handleMcp, handleCollection, handleStatus, handleInit, handleUpdate };
@@ -41,6 +42,7 @@ export { handleTags, handleWakeUp, handleFocus, handleGraphStats, handleSymbols 
 export { handleImpact, handleContext, handleCodeImpact, handleDetectChanges, handleReindex };
 export { handleCache, handleLogs, handleQdrant, handleReset, handleRm };
 export { handleCategorizeBackfill, handleConsolidate, handleLearning, handleDocker };
+export { handleDbClean } from './commands/db-clean.js';
 export { resolveWorkspaceIdentifier } from './commands/rm.js';
 export type { GlobalOptions } from './types.js';
 
@@ -132,6 +134,8 @@ export async function main() {
       return handleCategorizeBackfill(globalOpts, commandArgs);
     case 'learning':
       return handleLearning(globalOpts, commandArgs);
+    case 'db:clean':
+      return handleDbClean(globalOpts, commandArgs);
     default:
       cliError(`Unknown command: ${command}`);
       showHelp();

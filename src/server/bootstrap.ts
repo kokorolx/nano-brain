@@ -1,5 +1,6 @@
 import * as os from 'os';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as crypto from 'crypto';
 import * as http from 'http';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -109,12 +110,38 @@ export async function startServer(options: ServerOptions): Promise<void> {
       log('server', `Workspace ${requested} is not in config.workspaces — falling back to ${resolved}`, 'warn');
     }
   }
+
+  // Warn when the resolved workspace isn't explicitly configured — the DB is created but
+  // the file watcher won't watch this path unless it's in config.yml workspaces.
+  if (!configuredWorkspaces.includes(resolvedWorkspaceRoot)) {
+    log('server', `Workspace not in config — DB will be created but not indexed by file watcher. Add it to config.yml workspaces: to persist.`, 'warn');
+  }
+
   const wsConfig = getWorkspaceConfig(config, resolvedWorkspaceRoot);
   const resolvedCodebaseConfig = wsConfig.codebase;
   const currentProjectHash = crypto.createHash('sha256').update(resolvedWorkspaceRoot).digest('hex').substring(0, 12);
   const isDefaultDb = dbPath.endsWith('/default.sqlite') || dbPath.endsWith('\\default.sqlite');
   const effectiveDbPath = isDefaultDb ? resolveWorkspaceDbPath(path.dirname(dbPath), resolvedWorkspaceRoot) : dbPath;
   setProjectLabelDataDir(path.dirname(effectiveDbPath));
+
+  // Auto-clean corrupted backup files older than 30 days
+  try {
+    const dataDir = path.dirname(effectiveDbPath);
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    for (const file of fs.readdirSync(dataDir)) {
+      if (!file.includes('.sqlite.corrupted.')) continue;
+      const fullPath = path.join(dataDir, file);
+      try {
+        const stat = fs.statSync(fullPath);
+        const ageDays = Math.floor((Date.now() - stat.mtime.getTime()) / 86400000);
+        if (Date.now() - stat.mtime.getTime() > thirtyDaysMs) {
+          fs.unlinkSync(fullPath);
+          log('server', `Auto-cleaned corrupted backup (${ageDays}d old): ${file}`);
+        }
+      } catch { /* ignore errors on individual files */ }
+    }
+  } catch { /* ignore if data dir is unreadable */ }
+
   log('server', 'Workspace path=' + resolvedWorkspaceRoot + ' hash=' + currentProjectHash);
   log('server', `Workspace: ${resolvedWorkspaceRoot} (${currentProjectHash})`);
   log('server', 'Database path=' + effectiveDbPath);
