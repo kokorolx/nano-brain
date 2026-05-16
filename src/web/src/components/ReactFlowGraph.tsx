@@ -25,52 +25,64 @@ function ReactFlowGraphInner({ nodes: inputNodes, edges: inputEdges, onNodeClick
   const [edges, setEdges, onEdgesChange] = useEdgesState(inputEdges);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
-  // Sync nodes from props (data or layout changed)
+  // Build neighbor set helper
+  const buildNeighbors = useCallback((nodeId: string) => {
+    const s = new Set<string>([nodeId]);
+    for (const e of inputEdges) {
+      if (e.source === nodeId) s.add(e.target);
+      if (e.target === nodeId) s.add(e.source);
+    }
+    return s;
+  }, [inputEdges]);
+
+  // Sync nodes from props — also apply current focus state so dimming survives data refresh
   useEffect(() => {
-    setNodes(inputNodes);
-    requestAnimationFrame(() => fitView({ padding: 0.15, duration: 300 }));
-  }, [inputNodes, setNodes, fitView]);
+    if (!selectedNodeId) {
+      setNodes(inputNodes.map((n) => ({
+        ...n,
+        data: { ...n.data, dimmed: false, focused: false },
+      })));
+    } else {
+      const neighbors = buildNeighbors(selectedNodeId);
+      setNodes(inputNodes.map((n) => ({
+        ...n,
+        data: { ...n.data, dimmed: !neighbors.has(n.id), focused: n.id === selectedNodeId },
+      })));
+    }
+    if (!selectedNodeId) {
+      requestAnimationFrame(() => fitView({ padding: 0.15, duration: 300 }));
+    }
+  }, [inputNodes, setNodes, fitView, selectedNodeId, buildNeighbors]);
 
   // Sync edges from props
   useEffect(() => {
     setEdges(inputEdges);
   }, [inputEdges, setEdges]);
 
-  // Focus mode: dim nodes and edges not connected to selected node
+  // Focus mode: dim/hide unrelated nodes (via data.dimmed) + fade edges
   useEffect(() => {
     if (!selectedNodeId) {
-      setNodes((nds) => nds.map((n) => ({ ...n, style: { ...n.style, opacity: 1 } })));
-      setEdges((eds) => eds.map((e) => ({ ...e, animated: false, style: { ...e.style, opacity: 0.6, strokeWidth: 2 } })));
+      setEdges((eds) => eds.map((e) => ({
+        ...e, animated: false, style: { ...e.style, opacity: 0.6, strokeWidth: 2 },
+      })));
       return;
     }
 
-    // Build 1-hop neighbor set
-    const neighbors = new Set<string>([selectedNodeId]);
-    for (const e of inputEdges) {
-      if (e.source === selectedNodeId) neighbors.add(e.target);
-      if (e.target === selectedNodeId) neighbors.add(e.source);
-    }
+    const neighbors = buildNeighbors(selectedNodeId);
 
-    setNodes((nds) =>
-      nds.map((n) => ({
-        ...n,
-        style: {
-          ...n.style,
-          opacity: neighbors.has(n.id) ? 1 : 0.08,
-          transition: 'opacity 0.15s ease',
-        },
-      }))
-    );
+    // Node dimming is handled via data.dimmed in each node component — no opacity on style
+    setNodes((nds) => nds.map((n) => ({
+      ...n,
+      data: { ...n.data, dimmed: !neighbors.has(n.id), focused: n.id === selectedNodeId },
+    })));
 
-    setEdges((eds) =>
-      eds.map((e) => {
-        const connected = e.source === selectedNodeId || e.target === selectedNodeId;
-        return connected
-          ? { ...e, animated: true, style: { ...e.style, opacity: 0.9, strokeWidth: 3 } }
-          : { ...e, animated: false, style: { ...e.style, opacity: 0.04, strokeWidth: 1 } };
-      })
-    );
-  }, [selectedNodeId, inputEdges, setNodes, setEdges]);
+    setEdges((eds) => eds.map((e) => {
+      const connected = e.source === selectedNodeId || e.target === selectedNodeId;
+      return connected
+        ? { ...e, animated: true, style: { ...e.style, opacity: 0.9, strokeWidth: 3 } }
+        : { ...e, animated: false, style: { ...e.style, opacity: 0.04, strokeWidth: 1 } };
+    }));
+  }, [selectedNodeId, buildNeighbors, setNodes, setEdges]);
 
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {

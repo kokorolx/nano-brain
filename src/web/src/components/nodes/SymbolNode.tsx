@@ -10,9 +10,20 @@ export type SymbolNodeData = {
   filePath?: string;
   startLine?: number;
   clusterId?: number | null;
+  dimmed?: boolean;
+  focused?: boolean;
 };
 
 const SymbolNode = memo(function SymbolNode({ data }: { data: SymbolNodeData }) {
+  if (data.dimmed) {
+    return (
+      <div style={{ width: 8, height: 8, borderRadius: '50%', background: data.color, opacity: 0.2 }}>
+        <Handle type="target" position={Position.Top} style={HANDLE_STYLE} />
+        <Handle type="source" position={Position.Bottom} style={HANDLE_STYLE} />
+      </div>
+    );
+  }
+
   return (
     <div
       className="px-3 py-1 cursor-grab"
@@ -20,6 +31,7 @@ const SymbolNode = memo(function SymbolNode({ data }: { data: SymbolNodeData }) 
         background: `${data.color}18`,
         border: `2px solid ${data.color}`,
         borderRadius: 12,
+        boxShadow: data.focused ? `0 0 0 3px ${data.color}60` : undefined,
       }}
     >
       <Handle type="target" position={Position.Top} style={HANDLE_STYLE} />
