@@ -34,6 +34,8 @@ import { handleConsolidate } from './commands/consolidate.js';
 import { handleLearning } from './commands/learning.js';
 import { handleDocker } from './commands/docker.js';
 import { handleDbClean } from './commands/db-clean.js';
+import { handleSetup } from './commands/setup.js';
+import { runSetupWizard, promptAddWorkspace } from './wizard.js';
 
 export { parseGlobalOptions, resolveDbPath, showHelp, showVersion, formatSearchOutput };
 export { handleMcp, handleCollection, handleStatus, handleInit, handleUpdate };
@@ -56,6 +58,19 @@ export async function main() {
 
   const command = globalOpts.remaining[0] || 'mcp';
   const commandArgs = globalOpts.remaining.slice(1);
+
+  // First-run: no config → launch wizard before anything else
+  const skipWizardCommands = new Set(['setup', 'docker', 'update', 'version', '--version', '--help']);
+  if (!cliConfig && !skipWizardCommands.has(command) && process.stdout.isTTY) {
+    await runSetupWizard(globalOpts.configPath, process.cwd());
+    return;
+  }
+
+  // New workspace: config exists but cwd not tracked → mini prompt
+  const workspaceCommands = new Set(['init', 'query', 'search', 'vsearch', 'mcp', 'status']);
+  if (cliConfig && workspaceCommands.has(command) && process.stdout.isTTY) {
+    await promptAddWorkspace(globalOpts.configPath, process.cwd());
+  }
 
   if (command === 'mcp' && !commandArgs.includes('--http')) {
     setStdioMode(true);
@@ -136,6 +151,8 @@ export async function main() {
       return handleLearning(globalOpts, commandArgs);
     case 'db:clean':
       return handleDbClean(globalOpts, commandArgs);
+    case 'setup':
+      return handleSetup(globalOpts, commandArgs);
     default:
       cliError(`Unknown command: ${command}`);
       showHelp();

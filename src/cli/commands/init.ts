@@ -1,4 +1,5 @@
 import { createStore, indexDocument, extractProjectHashFromPath, openDatabase } from '../../store.js';
+import { runSetupWizard } from '../wizard.js';
 import { loadCollectionConfig, saveCollectionConfig, getCollections, scanCollectionFiles, getWorkspaceConfig } from '../../collections.js';
 import { harvestSessions } from '../../harvester.js';
 import { createEmbeddingProvider, detectOllamaUrl, checkOllamaHealth } from '../../embeddings.js';
@@ -72,6 +73,12 @@ export async function handleInit(globalOpts: GlobalOptions, commandArgs: string[
 
   let config = loadCollectionConfig(configPath);
   const isNewConfig = !config;
+
+  // First-run: launch interactive wizard instead of silent defaults
+  if (!config && process.stdout.isTTY && !force) {
+    await runSetupWizard(configPath, root);
+    config = loadCollectionConfig(configPath)!;
+  }
 
   if (!config) {
     config = {
