@@ -58,8 +58,8 @@ function computeForceLayout(
 
 export function buildEntityGraph(
   data: GraphEntitiesResponse,
-  nodeLimit = 500
-): { nodes: Node[]; edges: Edge[] } {
+  nodeLimit = 300
+): { nodes: Node[]; edges: Edge[]; truncated?: { shown: number; total: number } } {
   const edgeCounts = new Map<number, number>();
   for (const edge of data.edges) {
     edgeCounts.set(edge.sourceId, (edgeCounts.get(edge.sourceId) || 0) + 1);
@@ -119,17 +119,28 @@ export function buildEntityGraph(
   const edges: Edge[] = Array.from(seenPairs.values());
 
   const positioned = computeForceLayout(nodes, edges);
-  return { nodes: positioned, edges };
+  const truncated = data.nodes.length > nodeLimit
+    ? { shown: sortedNodes.length, total: data.nodes.length }
+    : undefined;
+  return { nodes: positioned, edges, truncated };
 }
 
 // ---------- Code dependency graph ----------
+
+const CODE_NODE_LIMIT = 300;
 
 export function buildCodeGraph(
   files: Array<{ path: string; centrality: number; clusterId: number | null }>,
   rawEdges: Array<{ source: string; target: string }>,
   clusterColors: Record<number, string>
-): { nodes: Node[]; edges: Edge[] } {
-  const nodes: Node[] = files.map((file) => {
+): { nodes: Node[]; edges: Edge[]; truncated?: { shown: number; total: number } } {
+  // Sort by centrality DESC, cap to avoid browser freeze on large codebases
+  const sortedFiles = [...files].sort((a, b) => b.centrality - a.centrality).slice(0, CODE_NODE_LIMIT);
+  const truncated = files.length > CODE_NODE_LIMIT
+    ? { shown: sortedFiles.length, total: files.length }
+    : undefined;
+
+  const nodes: Node[] = sortedFiles.map((file) => {
     const clusterColor = file.clusterId !== null ? clusterColors[file.clusterId] : '#64748b';
     return {
       id: file.path,
@@ -145,7 +156,7 @@ export function buildCodeGraph(
     };
   });
 
-  const nodeIds = new Set(files.map((f) => f.path));
+  const nodeIds = new Set(sortedFiles.map((f) => f.path));
   const seenEdges = new Set<string>();
   const edges: Edge[] = [];
   for (const edge of rawEdges) {
@@ -164,7 +175,7 @@ export function buildCodeGraph(
   }
 
   const positioned = computeForceLayout(nodes, edges, { width: 1600, height: 1000 });
-  return { nodes: positioned, edges };
+  return { nodes: positioned, edges, truncated };
 }
 
 // ---------- Symbol call graph ----------
@@ -333,13 +344,36 @@ export function buildSymbolGraph(
 
 // ---------- Connection graph ----------
 
+const CONNECTION_NODE_LIMIT = 300;
+
 export function buildConnectionGraph(
-  data: ConnectionsResponse
-): { nodes: Node[]; edges: Edge[] } {
+  data: ConnectionsResponse,
+  nodeLimit = CONNECTION_NODE_LIMIT
+): { nodes: Node[]; edges: Edge[]; truncated?: { shown: number; total: number } } {
+  // Count connections per document to sort most-connected first
+  const connCount = new Map<string, number>();
+  for (const conn of data.connections) {
+    const f = String(conn.from_doc_id);
+    const t = String(conn.to_doc_id);
+    connCount.set(f, (connCount.get(f) || 0) + 1);
+    connCount.set(t, (connCount.get(t) || 0) + 1);
+  }
+
+  // Keep only top-N document IDs by connection count
+  const allDocIds = [...connCount.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+  const totalDocs = allDocIds.length;
+  const visibleIds = new Set(allDocIds.slice(0, nodeLimit));
+  const truncated = totalDocs > nodeLimit ? { shown: visibleIds.size, total: totalDocs } : undefined;
+
+  // Only use connections where both endpoints are in the visible set
+  const visibleConns = data.connections.filter(
+    c => visibleIds.has(String(c.from_doc_id)) && visibleIds.has(String(c.to_doc_id))
+  );
+
   const docNodes = new Map<string, Node>();
   const seenPairs = new Map<string, Edge>();
 
-  for (const conn of data.connections) {
+  for (const conn of visibleConns) {
     const fromId = String(conn.from_doc_id);
     const toId = String(conn.to_doc_id);
 
@@ -395,7 +429,7 @@ export function buildConnectionGraph(
   const nodes = Array.from(docNodes.values());
   const edges = Array.from(seenPairs.values());
   const positioned = computeForceLayout(nodes, edges, { width: 800, height: 500 });
-  return { nodes: positioned, edges };
+  return { nodes: positioned, edges, truncated };
 }
 
 // ---------- Utility ----------

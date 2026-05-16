@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { type NodeTypes } from '@xyflow/react';
 import ReactFlowGraph from '../components/ReactFlowGraph';
+import GraphShell from '../components/GraphShell';
 import NodeDetail from '../components/NodeDetail';
 import QueryStatus from '../components/QueryStatus';
 import { SkeletonGraph } from '../components/Skeleton';
@@ -76,12 +77,7 @@ export default function SymbolGraph() {
         {isLoading ? (
           <SkeletonGraph />
         ) : (
-          <div className="card graph-shell overflow-hidden relative">
-            {graphData?.truncated && (
-              <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 px-3 py-1 rounded-full bg-[#1c1c27]/90 border border-[#3a3a5c] text-[11px] text-[#8888a0]">
-                Showing top {graphData.truncated.shown} of {graphData.truncated.total.toLocaleString()} symbols by call degree
-              </div>
-            )}
+          <GraphShell truncated={graphData?.truncated} unit="symbols">
             {graphData && (data?.symbols.length ?? 0) > 0 ? (
               <ReactFlowGraph
                 nodes={graphData.nodes}
@@ -97,7 +93,7 @@ export default function SymbolGraph() {
                 emptyText="No symbol data available. Run 'npx nano-brain index-codebase' to index symbols, or the code_symbols table may need repair (check DB integrity)."
               />
             )}
-          </div>
+          </GraphShell>
         )}
         <div className="space-y-4">
           {selectedSymbol ? (

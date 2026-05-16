@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { type NodeTypes } from '@xyflow/react';
 import ReactFlowGraph from '../components/ReactFlowGraph';
+import GraphShell from '../components/GraphShell';
 import NodeDetail from '../components/NodeDetail';
 import QueryStatus from '../components/QueryStatus';
 import { SkeletonGraph } from '../components/Skeleton';
@@ -63,7 +64,7 @@ export default function CodeGraph() {
         {isLoading ? (
           <SkeletonGraph />
         ) : (
-          <div className="card graph-shell overflow-hidden">
+          <GraphShell truncated={graphData?.truncated} unit="files">
             {graphData ? (
               <ReactFlowGraph
                 nodes={graphData.nodes}
@@ -74,7 +75,7 @@ export default function CodeGraph() {
             ) : (
               <QueryStatus isLoading={false} isError={false} isEmpty={true} emptyText="No dependency data." />
             )}
-          </div>
+          </GraphShell>
         )}
         <div className="space-y-4">
           {selectedFile ? (
