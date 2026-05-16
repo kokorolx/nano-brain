@@ -474,7 +474,7 @@ export function createStore(dbPath: string): Store {
       if (_cached) {
         return;
       }
-      try { db.pragma('wal_checkpoint(PASSIVE)'); } catch { }
+      try { db.pragma('wal_checkpoint(RESTART)'); } catch { }
       db.close();
     },
 

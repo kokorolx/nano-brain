@@ -123,25 +123,6 @@ export async function startServer(options: ServerOptions): Promise<void> {
   const isDefaultDb = dbPath.endsWith('/default.sqlite') || dbPath.endsWith('\\default.sqlite');
   const effectiveDbPath = isDefaultDb ? resolveWorkspaceDbPath(path.dirname(dbPath), resolvedWorkspaceRoot) : dbPath;
   setProjectLabelDataDir(path.dirname(effectiveDbPath));
-
-  // Auto-clean corrupted backup files older than 30 days
-  try {
-    const dataDir = path.dirname(effectiveDbPath);
-    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
-    for (const file of fs.readdirSync(dataDir)) {
-      if (!file.includes('.sqlite.corrupted.')) continue;
-      const fullPath = path.join(dataDir, file);
-      try {
-        const stat = fs.statSync(fullPath);
-        const ageDays = Math.floor((Date.now() - stat.mtime.getTime()) / 86400000);
-        if (Date.now() - stat.mtime.getTime() > thirtyDaysMs) {
-          fs.unlinkSync(fullPath);
-          log('server', `Auto-cleaned corrupted backup (${ageDays}d old): ${file}`);
-        }
-      } catch { /* ignore errors on individual files */ }
-    }
-  } catch { /* ignore if data dir is unreadable */ }
-
   log('server', 'Workspace path=' + resolvedWorkspaceRoot + ' hash=' + currentProjectHash);
   log('server', `Workspace: ${resolvedWorkspaceRoot} (${currentProjectHash})`);
   log('server', 'Database path=' + effectiveDbPath);
@@ -353,7 +334,11 @@ export async function startServer(options: ServerOptions): Promise<void> {
 
     if (watcherRef.value) watcherRef.value.stop();
     await shutdownFTSWorker();
-    try { symbolGraphDb.pragma('wal_checkpoint(PASSIVE)'); } catch { /* ignore checkpoint errors */ }
+    // RESTART checkpoint: blocks until all readers finish, then resets the WAL write
+    // position so the next open starts with a clean WAL. PASSIVE is insufficient —
+    // it returns immediately if any reader holds a lock, leaving WAL frames unflushed
+    // and causing SQLite to detect "corruption" on next startup after a SIGKILL.
+    try { symbolGraphDb.pragma('wal_checkpoint(RESTART)'); } catch { /* ignore checkpoint errors */ }
     symbolGraphDb.close();
     closeAllCachedStores();
     process.exit(0);

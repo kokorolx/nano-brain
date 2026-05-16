@@ -174,15 +174,17 @@ export function checkAndRecoverDB(
   let isCorrupted = false;
 
   try {
-    // Open database with read-only mode initially to check integrity
-    // Using a test connection to avoid modifying anything
-    const checkDb = new Database(resolvedPath, { readonly: false });
-    applyPragmas(checkDb);
+    // Open read-only so no pragma writes happen before the check.
+    // applyPragmas() writes journal_mode/synchronous/autocheckpoint to the DB —
+    // if the WAL is in a bad state post-SIGKILL those writes fail and produce a
+    // false positive: a healthy DB gets renamed as corrupt.
+    // quick_check is a pure read operation and works fine on a readonly connection.
+    const checkDb = new Database(resolvedPath, { readonly: true });
 
     // Run quick_check (faster than integrity_check, <0.5s on 200MB)
     try {
       const result = checkDb.pragma('quick_check') as QuickCheckResult[];
-      
+
       if (result.length === 0 || (result[0] && result[0].quick_check !== 'ok')) {
         isCorrupted = true;
         logger?.log('corruption-recovery', `Quick check FAILED: ${JSON.stringify(result)}`);

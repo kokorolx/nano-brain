@@ -25,6 +25,7 @@ services:
     image: node:22
     container_name: nano-brain-server
     restart: unless-stopped
+    stop_grace_period: 30s
     working_dir: /app
     ports:
       - "3100:3100"
