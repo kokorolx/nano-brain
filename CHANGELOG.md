@@ -46,6 +46,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - docs: add npm, CI, license badges to README (closes #21)
 - docs(claude): add rule to create GitHub issue before starting any task
 
+### Other
+- chore: fix homepage URL to GitHub Pages docs site
+- chore: add repository, homepage, and bugs URLs to package.json
+- chore: update CHANGELOG.md for v2026.8.19 [skip ci]
+
+**Install:** `npm install nano-brain@2026.8.19` · `npx nano-brain@latest`
+
+---
+
+## [2026.8.19] — 2026-05-16
+
+### Features
+- feat(graph): auto-zoom to selected node + neighbors on focus mode
+- feat(graph): focus mode on node click + fix node overlap (#37)
+- feat(obsidian,db): excludeFolders, frontmatter tags, db:clean --list-only (closes #34)
+- feat(obsidian): Obsidian vault integration + fix entity API limit 100→2000 (closes #34)
+- feat(kg): scheduled entity extraction job for memory documents (closes #30)
+- feat(docs): extend Three.js neural graph to full-page background on all docs pages (closes #28)
+- feat(docs): Three.js neural graph animation in hero — nodes + edges + pulse (closes #27)
+- feat(docs): custom hover tooltips on MCP tools grid (closes #26)
+- feat(docs): CHANGELOG.md + changelog page renders it via marked.js (closes #24)
+- feat(docs): add setup guide page — Docker, config, Ollama, MCP connect, verify steps
+- feat: add GitHub Pages site — landing, features, changelog, docs (closes #23)
+
+### Bug Fixes
+- fix(graph): allow dragging focused nodes — add pointerEvents:none to dimmed dots
+- fix(graph): hide edge labels ('call') when edges dimmed in focus mode
+- fix(graph): hide edge labels when edges are dimmed in focus mode
+- fix(graph): Symbol Call Graph — default individual mode + fix cluster edge filter (closes #38)
+- fix(graph): collapse unrelated nodes to dots on focus — no label overlap
+- fix(watcher): address Gemini review — streaming body, yaml parser, async fs, ready event
+- fix(db): eliminate SQLite corruption root causes — readonly check + RESTART checkpoint
+- fix(db): add db:clean command and bootstrap orphan/corruption guards (closes #32, #33)
+- fix(kg): raise entity API limit 100→2000 so all entities appear in graph
+- fix(kg): start extraction cycle 30s after startup instead of 30min
+- fix(kg): startup reindex + fast drain for entity extraction queue
+- fix(ci,web): web deps install in CI + fix graph node overlap
+- fix(web): favicon 404, search mark rendering, missing CI web build (closes #29)
+- fix(docs): Three.js — use r128 UMD CDN, fix overflow, fix init timing
+- fix(docs): npx nano-brain mcp + add ai-sandbox-wrapper container setup section (closes #25)
+- fix(pages): redirect root index.html → docs/index.html
+- fix(docs): correct codebase facts — 30 tools, 32 CLI, 11-stage pipeline, 5 languages, accurate MCP config
+- fix(ci): skip GitHub release creation if tag already exists (closes #22)
+- fix(ci): skip npm publish if version already exists on registry
+- fix(ci): use --legacy-peer-deps for npm ci (tree-sitter peer conflict)
+
+### Documentation
+- docs: add npm, CI, license badges to README (closes #21)
+- docs(claude): add rule to create GitHub issue before starting any task
+
 **Install:** `npm install nano-brain@2026.8.19` · `npx nano-brain@latest`
 
 ---
