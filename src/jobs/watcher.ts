@@ -727,18 +727,26 @@ export function startWatcher(options: WatcherOptions): Watcher {
         }
       };
 
-      const scheduleEntityExtraction = () => {
+      const scheduleEntityExtraction = (delay = entityExtractionIntervalMs) => {
         if (stopped) return;
         entityExtractionTimeout = setTimeout(async () => {
           if (stopped) return;
           try {
+            const db = store.getDb();
+            const pending = (db.prepare(`
+              SELECT COUNT(*) as n FROM documents d
+              JOIN content c ON d.hash = c.hash
+              WHERE d.collection = 'memory' AND d.active = 1
+                AND d.id NOT IN (SELECT document_id FROM consolidation_log WHERE action = 'ENTITY_EXTRACTED')
+            `).get() as { n: number }).n;
             await runEntityExtractionCycle();
+            // If more docs remain, run again after a short delay instead of waiting full interval
+            scheduleEntityExtraction(pending > 10 ? 5000 : entityExtractionIntervalMs);
           } catch (err) {
             log('watcher', 'Entity extraction cycle failed: ' + (err instanceof Error ? err.message : String(err)), 'warn');
-          } finally {
             scheduleEntityExtraction();
           }
-        }, entityExtractionIntervalMs);
+        }, delay);
       };
       scheduleEntityExtraction();
       // Run once shortly after startup to populate Knowledge Graph from existing memory docs
@@ -853,6 +861,13 @@ export function startWatcher(options: WatcherOptions): Watcher {
 
   setupWatcher();
   setupPolling();
+  // Force a full collection reindex on startup so pre-existing files (invisible to
+  // chokidar due to ignoreInitial:true) are indexed into the DB immediately.
+  setTimeout(() => {
+    triggerReindex(true).catch(err => {
+      log('watcher', `Startup collection reindex failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
+    });
+  }, 5000);
   startupIntegrityCheck().catch(err => {
     log('watcher', `Startup integrity check failed: ${err instanceof Error ? err.message : String(err)}`, 'warn');
   });
