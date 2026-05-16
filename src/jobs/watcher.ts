@@ -16,7 +16,81 @@ import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
 
-const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve));
+const yieldToEventLoop = () => new Promise<void>(resolve => setImmediate(resolve))
+
+// ── Obsidian helpers ──────────────────────────────────────────────────────────
+
+function parseWikiLinks(content: string): string[] {
+  const seen = new Set<string>();
+  const re = /\[\[([^\]|#\n]+?)(?:[|#][^\]]*?)?\]\]/g;
+  let m;
+  while ((m = re.exec(content)) !== null) {
+    const target = m[1].trim();
+    if (target) seen.add(target);
+  }
+  return Array.from(seen);
+}
+
+export function parseFrontmatter(content: string): Record<string, string | string[]> {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return {};
+  const result: Record<string, string | string[]> = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const idx = line.indexOf(':');
+    if (idx === -1) continue;
+    const key = line.slice(0, idx).trim();
+    const raw = line.slice(idx + 1).trim();
+    if (raw.startsWith('[') && raw.endsWith(']')) {
+      result[key] = raw.slice(1, -1).split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+    } else {
+      result[key] = raw.replace(/^['"]|['"]$/g, '');
+    }
+  }
+  return result;
+}
+
+async function processObsidianWikiLinks(store: Store, collectionName: string, projectHash: string): Promise<void> {
+  const db = store.getDb();
+  const docs = db.prepare(
+    `SELECT d.id, d.path, d.title, c.body FROM documents d
+     JOIN content c ON d.hash = c.hash
+     WHERE d.collection = ? AND d.active = 1`
+  ).all(collectionName) as Array<{id: number; path: string; title: string; body: string}>;
+
+  if (docs.length === 0) return;
+
+  // Build lookup: basename-without-ext → doc id
+  const titleMap = new Map<string, number>();
+  for (const doc of docs) {
+    const base = path.basename(doc.path, path.extname(doc.path)).toLowerCase();
+    titleMap.set(base, doc.id);
+    if (doc.title) titleMap.set(doc.title.toLowerCase(), doc.id);
+  }
+
+  let created = 0;
+  for (const doc of docs) {
+    const links = parseWikiLinks(doc.body);
+    for (const link of links) {
+      const targetId = titleMap.get(link.toLowerCase());
+      if (!targetId || targetId === doc.id) continue;
+      try {
+        store.insertConnection({
+          fromDocId: doc.id,
+          toDocId: targetId,
+          relationshipType: 'related',
+          description: `WikiLink: [[${link}]]`,
+          strength: 1.0,
+          createdBy: 'extraction',
+          projectHash,
+        });
+        created++;
+      } catch { /* ignore duplicate conflicts */ }
+    }
+  }
+  if (created > 0) {
+    log('watcher', `Obsidian: created ${created} WikiLink connection(s) in ${collectionName}`);
+  }
+};
 
 export interface WatcherOptions {
   store: Store
@@ -255,6 +329,18 @@ export function startWatcher(options: WatcherOptions): Watcher {
           await yieldToEventLoop();
         } catch (err) {
           log('watcher', `Collection scan failed for ${collection.name}: ${err}`)
+        }
+      }
+
+      // Process WikiLinks for obsidian collections (identified by name or .obsidian dir)
+      for (const collection of collections) {
+        const isObsidian = collection.name.toLowerCase().includes('obsidian')
+          || fs.existsSync(path.join(collection.path.replace(/^~/, os.homedir()), '.obsidian'));
+        if (!isObsidian) continue;
+        try {
+          await processObsidianWikiLinks(store, collection.name, projectHash);
+        } catch (err) {
+          log('watcher', `Obsidian WikiLink processing failed for ${collection.name}: ${err}`);
         }
       }
 
@@ -671,7 +757,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
           SELECT d.id, d.title, d.hash, c.body
           FROM documents d
           JOIN content c ON d.hash = c.hash
-          WHERE d.collection = 'memory'
+          WHERE (d.collection = 'memory' OR d.collection LIKE '%obsidian%')
             AND d.active = 1
             AND d.id NOT IN (
               SELECT document_id FROM consolidation_log WHERE action = 'ENTITY_EXTRACTED'
@@ -736,7 +822,7 @@ export function startWatcher(options: WatcherOptions): Watcher {
             const pending = (db.prepare(`
               SELECT COUNT(*) as n FROM documents d
               JOIN content c ON d.hash = c.hash
-              WHERE d.collection = 'memory' AND d.active = 1
+              WHERE (d.collection = 'memory' OR d.collection LIKE '%obsidian%') AND d.active = 1
                 AND d.id NOT IN (SELECT document_id FROM consolidation_log WHERE action = 'ENTITY_EXTRACTED')
             `).get() as { n: number }).n;
             await runEntityExtractionCycle();
