@@ -117,7 +117,7 @@ export function makeGraphMethods(
       }
     },
 
-    getMemoryEntities(projectHash: string, limit: number = 100): MemoryEntity[] {
+    getMemoryEntities(projectHash: string, limit: number = 2000): MemoryEntity[] {
       const rows = stmts.getMemoryEntities.all(projectHash, limit) as Array<Record<string, unknown>>;
       return rows.map(row => ({
         id: row.id as number,

@@ -600,7 +600,7 @@ export async function handleRequest(
   if (req.method === 'GET' && pathname === '/api/v1/graph/entities') {
     const wsHash = url.searchParams.get('workspace') || currentProjectHash;
     try {
-      const entities = store.getMemoryEntities(wsHash);
+      const entities = store.getMemoryEntities(wsHash, 2000);
       const entityEdges: Array<{ id: number; sourceId: number; targetId: number; edgeType: string; createdAt: string }> = [];
       for (const entity of entities) {
         const edges = store.getEntityEdges(entity.id, 'outgoing');
